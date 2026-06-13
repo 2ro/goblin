@@ -1,0 +1,7 @@
+[Desktop Entry]
+Name=Goblin
+Exec=goblin
+Icon=goblin
+Type=Application
+Categories=Finance
+MimeType=application/x-slatepack;text/plain;

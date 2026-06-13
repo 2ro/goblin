@@ -1,0 +1,92 @@
+# Release builds on native runners — one per platform, no cross-compilation
+# (nokhwa's camera backends want each platform's own SDK; see NEXT-STEPS judgment).
+#
+# Manually triggered (Actions → Release → Run workflow) against an existing tag
+# until a run has been validated end-to-end; then this can move to a tag trigger.
+# Android is built locally via scripts/android.sh for now — the gradle `ci`
+# flavor expects maven credentials this repository does not carry.
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing release tag to build and upload artifacts to (e.g. build27)"
+        required: true
+
+permissions:
+  contents: write
+
+env:
+  TAG: ${{ inputs.tag }}
+
+jobs:
+  linux:
+    name: Linux x86_64
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.tag }}
+          submodules: recursive
+      - name: Build
+        run: cargo build --release
+      - name: Package
+        run: |
+          tar -C target/release -czf "goblin-$TAG-linux-x86_64.tar.gz" goblin
+          sha256sum "goblin-$TAG-linux-x86_64.tar.gz" > "goblin-$TAG-linux-x86_64-sha256sum.txt"
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.tag }}
+          files: |
+            goblin-${{ inputs.tag }}-linux-x86_64.tar.gz
+            goblin-${{ inputs.tag }}-linux-x86_64-sha256sum.txt
+
+  windows:
+    name: Windows x86_64 (MSVC)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.tag }}
+          submodules: recursive
+      - name: Build
+        run: cargo build --release
+      - name: Package
+        shell: bash
+        run: |
+          7z a "goblin-$TAG-win-x86_64.zip" ./target/release/goblin.exe
+          sha256sum "goblin-$TAG-win-x86_64.zip" > "goblin-$TAG-win-x86_64-sha256sum.txt"
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.tag }}
+          files: |
+            goblin-${{ inputs.tag }}-win-x86_64.zip
+            goblin-${{ inputs.tag }}-win-x86_64-sha256sum.txt
+
+  macos:
+    name: macOS universal
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.tag }}
+          submodules: recursive
+      - name: Build both architectures
+        run: |
+          rustup target add aarch64-apple-darwin x86_64-apple-darwin
+          cargo build --release --target aarch64-apple-darwin
+          cargo build --release --target x86_64-apple-darwin
+      - name: Universal binary + package
+        run: |
+          lipo -create -output goblin \
+            target/aarch64-apple-darwin/release/goblin \
+            target/x86_64-apple-darwin/release/goblin
+          zip "goblin-$TAG-macos-universal.zip" goblin
+          shasum -a 256 "goblin-$TAG-macos-universal.zip" > "goblin-$TAG-macos-universal-sha256sum.txt"
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.tag }}
+          files: |
+            goblin-${{ inputs.tag }}-macos-universal.zip
+            goblin-${{ inputs.tag }}-macos-universal-sha256sum.txt

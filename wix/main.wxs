@@ -1,0 +1,106 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<?if $(sys.BUILDARCH) = x64 or $(sys.BUILDARCH) = arm64 ?>
+    <?define PlatformProgramFilesFolder = "ProgramFiles64Folder" ?>
+<?else ?>
+    <?define PlatformProgramFilesFolder = "ProgramFilesFolder" ?>
+<?endif ?>
+
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+    <Product Id="*" Version="0.3.6" UpgradeCode="C19F9B41-CD13-4F0E-B27D-E0EF8CF1CE91" Language="1033" Name="Goblin" Manufacturer="Ardocrat">
+        <Package Id="F4D20D15-2788-4199-9220-3905799817F6" InstallerVersion="300" Compressed="yes"/>
+        <Media Id="1" Cabinet="goblin.cab" EmbedCab="yes" />
+
+        <MajorUpgrade AllowDowngrades = "yes"/>
+
+        <Icon Id='Product.ico' SourceFile='wix\Product.ico'/>
+        <Property Id='ARPPRODUCTICON' Value='Product.ico' />
+
+        <Directory Id="TARGETDIR" Name="SourceDir">
+            <Directory Id='$(var.PlatformProgramFilesFolder)'>
+                <Directory Id="APPLICATIONROOTDIRECTORY" Name="Goblin"/>
+            </Directory>
+
+            <Directory Id="DesktopFolder" Name="Desktop">
+                <Component Id="ApplicationShortcutDesktop" Guid="14efa019-7ed7-4765-8263-fa5460f92495">
+                    <Shortcut Id="ApplicationDesktopShortcut"
+                              Name="Goblin"
+                              Icon="Product.ico"
+                              Description="GUI for Grin"
+                              Target="[APPLICATIONROOTDIRECTORY]goblin.exe"
+                              WorkingDirectory="APPLICATIONROOTDIRECTORY"/>
+                    <RemoveFolder Id="DesktopFolder" On="uninstall"/>
+                    <RegistryValue
+                        Root="HKCU"
+                        Key="Software\Ardocrat\Goblin"
+                        Name="installed"
+                        Type="integer"
+                        Value="1"
+                        KeyPath="yes"/>
+                </Component>
+            </Directory>
+
+            <!-- Step 1: Define the directory structure -->
+            <Directory Id="ProgramMenuFolder">
+                <Directory Id="ApplicationProgramsFolder" Name="Goblin"/>
+            </Directory>
+        </Directory>
+
+        <DirectoryRef Id="APPLICATIONROOTDIRECTORY">
+            <Component Id="License" Guid="4b1d11d3-5d76-430e-b5ef-87f1a62cf21b">
+                <File Id="LicenseFile" DiskId="1" Source="wix\License.rtf" KeyPath="yes"/>
+            </Component>
+            <Component Id="goblin.exe" Guid="95444223-45BF-427A-85CA-61B035044305">
+                <File Id="goblin.exe" Source="$(var.CargoTargetBinDir)\goblin.exe" KeyPath="yes" Checksum="yes"/>
+                <File Id="slatepack.ico" Source="wix\Product.ico" />
+                <ProgId Id='goblin.slatepack' Description='Grin Slatepack message' Icon='slatepack.ico'>
+                  <Extension Id='slatepack' ContentType='text/plain'>
+                     <Verb Id='open' Command='Open' Target='[APPLICATIONROOTDIRECTORY]goblin.exe' Argument='%1' />
+                  </Extension>
+                </ProgId>
+            </Component>
+        </DirectoryRef>
+
+        <!-- Step 2: Add the shortcut to your installer package -->
+        <DirectoryRef Id="ApplicationProgramsFolder">
+            <Component Id="ApplicationShortcut" Guid="07f7fc68-bc3e-4715-9c10-0231a92b5ccb">
+                <Shortcut Id="ApplicationStartMenuShortcut"
+                          Name="Goblin"
+                          Description="Cross-platform GUI for Grin with focus on usability and availability to be used by anyone, anywhere."
+                          Icon="Product.ico"
+                          Target="[#goblin.exe]"
+                          WorkingDirectory="APPLICATIONROOTDIRECTORY"/>
+                <RemoveFolder Id="ApplicationProgramsFolder" On="uninstall"/>
+                <RegistryValue Root="HKCU" Key="Software\Ardocrat\Goblin" Name="installed" Type="integer" Value="1" KeyPath="yes"/>
+            </Component>
+        </DirectoryRef>
+
+        <Feature Id="MainApplication" Title="Goblin" Level="1">
+            <ComponentRef Id="goblin.exe" />
+            <ComponentRef Id="License" />
+            <!-- Step 3: Tell WiX to install the shortcut -->
+            <ComponentRef Id="ApplicationShortcutDesktop" />
+            <ComponentRef Id="ApplicationShortcut" />
+        </Feature>
+
+
+        <Property Id='ARPHELPLINK' Value='https://github.com/ardocrat/goblin'/>
+
+        <UI>
+            <UIRef Id="WixUI_Minimal" />
+                <Publish Dialog="ExitDialog"
+                         Control="Finish"
+                         Event="DoAction"
+                         Value="LaunchApplication">WIXUI_EXITDIALOGOPTIONALCHECKBOX = 1 and NOT Installed</Publish>
+        </UI>
+        <Property Id="WIXUI_EXITDIALOGOPTIONALCHECKBOXTEXT" Value="Launch Application" />
+
+        <Property Id="WixShellExecTarget" Value="[#goblin.exe]" />
+        <CustomAction Id="LaunchApplication"
+                      BinaryKey="WixCA"
+                      DllEntry="WixShellExec"
+                      Impersonate="yes" />
+
+        <WixVariable Id='WixUILicenseRtf' Value='wix\License.rtf'/>
+    </Product>
+</Wix>
