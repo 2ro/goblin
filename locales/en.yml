@@ -1,0 +1,358 @@
+lang_name: English
+copy: Copy
+paste: Paste
+continue: Continue
+complete: Complete
+error: Error
+retry: Retry
+close: Close
+change: Change
+show: Show
+delete: Delete
+clear: Clear
+create: Create
+id: Identifier
+kernel: Kernel
+settings: Settings
+language: Language
+scan: Scan
+qr_code: QR code
+scan_qr: Scan QR code
+repeat: Repeat
+scan_result: Scan result
+back: Back
+share: Share
+theme: 'Theme:'
+dark: Dark
+light: Light
+file: File
+choose_file: Choose file
+choose_folder: Choose folder
+crash_report: Crash report
+crash_report_warning: Application closed unexpectedly last time, you can share crash report with developers.
+confirmation: Confirmation
+enter_url: Enter URL
+max_short: MAX
+files_location: Files location
+moving_files: Moving files
+wrong_path_error: Wrong path specified
+check_updates: Check for updates at startup
+update_available: Update is available!
+changelog: 'Changelog:'
+wallets:
+  await_conf_amount: Awaiting confirmation
+  await_fin_amount: Awaiting finalization
+  locked_amount: Locked
+  txs_empty: 'To receive funds manually or over transport use %{message} or %{transport} buttons at the bottom of the screen, to change wallet settings press %{settings} button.'
+  title: Wallets
+  create_desc: Create or import existing wallet from saved recovery phrase.
+  add: Add wallet
+  name: 'Name:'
+  pass: 'Password:'
+  pass_empty: Enter the wallet password
+  current_pass: 'Current password:'
+  new_pass: 'New password:'
+  min_tx_conf_count: 'Minimum amount of confirmations for transactions:'
+  recover: Restore
+  recovery_phrase: Recovery phrase
+  words_count: 'Words count:'
+  enter_word: 'Enter word #%{number}:'
+  not_valid_word: Entered word is not valid
+  not_valid_phrase: Entered phrase is not valid
+  create_phrase_desc: Safely write down and save your recovery phrase.
+  restore_phrase_desc: Enter words from your saved recovery phrase.
+  setup_conn_desc: Choose how your wallet connects to the network.
+  conn_method: Connection method
+  ext_conn: 'External connections:'
+  add_node: Add node
+  node_url: 'Node URL:'
+  node_secret: 'API Secret (optional):'
+  invalid_url: Entered URL is invalid
+  open: Open the wallet
+  wrong_pass: Entered password is wrong
+  locked: Locked
+  unlocked: Unlocked
+  enable_node: 'Enable integrated node to use the wallet or change connection settings by selecting %{settings} at the bottom of the screen.'
+  node_loading: 'Wallet will be loaded after integrated node synchronization, you can change connection by selecting %{settings} at the bottom of the screen.'
+  loading: Loading
+  closing: Closing
+  checking: Checking
+  default_wallet: Default wallet
+  new_account_desc: 'Enter name of new account:'
+  wallet_loading: Loading wallet
+  wallet_closing: Closing wallet
+  wallet_checking: Checking wallet
+  tx_loading: Loading transactions
+  default_account: Default account
+  accounts: Accounts
+  tx_sent: Sent
+  tx_received: Received
+  tx_sending: Sending
+  tx_receiving: Receiving
+  tx_confirming: Awaiting confirmation
+  tx_canceled: Canceled
+  tx_cancelling: Cancelling
+  tx_finalizing: Finalizing
+  tx_posting: Posting
+  tx_confirmed: Confirmed
+  txs: Transactions
+  tx: Transaction
+  messages: Messages
+  transport: Transport
+  input_slatepack_desc: 'Enter received Slatepack message to create response or finalize request:'
+  parse_slatepack_err: 'An error occurred during reading of the message, check input:'
+  pay_balance_error: 'Account balance is insufficient to pay %{amount} ツ and network fee.'
+  parse_i1_slatepack_desc: 'To pay %{amount} ツ send this message to the receiver:'
+  parse_i2_slatepack_desc: 'Finalize transaction to receive %{amount} ツ:'
+  parse_i3_slatepack_desc: 'Post transaction to finalize receiving of %{amount} ツ:'
+  parse_s1_slatepack_desc: 'To receive %{amount} ツ send this message to the sender:'
+  parse_s2_slatepack_desc: 'Finalize transaction to send %{amount} ツ:'
+  parse_s3_slatepack_desc: 'Post transaction to finalize sending of %{amount} ツ:'
+  resp_slatepack_err: 'An error occurred during creation of the response, check input data or try again:'
+  resp_exists_err: Such transaction already exists.
+  resp_canceled_err: Such transaction was already canceled.
+  create_request_desc: 'Create request to send or receive the funds:'
+  send_request_desc: 'You have created a request to send %{amount} ツ. Send this message to the receiver:'
+  send_slatepack_err: An error occurred during creation of request to send funds, check input data or try again.
+  invoice_desc: 'You have created request to receive %{amount} ツ. Send this message to the sender:'
+  invoice_slatepack_err: An error occurred during issuing of the invoice, check input data or try again.
+  finalize_slatepack_err: 'An error occurred during finalization, check input data or try again:'
+  finalize: Finalize
+  use_dandelion: Use Dandelion
+  enter_amount_send: 'You have %{amount} ツ. Enter amount to send:'
+  enter_amount_receive: 'Enter amount to receive:'
+  recovery: Recovery
+  repair_wallet: Repair wallet
+  repair_desc: Check a wallet, repairing and restoring missing outputs if required. This operation will take time.
+  repair_unavailable: You need an active connection to the node and completed wallet synchronization.
+  delete: Delete wallet
+  delete_conf: Are you sure you want to delete the wallet?
+  delete_desc: Make sure you have saved your recovery phrase to access funds later.
+  wallet_loading_err: 'An error occurred during synchronization of the wallet, you can retry or change connection settings by selecting %{settings} at the bottom of the screen.'
+  wallet: Wallet
+  send: Send
+  receive: Receive
+  settings: Wallet settings
+  tx_send_cancel_conf: 'Are you sure you want to cancel sending of %{amount} ツ?'
+  tx_receive_cancel_conf: 'Are you sure you want to cancel receiving of %{amount} ツ?'
+  rec_phrase_not_found: Recovery phrase not found.
+  restore_wallet_desc: Restore wallet by deleting all files if usual repair not helped, you will need to re-open your wallet.
+  fee_base_desc: 'Fee (base value%{value}):'
+  payment_proof: Payment proof
+  payment_proof_desc: 'Enter received payment proof to verify transaction:'
+  payment_proof_valid: 'Entered payment proof is valid:'
+  payment_proof_error: 'Entered payment proof is not valid:'
+  tx_delete_confirmation: Are you sure you want to delete the transaction from history?
+transport:
+  desc: 'Use transport to receive or send messages synchronously:'
+  tor_network: Tor network
+  connected: Connected
+  connecting: Connecting
+  disconnecting: Disconnecting
+  conn_error: Connection error
+  disconnected: Disconnected
+  receiver_address: 'Address of the receiver:'
+  incorrect_addr_err: 'Entered address is incorrect:'
+  tor_send_error: An error occurred during sending over Tor, make sure receiver is online, transaction was canceled.
+  tor_autorun_desc: Whether to launch Tor service on wallet opening to receive transactions synchronously.
+  tor_sending: Sending over Tor
+  tor_settings: Tor Settings
+  bridges: Bridges
+  bridges_desc: Setup bridges to bypass Tor network censorship if usual connection is not working.
+  bin_file: 'Binary file:'
+  conn_line: 'Connection line:'
+  bridges_disabled: Bridges disabled
+  bridge_name: 'Bridge %{b}'
+network:
+  self: Network
+  type: 'Network type:'
+  mainnet: Main
+  testnet: Test
+  connections: Connections
+  node: Integrated node
+  metrics: Metrics
+  mining: Mining
+  settings: Node settings
+  enable_node: Enable node
+  autorun: Autorun
+  disabled_server: 'Enable integrated node or add another connection method by pressing %{dots} in the top-left corner of the screen.'
+  no_ips: There are no available IP addresses on your system, server cannot be started, check your network connectivity.
+  available: Available
+  not_available: Not available
+  availability_check: Availability check
+  android_warning: Attention to Android users. To synchronize integrated node successfully, you must allow access to notifications and remove battery usage restrictions for the Goblin application at system settings of your phone. This is necessary operation for correct work of application in the background.
+sync_status:
+  node_restarting: Node is restarting
+  node_down: Node is down
+  initial: Node is starting
+  no_sync: Node is running
+  awaiting_peers: Waiting for peers
+  header_sync: Downloading headers
+  header_sync_percent: 'Downloading headers: %{percent}%'
+  tx_hashset_pibd: Downloading state (PIBD)
+  tx_hashset_pibd_percent: 'Downloading state (PIBD): %{percent}%'
+  tx_hashset_download: Downloading state
+  tx_hashset_download_percent: 'Downloading state: %{percent}%'
+  tx_hashset_setup_history: 'Preparing state (history): %{percent}%'
+  tx_hashset_setup_position: 'Preparing state (position): %{percent}%'
+  tx_hashset_setup: Preparing state
+  tx_hashset_range_proofs_validation: 'Validating state (range proofs): %{percent}%'
+  tx_hashset_kernels_validation: 'Validating state (kernels): %{percent}%'
+  tx_hashset_save: Finalizing chain state
+  body_sync: Downloading blocks
+  body_sync_percent: 'Downloading blocks: %{percent}%'
+  shutdown: Node is shutting down
+network_node:
+  header: Header
+  block: Block
+  hash: Hash
+  height: Height
+  difficulty: Difficulty
+  time: Time
+  main_pool: Main pool
+  stem_pool: Stem pool
+  data: Data
+  size: Size (GB)
+  peers: Peers
+  error_clean: Node data got corrupted, resync required.
+  resync: Resync
+  error_p2p_api: 'An error occurred during %{p2p_api} server initialization, check %{p2p_api} settings by selecting %{settings} at the bottom of the screen.'
+  error_config: 'An error occurred during configuration initialization, check settings by selecting %{settings} at the bottom of the screen.'
+  error_unknown: 'An error occurred during initialization, check integrated node settings by selecting %{settings} at the bottom of the screen or resync.'
+network_metrics:
+  loading: Metrics will be available after the synchronization
+  emission: Emission
+  inflation: Inflation
+  supply: Supply
+  block_time: Block time
+  reward: Reward
+  difficulty_window: 'Difficulty window %{size}'
+network_mining:
+  loading: Mining will be available after the synchronization
+  info: 'Mining server is enabled, you can change its settings by selecting %{settings} at the bottom of the screen. Data is updating when devices are connected.'
+  restart_server_required: Server restart is required to apply changes.
+  rewards_wallet: Wallet for rewards
+  server: Stratum server
+  address: Address
+  miners: Miners
+  devices: Devices
+  blocks_found: Blocks found
+  hashrate: 'Hashrate (C%{bits})'
+  connected: Connected
+  disconnected: Disconnected
+network_settings:
+  change_value: Change value
+  stratum_ip: 'Stratum IP address:'
+  stratum_port: 'Stratum port:'
+  port_unavailable: Specified port is unavailable
+  restart_node_required: Node restart is required to apply changes.
+  choose_wallet: Choose wallet
+  stratum_wallet_warning: Wallet must be opened to receive rewards.
+  enable: Enable
+  disable: Disable
+  restart: Restart
+  server: Server
+  api_ip: 'API IP address:'
+  api_port: 'API port:'
+  api_secret: 'Rest API and V2 Owner API token:'
+  foreign_api_secret: 'Foreign API token:'
+  disabled: Disabled
+  enabled: Enabled
+  ftl: 'The Future Time Limit (FTL):'
+  ftl_description: Limit on how far into the future, relative to a node's local time in seconds, the timestamp on a new block can be, in order for the block to be accepted.
+  not_valid_value: Entered value is not valid
+  full_validation: Full validation
+  full_validation_description: Whether to run a full chain validation when processing each block (except during synchronization).
+  archive_mode: Archive mode
+  archive_mode_desc: Run the node in full archive mode (more disk space and time will be required for synchronization).
+  attempt_time: 'Mining attempt time (in seconds):'
+  attempt_time_desc: The amount of time to attempt to mine on a particular header before stopping and re-collecting transactions from the pool
+  min_share_diff: 'The minimum acceptable share difficulty:'
+  reset_settings_desc: Reset node settings to default values
+  reset_settings: Reset settings
+  reset: Reset
+  tx_pool: Transaction pool
+  pool_fee: 'Base fee that is accepted into the pool:'
+  reorg_period: 'Reorg cache retention period (in minutes):'
+  max_tx_pool: 'Maximum number of transactions in the pool:'
+  max_tx_stempool: 'Maximum number of transactions in the stem-pool:'
+  max_tx_weight: 'Maximum total weight of transactions that can get selected to build a block:'
+  epoch_duration: 'Epoch duration (in seconds):'
+  embargo_timer: 'Embargo timer (in seconds):'
+  aggregation_period: 'Aggregation period (in seconds):'
+  stem_probability: 'Stem phase probability:'
+  stem_txs: Stem transactions
+  p2p_server: P2P server
+  p2p_port: 'P2P port:'
+  add_seed: Add DNS Seed
+  seed_address: 'DNS Seed address:'
+  add_peer: Add peer
+  peer_address: 'Peer address:'
+  peer_address_error: 'Enter IP address or DNS name (make sure specified host is available) in correct format, e.g.: 192.168.0.1:1234 or example.com:5678'
+  default: Default
+  allow_list: Allow list
+  allow_list_desc: Connect only to peers in this list.
+  deny_list: Deny list
+  deny_list_desc: Never connect to peers in this list.
+  favourites: Favourites
+  favourites_desc: A list of preferred peers to connect to.
+  ban_window: 'How much time (in seconds) a banned peer should stay banned:'
+  ban_window_desc: The decision to ban is made by node, based on the correctness of the data received from the peer.
+  max_inbound_count: 'Maximum number of inbound peer connections:'
+  max_outbound_count: 'Maximum number of outbound peer connections:'
+  reset_data_desc: Reset the node data. Use it with a caution only if there are problems with synchronization.
+  reset_data: Reset data
+modal:
+  cancel: Cancel
+  save: Save
+  add: Add
+modal_exit:
+  description: Are you sure you want to quit the application?
+  exit: Exit
+app_settings:
+  proxy: Proxy
+  proxy_desc: Whether to use proxy for network requests from the application.
+keyboard:
+  1: 1
+  2: 2
+  3: 3
+  4: 4
+  5: 5
+  6: 6
+  7: 7
+  8: 8
+  9: 9
+  0: 0
+  01: '-'
+  q: q
+  w: w
+  e: e
+  r: r
+  t: t
+  y: y
+  u: u
+  i: i
+  o: o
+  p: p
+  p1: '"'
+  a: a
+  s: s
+  d: d
+  f: f
+  g: g
+  h: h
+  j: j
+  k: k
+  l: l
+  l1: \
+  l2: ':'
+  z: z
+  x: x
+  c: c
+  v: v
+  b: b
+  n: n
+  m: m
+  m1: ','
+  m2: .
+  m3: /

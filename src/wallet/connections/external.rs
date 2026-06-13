@@ -1,0 +1,172 @@
+// Copyright 2023 The Grim Developers
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+use bytes::Bytes;
+use grin_core::global::ChainTypes;
+use grin_util::to_base64;
+use http_body_util::Full;
+use serde_derive::{Deserialize, Serialize};
+
+use crate::http::HttpClient;
+use crate::wallet::ConnectionsConfig;
+
+/// External connection for the wallet.
+#[derive(Serialize, Deserialize, Clone, PartialEq)]
+pub struct ExternalConnection {
+	/// Connection identifier.
+	pub id: i64,
+	/// Node URL.
+	pub url: String,
+	/// Optional username.
+	pub username: Option<String>,
+	/// Optional API secret key.
+	pub secret: Option<String>,
+
+	/// Flag to check if server is available.
+	#[serde(skip_serializing, skip_deserializing)]
+	pub available: Option<bool>,
+}
+
+/// Default external node URLs for main network. grincoin.org leads (main.gri.mw
+/// has intermittent issues); main.us-ea.st is the Goblin-run node.
+const DEFAULT_MAIN_URLS: [&'static str; 4] = [
+	"https://grincoin.org",
+	"https://main.us-ea.st",
+	"https://main.gri.mw",
+	"https://mainnet.grinffindor.org",
+];
+
+/// Default external node URL for main network.
+const DEFAULT_TEST_URLS: [&'static str; 3] = [
+	"https://test.gri.mw",
+	"https://testnet.grincoin.org",
+	"https://testnet.grinffindor.org",
+];
+
+impl ExternalConnection {
+	/// Get default connections for provided chain type.
+	pub fn default(chain_type: &ChainTypes) -> Vec<ExternalConnection> {
+		let urls = match chain_type {
+			ChainTypes::Mainnet => DEFAULT_MAIN_URLS.to_vec(),
+			_ => DEFAULT_TEST_URLS.to_vec(),
+		};
+		urls.iter()
+			.enumerate()
+			.map(|(index, url)| ExternalConnection {
+				id: index as i64,
+				url: url.to_string(),
+				username: Some("grin".to_string()),
+				secret: None,
+				available: None,
+			})
+			.collect::<Vec<ExternalConnection>>()
+	}
+
+	/// Create new external connection.
+	pub fn new(url: String, username: Option<String>, secret: Option<String>) -> Self {
+		let id = chrono::Utc::now().timestamp();
+		Self {
+			id,
+			url,
+			username,
+			secret,
+			available: None,
+		}
+	}
+
+	/// Check external connection availability.
+	pub fn check(id: Option<i64>, ui_ctx: &egui::Context) {
+		let conn_list = ConnectionsConfig::ext_conn_list();
+		for conn in conn_list {
+			if let Some(id) = id {
+				if id == conn.id {
+					check_ext_conn(&conn, ui_ctx);
+				}
+			} else {
+				check_ext_conn(&conn, ui_ctx);
+			}
+		}
+	}
+}
+
+/// Check connection availability.
+fn check_ext_conn(conn: &ExternalConnection, ui_ctx: &egui::Context) {
+	let conn = conn.clone();
+	let ui_ctx = ui_ctx.clone();
+	ConnectionsConfig::update_ext_conn_status(conn.id, None);
+	std::thread::spawn(move || {
+		tokio::runtime::Builder::new_current_thread()
+			.enable_all()
+			.build()
+			.unwrap()
+			.block_on(async {
+				// Check URL format.
+				let conn_url = url::Url::parse(conn.url.as_str());
+				let url_res = match conn_url {
+					Ok(url) => Some(url),
+					Err(_) => {
+						let mut url_res = None;
+						if !conn.url.starts_with("http") {
+							let mut conn = conn.clone();
+							let url_text = format!("https://{}", conn.url);
+							let url = url::Url::parse(url_text.as_str());
+							if let Ok(url) = url {
+								url_res = Some(url);
+								conn.url = url_text;
+								ConnectionsConfig::add_ext_conn(conn.clone());
+							}
+						}
+						url_res
+					}
+				};
+				if url_res.is_none() {
+					ConnectionsConfig::remove_ext_conn(conn.id);
+					return;
+				}
+				let url = url_res.unwrap();
+				if let Ok(_) = url.socket_addrs(|| None) {
+					let addr = format!("{}v2/foreign", url.to_string());
+					let mut req_setup = hyper::Request::builder()
+						.method(hyper::Method::POST)
+						.uri(addr.clone());
+					// Setup secret key auth.
+					if let Some(key) = conn.secret {
+						let username = conn.username.unwrap_or("grin".to_string());
+						let basic_auth =
+							format!("Basic {}", to_base64(&format!("{}:{}", username, key)));
+						req_setup =
+							req_setup.header(hyper::header::AUTHORIZATION, basic_auth.clone());
+					}
+					let req: hyper::Request<Full<Bytes>> = req_setup
+						.body(Full::from(
+							r#"{"id":1,"jsonrpc":"2.0","method":"get_version","params":{} }"#,
+						))
+						.unwrap();
+					// Send request.
+					match HttpClient::send(req).await {
+						Ok(res) => {
+							let status = res.status().as_u16();
+							// Available on 200 HTTP status code.
+							ConnectionsConfig::update_ext_conn_status(conn.id, Some(status == 200));
+						}
+						Err(_) => ConnectionsConfig::update_ext_conn_status(conn.id, Some(false)),
+					}
+				} else {
+					ConnectionsConfig::update_ext_conn_status(conn.id, Some(false));
+				}
+				// Repaint ui on change.
+				ui_ctx.request_repaint();
+			});
+	});
+}
