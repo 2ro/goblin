@@ -1,0 +1,43 @@
+name: Build
+on: [push, pull_request]
+
+# aws-lc-sys (pulled in by nym-sdk) builds AWS-LC, which needs NASM on native
+# Windows. Use the prebuilt NASM objects the crate ships so the runner doesn't
+# need NASM installed; harmless on Linux/macOS.
+env:
+  AWS_LC_SYS_PREBUILT_NASM: 1
+
+jobs:
+  linux:
+    name: Linux Build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: recursive
+      # nym-sdk is a path dep on ../nym; materialize it before building.
+      - uses: ./.github/actions/fetch-nym
+      - name: Release build
+        run: cargo build --release
+
+  windows:
+    name: Windows Build
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: recursive
+      - uses: ./.github/actions/fetch-nym
+      - name: Release build
+        run: cargo build --release
+
+  macos:
+    name: MacOS Build
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: recursive
+      - uses: ./.github/actions/fetch-nym
+      - name: Release build
+        run: cargo build --release

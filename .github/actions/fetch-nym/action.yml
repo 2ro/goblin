@@ -1,0 +1,23 @@
+name: Fetch patched nym SDK
+description: >
+  Clone the patched nym workspace from our own mirror
+  (git.us-ea.st/GRIN/nym, branch `goblin` = upstream nymtech/nym @ b6eb391 +
+  Goblin's Android webpki-roots patch) into ../nym, so the
+  `nym-sdk = { path = "../nym/sdk/rust/nym-sdk" }` dependency resolves.
+  Self-hosted: no upstream-GitHub fetch and no patch-apply step.
+
+runs:
+  using: composite
+  steps:
+    - name: Clone patched nym
+      shell: bash
+      run: |
+        set -euo pipefail
+        DEST="$(dirname "$GITHUB_WORKSPACE")/nym"
+        if [ -e "$DEST/sdk/rust/nym-sdk/Cargo.toml" ]; then
+          echo "nym already present at $DEST"
+          exit 0
+        fi
+        rm -rf "$DEST"
+        git clone --branch goblin --depth 1 https://git.us-ea.st/GRIN/nym.git "$DEST"
+        echo "nym cloned from GRIN/nym@goblin -> $DEST"

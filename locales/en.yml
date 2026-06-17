@@ -1,0 +1,805 @@
+lang_name: English
+copy: Copy
+paste: Paste
+continue: Continue
+complete: Complete
+error: Error
+retry: Retry
+close: Close
+change: Change
+show: Show
+delete: Delete
+clear: Clear
+create: Create
+id: Identifier
+kernel: Kernel
+settings: Settings
+language: Language
+scan: Scan
+qr_code: QR code
+scan_qr: Scan QR code
+repeat: Repeat
+scan_result: Scan result
+back: Back
+share: Share
+theme: 'Theme:'
+dark: Dark
+light: Light
+file: File
+choose_file: Choose file
+choose_folder: Choose folder
+crash_report: Crash report
+crash_report_warning: Application closed unexpectedly last time, you can share crash report with developers.
+confirmation: Confirmation
+enter_url: Enter URL
+max_short: MAX
+files_location: Files location
+moving_files: Moving files
+wrong_path_error: Wrong path specified
+check_updates: Check for updates at startup
+update_available: Update is available!
+changelog: 'Changelog:'
+wallets:
+  await_conf_amount: Awaiting confirmation
+  await_fin_amount: Awaiting finalization
+  locked_amount: Locked
+  txs_empty: 'To receive funds manually or over transport use %{message} or %{transport} buttons at the bottom of the screen, to change wallet settings press %{settings} button.'
+  title: Goblin
+  create_desc: Create or import existing wallet from saved recovery phrase.
+  add: Add wallet
+  name: 'Name:'
+  pass: 'Password:'
+  pass_empty: Enter the wallet password
+  current_pass: 'Current password:'
+  new_pass: 'New password:'
+  min_tx_conf_count: 'Minimum amount of confirmations for transactions:'
+  recover: Restore
+  recovery_phrase: Recovery phrase
+  words_count: 'Words count:'
+  enter_word: 'Enter word #%{number}:'
+  not_valid_word: Entered word is not valid
+  not_valid_phrase: Entered phrase is not valid
+  create_phrase_desc: Safely write down and save your recovery phrase.
+  restore_phrase_desc: Enter words from your saved recovery phrase.
+  setup_conn_desc: Choose how your wallet connects to the network.
+  conn_method: Connection method
+  ext_conn: 'External connections:'
+  add_node: Add node
+  node_url: 'Node URL:'
+  node_secret: 'API Secret (optional):'
+  invalid_url: Entered URL is invalid
+  open: Open the wallet
+  wrong_pass: Entered password is wrong
+  locked: Locked
+  unlocked: Unlocked
+  enable_node: 'Enable integrated node to use the wallet or change connection settings by selecting %{settings} at the bottom of the screen.'
+  node_loading: 'Wallet will be loaded after integrated node synchronization, you can change connection by selecting %{settings} at the bottom of the screen.'
+  loading: Loading
+  closing: Closing
+  checking: Checking
+  default_wallet: Default wallet
+  new_account_desc: 'Enter name of new account:'
+  wallet_loading: Loading wallet
+  wallet_closing: Closing wallet
+  wallet_checking: Checking wallet
+  tx_loading: Loading transactions
+  default_account: Default account
+  accounts: Accounts
+  tx_sent: Sent
+  tx_received: Received
+  tx_sending: Sending
+  tx_receiving: Receiving
+  tx_confirming: Awaiting confirmation
+  tx_canceled: Canceled
+  tx_cancelling: Cancelling
+  tx_finalizing: Finalizing
+  tx_posting: Posting
+  tx_confirmed: Confirmed
+  txs: Transactions
+  tx: Transaction
+  messages: Messages
+  transport: Transport
+  input_slatepack_desc: 'Enter received Slatepack message to create response or finalize request:'
+  parse_slatepack_err: 'An error occurred during reading of the message, check input:'
+  pay_balance_error: 'Account balance is insufficient to pay %{amount} ツ and network fee.'
+  parse_i1_slatepack_desc: 'To pay %{amount} ツ send this message to the receiver:'
+  parse_i2_slatepack_desc: 'Finalize transaction to receive %{amount} ツ:'
+  parse_i3_slatepack_desc: 'Post transaction to finalize receiving of %{amount} ツ:'
+  parse_s1_slatepack_desc: 'To receive %{amount} ツ send this message to the sender:'
+  parse_s2_slatepack_desc: 'Finalize transaction to send %{amount} ツ:'
+  parse_s3_slatepack_desc: 'Post transaction to finalize sending of %{amount} ツ:'
+  resp_slatepack_err: 'An error occurred during creation of the response, check input data or try again:'
+  resp_exists_err: Such transaction already exists.
+  resp_canceled_err: Such transaction was already canceled.
+  create_request_desc: 'Create request to send or receive the funds:'
+  send_request_desc: 'You have created a request to send %{amount} ツ. Send this message to the receiver:'
+  send_slatepack_err: An error occurred during creation of request to send funds, check input data or try again.
+  invoice_desc: 'You have created request to receive %{amount} ツ. Send this message to the sender:'
+  invoice_slatepack_err: An error occurred during issuing of the invoice, check input data or try again.
+  finalize_slatepack_err: 'An error occurred during finalization, check input data or try again:'
+  finalize: Finalize
+  use_dandelion: Use Dandelion
+  enter_amount_send: 'You have %{amount} ツ. Enter amount to send:'
+  enter_amount_receive: 'Enter amount to receive:'
+  recovery: Recovery
+  repair_wallet: Repair wallet
+  repair_desc: Check a wallet, repairing and restoring missing outputs if required. This operation will take time.
+  repair_unavailable: You need an active connection to the node and completed wallet synchronization.
+  delete: Delete wallet
+  delete_conf: Are you sure you want to delete the wallet?
+  delete_desc: Make sure you have saved your recovery phrase to access funds later.
+  wallet_loading_err: 'An error occurred during synchronization of the wallet, you can retry or change connection settings by selecting %{settings} at the bottom of the screen.'
+  wallet: Wallet
+  send: Send
+  receive: Receive
+  settings: Wallet settings
+  tx_send_cancel_conf: 'Are you sure you want to cancel sending of %{amount} ツ?'
+  tx_receive_cancel_conf: 'Are you sure you want to cancel receiving of %{amount} ツ?'
+  rec_phrase_not_found: Recovery phrase not found.
+  restore_wallet_desc: Restore wallet by deleting all files if usual repair not helped, you will need to re-open your wallet.
+  fee_base_desc: 'Fee (base value%{value}):'
+  payment_proof: Payment proof
+  payment_proof_desc: 'Enter received payment proof to verify transaction:'
+  payment_proof_valid: 'Entered payment proof is valid:'
+  payment_proof_error: 'Entered payment proof is not valid:'
+  tx_delete_confirmation: Are you sure you want to delete the transaction from history?
+transport:
+  desc: 'Use transport to receive or send messages synchronously:'
+  tor_network: Tor network
+  connected: Connected
+  connecting: Connecting
+  disconnecting: Disconnecting
+  conn_error: Connection error
+  disconnected: Disconnected
+  receiver_address: 'Address of the receiver:'
+  incorrect_addr_err: 'Entered address is incorrect:'
+  tor_send_error: An error occurred during sending over Tor, make sure receiver is online, transaction was canceled.
+  tor_autorun_desc: Whether to launch Tor service on wallet opening to receive transactions synchronously.
+  tor_sending: Sending over Tor
+  tor_settings: Tor Settings
+  bridges: Bridges
+  bridges_desc: Setup bridges to bypass Tor network censorship if usual connection is not working.
+  bin_file: 'Binary file:'
+  conn_line: 'Connection line:'
+  bridges_disabled: Bridges disabled
+  bridge_name: 'Bridge %{b}'
+network:
+  self: Network
+  type: 'Network type:'
+  mainnet: Main
+  testnet: Test
+  connections: Connections
+  node: Integrated node
+  metrics: Metrics
+  mining: Mining
+  settings: Node settings
+  enable_node: Enable node
+  autorun: Autorun
+  disabled_server: 'Enable integrated node or add another connection method by pressing %{dots} in the top-left corner of the screen.'
+  no_ips: There are no available IP addresses on your system, server cannot be started, check your network connectivity.
+  available: Available
+  not_available: Not available
+  availability_check: Availability check
+  android_warning: Attention to Android users. To synchronize integrated node successfully, you must allow access to notifications and remove battery usage restrictions for the Goblin application at system settings of your phone. This is necessary operation for correct work of application in the background.
+sync_status:
+  node_restarting: Node is restarting
+  node_down: Node is down
+  initial: Node is starting
+  no_sync: Node is running
+  awaiting_peers: Waiting for peers
+  header_sync: Downloading headers
+  header_sync_percent: 'Downloading headers: %{percent}%'
+  tx_hashset_pibd: Downloading state (PIBD)
+  tx_hashset_pibd_percent: 'Downloading state (PIBD): %{percent}%'
+  tx_hashset_download: Downloading state
+  tx_hashset_download_percent: 'Downloading state: %{percent}%'
+  tx_hashset_setup_history: 'Preparing state (history): %{percent}%'
+  tx_hashset_setup_position: 'Preparing state (position): %{percent}%'
+  tx_hashset_setup: Preparing state
+  tx_hashset_range_proofs_validation: 'Validating state (range proofs): %{percent}%'
+  tx_hashset_kernels_validation: 'Validating state (kernels): %{percent}%'
+  tx_hashset_save: Finalizing chain state
+  body_sync: Downloading blocks
+  body_sync_percent: 'Downloading blocks: %{percent}%'
+  shutdown: Node is shutting down
+network_node:
+  header: Header
+  block: Block
+  hash: Hash
+  height: Height
+  difficulty: Difficulty
+  time: Time
+  main_pool: Main pool
+  stem_pool: Stem pool
+  data: Data
+  size: Size (GB)
+  peers: Peers
+  error_clean: Node data got corrupted, resync required.
+  resync: Resync
+  error_p2p_api: 'An error occurred during %{p2p_api} server initialization, check %{p2p_api} settings by selecting %{settings} at the bottom of the screen.'
+  error_config: 'An error occurred during configuration initialization, check settings by selecting %{settings} at the bottom of the screen.'
+  error_unknown: 'An error occurred during initialization, check integrated node settings by selecting %{settings} at the bottom of the screen or resync.'
+network_metrics:
+  loading: Metrics will be available after the synchronization
+  emission: Emission
+  inflation: Inflation
+  supply: Supply
+  block_time: Block time
+  reward: Reward
+  difficulty_window: 'Difficulty window %{size}'
+network_mining:
+  loading: Mining will be available after the synchronization
+  info: 'Mining server is enabled, you can change its settings by selecting %{settings} at the bottom of the screen. Data is updating when devices are connected.'
+  restart_server_required: Server restart is required to apply changes.
+  rewards_wallet: Wallet for rewards
+  server: Stratum server
+  address: Address
+  miners: Miners
+  devices: Devices
+  blocks_found: Blocks found
+  hashrate: 'Hashrate (C%{bits})'
+  connected: Connected
+  disconnected: Disconnected
+network_settings:
+  change_value: Change value
+  stratum_ip: 'Stratum IP address:'
+  stratum_port: 'Stratum port:'
+  port_unavailable: Specified port is unavailable
+  restart_node_required: Node restart is required to apply changes.
+  choose_wallet: Choose wallet
+  stratum_wallet_warning: Wallet must be opened to receive rewards.
+  enable: Enable
+  disable: Disable
+  restart: Restart
+  server: Server
+  api_ip: 'API IP address:'
+  api_port: 'API port:'
+  api_secret: 'Rest API and V2 Owner API token:'
+  foreign_api_secret: 'Foreign API token:'
+  disabled: Disabled
+  enabled: Enabled
+  ftl: 'The Future Time Limit (FTL):'
+  ftl_description: Limit on how far into the future, relative to a node's local time in seconds, the timestamp on a new block can be, in order for the block to be accepted.
+  not_valid_value: Entered value is not valid
+  full_validation: Full validation
+  full_validation_description: Whether to run a full chain validation when processing each block (except during synchronization).
+  archive_mode: Archive mode
+  archive_mode_desc: Run the node in full archive mode (more disk space and time will be required for synchronization).
+  attempt_time: 'Mining attempt time (in seconds):'
+  attempt_time_desc: The amount of time to attempt to mine on a particular header before stopping and re-collecting transactions from the pool
+  min_share_diff: 'The minimum acceptable share difficulty:'
+  reset_settings_desc: Reset node settings to default values
+  reset_settings: Reset settings
+  reset: Reset
+  tx_pool: Transaction pool
+  pool_fee: 'Base fee that is accepted into the pool:'
+  reorg_period: 'Reorg cache retention period (in minutes):'
+  max_tx_pool: 'Maximum number of transactions in the pool:'
+  max_tx_stempool: 'Maximum number of transactions in the stem-pool:'
+  max_tx_weight: 'Maximum total weight of transactions that can get selected to build a block:'
+  epoch_duration: 'Epoch duration (in seconds):'
+  embargo_timer: 'Embargo timer (in seconds):'
+  aggregation_period: 'Aggregation period (in seconds):'
+  stem_probability: 'Stem phase probability:'
+  stem_txs: Stem transactions
+  p2p_server: P2P server
+  p2p_port: 'P2P port:'
+  add_seed: Add DNS Seed
+  seed_address: 'DNS Seed address:'
+  add_peer: Add peer
+  peer_address: 'Peer address:'
+  peer_address_error: 'Enter IP address or DNS name (make sure specified host is available) in correct format, e.g.: 192.168.0.1:1234 or example.com:5678'
+  default: Default
+  allow_list: Allow list
+  allow_list_desc: Connect only to peers in this list.
+  deny_list: Deny list
+  deny_list_desc: Never connect to peers in this list.
+  favourites: Favourites
+  favourites_desc: A list of preferred peers to connect to.
+  ban_window: 'How much time (in seconds) a banned peer should stay banned:'
+  ban_window_desc: The decision to ban is made by node, based on the correctness of the data received from the peer.
+  max_inbound_count: 'Maximum number of inbound peer connections:'
+  max_outbound_count: 'Maximum number of outbound peer connections:'
+  reset_data_desc: Reset the node data. Use it with a caution only if there are problems with synchronization.
+  reset_data: Reset data
+modal:
+  cancel: Cancel
+  save: Save
+  add: Add
+modal_exit:
+  description: Are you sure you want to quit the application?
+  exit: Exit
+app_settings:
+  proxy: Proxy
+  proxy_desc: Whether to use proxy for network requests from the application.
+keyboard:
+  1: 1
+  2: 2
+  3: 3
+  4: 4
+  5: 5
+  6: 6
+  7: 7
+  8: 8
+  9: 9
+  0: 0
+  01: '-'
+  q: q
+  w: w
+  e: e
+  r: r
+  t: t
+  y: y
+  u: u
+  i: i
+  o: o
+  p: p
+  p1: '"'
+  a: a
+  s: s
+  d: d
+  f: f
+  g: g
+  h: h
+  j: j
+  k: k
+  l: l
+  l1: \
+  l2: ':'
+  z: z
+  x: x
+  c: c
+  v: v
+  b: b
+  n: n
+  m: m
+  m1: ','
+  m2: .
+  m3: /
+goblin:
+  home:
+    anonymous: "Anonymous"
+    connected_nym: "Connected over Nym"
+    nym_ready: "Nym ready · relays…"
+    connecting_nym: "Connecting to Nym…"
+    cant_reach_node: "Can't reach node"
+    node_synced: "Node synced"
+    syncing: "Syncing…"
+    block: "Block %{height}"
+    waiting_for_chain: "Waiting for chain…"
+    nav_wallet: "Wallet"
+    nav_pay: "Pay"
+    nav_activity: "Activity"
+    nav_receive: "Receive"
+    nav_settings: "Settings"
+    activity: "Activity"
+    empty_title: "No activity yet"
+    empty_sub: "Send or receive grin to get started."
+    recent: "Recent"
+    scan_to_pay: "Scan to pay"
+    type_amount: "Type an amount"
+    request: "Request"
+    pay: "Pay"
+    enter_amount: "Enter an amount to pay or request"
+  activity:
+    canceled: "canceled"
+    pending: "pending"
+    earlier: "Earlier"
+    today: "Today"
+    yesterday: "Yesterday"
+    title: "Activity"
+    requests: "Requests"
+    empty_title: "No activity yet"
+    empty_sub: "Your payments will appear here."
+    pending_header: "Pending"
+  receipt:
+    title: "Receipt"
+    not_found: "Transaction not found"
+    for_note: "For %{note}"
+    details: "Transaction details"
+    canceled: "Canceled"
+    expired: "Expired"
+    funds_returned: "Funds returned"
+    complete: "Complete"
+    payment_received: "Payment received"
+    payment_sent: "Payment sent successfully"
+    pending: "Pending"
+    confs: "%{c}/%{r} confirmations"
+    waiting_to_confirm: "Waiting to confirm"
+    paying: "Paying…"
+    you: "You"
+    to: "To"
+    from: "From"
+    nostr: "nostr"
+    fee_none: "None"
+    network_fee: "Network fee"
+    privacy: "Privacy"
+    privacy_value: "Mimblewimble + Nym"
+    transaction: "Transaction"
+    cancel_request: "Cancel request"
+    cancel_send: "Cancel payment"
+    cancel_send_confirm: "Tap again to cancel — they may still receive it"
+    cancel_send_done: "Payment cancelled — your funds are available again"
+    cancel_send_too_late: "This payment already went through and can't be cancelled"
+    waiting_to_receive: "Waiting for %{name} to receive…"
+  request:
+    title: "%{name} requests"
+    approve: "Approve"
+    decline: "Decline"
+  receive:
+    title: "Receive"
+    requesting: "Requesting %{amt}%{tsu} — share to get paid"
+    clear_request: "Clear request"
+    share_handle: "Share your handle to get paid"
+    copied: "Copied"
+    copy_nostr_id: "Copy nostr ID"
+    copy_address: "Copy address"
+    copy_npub: "Copy npub"
+    share_message: "Pay me on Goblin (goblin.st) — %{npub}"
+    privacy_note: "Your username is public. Payment contents stay encrypted over the network."
+  profile:
+    title: "Profile"
+    activity: "Activity"
+    no_activity: "No activity with them yet."
+    unblock: "Unblock"
+    block: "Block"
+    blocked_blurb: "Blocked — their payments and requests are dropped."
+    block_blurb: "Blocking drops their incoming payments and requests."
+  settings:
+    title: "Settings"
+    connected_nostr: "Connected to nostr"
+    connecting_relays: "Connecting to relays…"
+    identity: "Identity"
+    copy_npub: "Copy npub (public)"
+    rotate_key: "Rotate nostr key"
+    import_identity: "Import identity (.backup / nsec)"
+    backup_note: "Moving devices? Back up BOTH: your seed phrase (funds) and your identity .backup file (name + key)."
+    wallet: "Wallet"
+    display_unit: "Display unit"
+    relays: "Relays"
+    node: "Node"
+    slatepacks: "Slatepacks"
+    slatepacks_value: "Manual transaction"
+    lock_wallet: "Lock wallet"
+    switch_wallet: "Switch wallet"
+    advanced: "Advanced"
+    privacy: "Privacy"
+    mixnet_routing: "Mixnet routing"
+    messages_lookups: "Messages & lookups"
+    auto_accept: "Auto-accept"
+    pairing: "Pairing"
+    accept_anyone: "Anyone"
+    accept_contacts: "Contacts only"
+    accept_ask: "Always ask"
+    requests: "Requests"
+    incoming_requests: "Incoming requests"
+    incoming_requests_sub: "Let others request money from you"
+    appearance: "Appearance"
+    theme: "Theme"
+    theme_light: "Light"
+    theme_dark: "Dark"
+    theme_yellow: "Yellow"
+    archive: "Archive"
+    export_archive: "Export archive"
+    wipe_history: "Wipe payment history"
+    about: "About"
+    goblin: "Goblin"
+    build: "Build %{build}"
+    network: "Network"
+    network_value: "MW + Nym mixnet + nostr"
+    third_party: "Third party"
+    grim: "GRIM (upstream wallet)"
+    grin_node: "Grin node"
+    sp_intro: "Advanced — exchange raw slatepacks by hand, the way GRIM does. Use this only when you can't pay or get paid through a username."
+    sp_receive_group: "Receive or finalize"
+    sp_receive_blurb: "Paste a slatepack someone gave you. Goblin receives the payment, pays the invoice, or finalizes and posts it."
+    sp_process: "Process slatepack"
+    sp_paste_first: "Paste a slatepack first."
+    sp_reply_ready: "Reply ready — send it back to the sender."
+    sp_finalizing: "Finalizing and posting to the chain…"
+    sp_create_group: "Create a payment"
+    sp_create_blurb: "Make a slatepack to hand to someone. They receive it, send the reply back, and you finalize it above."
+    sp_amount_hint: "Amount in grin"
+    sp_addr_hint: "Recipient address (optional)"
+    sp_create: "Create slatepack"
+    sp_ready: "Slatepack ready — hand it to the recipient."
+    sp_amount_gt_zero: "Enter an amount greater than zero."
+    sp_to_send: "Slatepack to send"
+    sp_copy: "Copy slatepack"
+    rotate_line1: "• You get a brand-new RANDOM key; the old npub stops receiving. There is no derivation chain between them."
+    rotate_line2: "• The new key is NOT recoverable from your seed — back up the new nsec right after rotating."
+    rotate_line3: "• Your username is RELEASED — claim the same or a new name right after (anyone else can grab it too once it's free)."
+    rotate_line4: "• Payments still in flight to the old key WILL be disrupted — wait for pending payments to finish first."
+    rotate_line5: "• Contacts who saved your npub directly must re-find you — share your new npub or re-claimed username."
+    cancel: "Cancel"
+    continue: "Continue"
+    final_confirmation: "Final confirmation"
+    rotate_confirm_blurb: "This cannot be undone from the app. Type RESET and enter your wallet password to rotate."
+    type_reset: "Type RESET"
+    wallet_password: "Wallet password"
+    rotate_key_btn: "Rotate key"
+    rotating_key: "Rotating key…"
+    key_rotated: "Key rotated"
+    new_npub: "New npub: %{npub}"
+    backup_new_key: "Back up the NEW secret key now — your seed cannot recover it."
+    copy_new_nsec: "Copy new nsec backup"
+    done: "Done"
+    rotation_failed: "Rotation failed"
+    close: "Close"
+    import_identity_title: "Import identity"
+    import_blurb: "Replaces this wallet's nostr identity — choose a GOBLIN .backup file, or paste a bare nsec. A backup also restores your username and history. Back up the current key first if you still need it."
+    import_nsec_hint: "nsec1… or pasted backup"
+    backup_password_hint: "Backup password (only if exported elsewhere)"
+    import_btn: "Import"
+    importing: "Importing…"
+    identity_replaced: "Identity replaced"
+    now_using: "Now using: %{npub}"
+    import_failed: "Import failed"
+    name_authority: "Name authority"
+    name_authority_title: "Change name authority"
+    name_authority_blurb: "The server that registers and verifies names. Point it at another instance to use and pay names hosted there."
+    name_authority_invalid: "Enter a full URL (https://…)."
+    reset: "Reset"
+    save: "Save"
+    backup_file: "Back up to a file"
+    choose_backup_file: "Choose a .backup file"
+    backup_read_failed: "Couldn't read that file."
+    backup_saved: "Backup saved"
+    backup_saved_sub: "Keep the .backup file safe — anyone with it AND your password can restore your identity."
+    backup_file_title: "Back up identity"
+    backup_file_blurb: "Creates one encrypted .backup file with your username and key. Enter your wallet password to seal it."
+    backup_write_failed: "Couldn't save the file."
+    create_backup: "Create backup"
+    registered: "Registered %{name}"
+    released_msg: "Released — the name is up for grabs"
+    release_confirm: "Release %{name}?"
+    release_blurb: "It's up for grabs the moment it's free — anyone can claim it, including the next key you rotate to. You won't be able to register another username for 10 minutes."
+    releasing: "Releasing…"
+    keep_it: "Keep it"
+    release_it: "Release it"
+    username: "Username"
+    username_note: "Shown as you. Public on goblin.st. Payments stay encrypted."
+    release_username: "Release username"
+    pick_username: "Pick a username — optional"
+    working: "Working…"
+    claim: "Claim"
+    err_just_taken: "That username was just taken"
+    err_cooldown: "You recently released a username — you can register a new one within 10 minutes."
+    err_unreachable: "Couldn't reach goblin.st — connection hiccup. Try again."
+    err_release: "Couldn't release: %{err}"
+    avail_available: "Available!"
+    avail_taken: "Taken"
+    avail_reserved: "Reserved"
+    avail_invalid: "Names are 3–20 chars: a–z, 0–9, _ or -"
+    avail_quarantined: "Not available"
+    avail_unknown: "Couldn't check — connection hiccup. Try again."
+  advanced:
+    title: "Advanced"
+    intro: "Low-level wallet tools from GRIM. You won't normally need these."
+    own_node_desc: "Sync a full Grin node on this device instead of trusting a public one."
+    own_node_active: "Running your own node"
+    repair: "Repair wallet"
+    repair_desc: "Re-scan the chain and restore any missing outputs. This can take a while."
+    repair_unavailable: "Needs a synced node connection first."
+    repairing: "Repairing… %{pct}%"
+    restore: "Restore wallet"
+    restore_desc: "Delete local data and rebuild from your seed. Use this if a repair didn't help — you'll re-open the wallet after."
+    restore_confirm: "Tap again to restore"
+    show_phrase: "Recovery phrase"
+    phrase_desc: "Your 24 grin seed words — the only way to recover funds. Keep them offline and private."
+    reveal: "Show phrase"
+    hide: "Hide"
+    password: "Wallet password"
+    wrong_password: "Wrong password."
+    delete: "Delete wallet"
+    delete_desc: "Permanently remove this wallet from this device. Without your seed, funds can't be recovered."
+    delete_confirm: "Tap again to delete"
+    manage_node: "Manage node connection"
+    repair_confirm: "Yes, repair now"
+    repair_confirm_note: "Repair re-scans the chain and can take a few minutes."
+    restore_confirm_note: "This erases local data and rebuilds it from your seed — it can take several minutes."
+  privacy:
+    title: "Network privacy"
+    intro: "Goblin sends its private traffic through the Nym mixnet — a five-hop network that hides who is talking to whom, so a relay can't link a payment back to you."
+    payments: "Payments"
+    payments_blurb: "Every nostr message carrying a slatepack."
+    usernames: "usernames"
+    usernames_blurb: "NIP-05 name lookups to and from goblin.st."
+    price_avatars: "Price"
+    price_avatars_blurb: "The live fiat rate shown next to amounts."
+    over_mixnet: "Over the mixnet"
+    direct_connection: "Direct connection"
+    grin_node: "Grin node"
+    grin_node_blurb: "Block sync and broadcasting your transaction to the network. This is public chain data, the same for everyone, and isn't linked to your identity."
+  pairing:
+    title: "Pairing"
+    intro: "What your balance and amounts are shown against."
+    pair_with: "Pair with"
+    rates_note: "Rates fetch over the Nym mixnet, only while a pairing is on — off means no rate request leaves your device."
+  relays:
+    title: "Relays"
+    intro: "Payment messages are mirrored to every relay below; one reachable relay is enough to receive."
+    your_relays: "Your relays"
+    add_relay: "Add relay"
+    add_relay_btn: "Add relay"
+    save_reconnect: "Save & reconnect"
+    none: "none"
+    count: "%{n} relays"
+  node:
+    title: "Node"
+    connection: "Connection"
+    integrated: "Integrated node"
+    applies_after: "Applies after the wallet is locked and unlocked again."
+    add_external: "Add external node"
+    api_secret_hint: "API secret (optional)"
+    add_node: "Add node"
+    integrated_host: "integrated node"
+    summary_syncing: "%{conn} · syncing"
+    summary_block: "Block %{height} · %{conn}"
+  nips:
+    title: "nostr & NIPs"
+    intro1: "Goblin speaks nostr — an open protocol of signed messages passed through simple relay servers. Your wallet carries its own nostr identity: a standalone random key, kept deliberately independent of your funds and seed. Every payment travels as an end-to-end encrypted direct message between identities, with the slatepack riding inside."
+    intro2: "goblin.st is Goblin's name service: claiming a username publishes a name → key mapping there (NIP-05), so people can pay you instead of a long npub. The username is public; payment contents never are. NIPs are the protocol's building blocks — tap one to read the spec."
+    n05_title: "Names"
+    n05_blurb: "Maps username@goblin.st to your key, so handles work like addresses."
+    n17_title: "Private messages"
+    n17_blurb: "The encrypted DM envelope every payment travels in."
+    n44_title: "Encryption"
+    n44_blurb: "The authenticated cipher used inside those messages."
+    n49_title: "Key encryption"
+    n49_blurb: "How the secret key is stored at rest, locked by your password."
+    n59_title: "Gift wrap"
+    n59_blurb: "Wraps messages so relays can't see who is talking to whom."
+    n98_title: "HTTP auth"
+    n98_blurb: "Signs the username registration request to goblin.st."
+  onboarding:
+    intro:
+      private_money_head: "Private money"
+      private_money_body: "Goblin is a wallet for grin — digital cash with no amounts or addresses on its chain."
+      send_like_message_head: "Send like a message"
+      send_like_message_body: "Pay a username or npub and it arrives as an end-to-end encrypted message over nostr and the Nym mixnet — no one in between can see the amount or who's involved."
+      yours_alone_head: "Yours alone"
+      yours_alone_body: "Keys, names and history live on this device. Built on the GRIM wallet."
+      get_started: "Get started"
+      footnote: "Takes about a minute. You can change everything later."
+    node:
+      kicker: "STEP 1 OF 3 · NETWORK"
+      title: "How should Goblin\nwatch the chain?"
+      own_title: "Run my own node"
+      own_badge: "Private"
+      own_body: "Trusts no one — your wallet checks the chain itself. Syncs in the background while you finish setup."
+      connect_title: "Connect to a node"
+      connect_badge: "Instant"
+      connect_body: "No sync wait. The node you pick can see your wallet's queries."
+      changeable: "Changeable any time in Settings → Node."
+      continue: "Continue"
+      url_invalid: "Node URL must start with http:// or https://"
+    wallet:
+      kicker: "STEP 2 OF 3 · WALLET"
+      title: "Set up your wallet"
+      create_new: "Create new"
+      restore_from_seed: "Restore from seed"
+      name_hint: "Wallet name"
+      password_hint: "Password"
+      repeat_password_hint: "Repeat password"
+      restore_hint: "Have your seed words ready — you'll enter them next."
+      create_hint: "Next you'll get 24 seed words to write down. They are the money — anyone holding them holds your funds."
+      continue: "Continue"
+      passwords_no_match: "Passwords don't match"
+    words:
+      kicker: "STEP 2 OF 3 · WALLET"
+      title_restore: "Enter your seed words"
+      title_create: "Write these words down"
+      write_down_hint: "On paper, in order. Anyone with these words can take your funds; without them a lost device means lost funds."
+      paste: "Paste"
+      scan_qr: "Scan QR"
+      copy_clipboard: "Copy to clipboard (avoid this)"
+      restore_wallet: "Restore wallet"
+      wrote_them_down: "I wrote them down"
+      fill_every_word: "Fill every word — tap a word to edit it, or paste the phrase."
+    confirm:
+      kicker: "STEP 2 OF 3 · WALLET"
+      title: "Now prove it"
+      enter_hint: "Enter the words you just wrote down. Tap a word to type it."
+      paste: "Paste"
+      create_wallet: "Create wallet"
+      keep_going: "Keep going — every word, in order."
+    identity:
+      kicker: "STEP 3 OF 3 · IDENTITY"
+      title: "Your payment identity"
+      key_being_made: "key being made…"
+      connected_nym: "connected over Nym"
+      connecting_nym: "connecting over Nym…"
+      fresh_key_blurb: "A payment key that isn't part of your seed — rotate it anytime to stay private, without touching your funds."
+      clean_slate_blurb: "Want a clean slate? Swap in a brand-new key any time — the new you isn't linked to the old one. Same wallet, fresh face."
+      pick_username: "Pick a username — optional"
+      username_blurb: "Friends pay your name instead of a long key. Optional — claim one any time."
+      username_field_hint: "yourname"
+      working: "Working…"
+      claim_username: "Claim username"
+      available_when_connected: "Available once the mixnet connects — or skip and claim later."
+      youre: "You're %{name}"
+      claimed_title: "%{name} is yours"
+      claimed_blurb: "Friends can now pay you by name. You're all set — open your wallet."
+      open_wallet: "Open my wallet"
+      skip_for_now: "Skip for now"
+      import_existing: "Already have a Goblin identity? Import it"
+      import_title: "Import your identity"
+      import_blurb: "Paste your nsec or pick a .backup file to keep your existing key and username instead of this new one."
+    errors:
+      cant_open: "Couldn't open the wallet: %{err}"
+      cant_create: "Couldn't create the wallet: %{err}"
+  send:
+    scan_to_request: "Scan to request"
+    scan_to_pay: "Scan to pay"
+    tab_scan: "Scan"
+    tab_my_code: "My Code"
+    request_from: "Request from"
+    send_to: "Send to"
+    search_hint: "handle, npub, or name"
+    suggested: "%{icon}  Suggested"
+    no_contacts: "No contacts yet. Find someone by their handle."
+    no_profile: "no profile"
+    tag_contact: "contact"
+    tag_on_nostr: "on nostr"
+    searching_nostr: "Searching nostr…"
+    unverified_title: "Pay an unverified key?"
+    unverified_body: "No nostr profile is published for this key — it may be brand new, anonymous, or mistyped. Double-check it's the right one before sending."
+    keep_looking: "Keep looking"
+    pay_anyway: "Pay anyway"
+    scan_not_recipient: "That QR isn't a goblin recipient — expected an npub or handle"
+    scan_prompt: "Position a goblin code in view to activate"
+    scan_to_pay_me: "Scan to pay me"
+    share_btn: "%{icon} Share"
+    share_message: "Pay me on Goblin — %{handle}\n%{link}\nnpub: %{npub}"
+    none_found: "No one found for %{label}"
+    enter_recipient: "Enter a handle, npub, or name"
+    amount_title: "Amount"
+    to_name: "To %{name}"
+    not_enough: "You don't have enough grin"
+    max: "Max"
+    note_label: "Note"
+    note_hint: "Add a note…"
+    add_note: "Add a note"
+    edit_note: "Edit note"
+    note_cancel: "Cancel"
+    note_save: "Save"
+    review_btn: "Review"
+    confirm_request: "Confirm request"
+    review_title: "Review"
+    requesting_from: "Requesting from %{name}"
+    youre_sending: "You're sending %{name}"
+    row_from: "From"
+    row_to: "To"
+    row_note: "Note"
+    row_they_pay: "They pay"
+    row_they_pay_val: "Only if they approve"
+    row_delivery: "Delivery"
+    row_delivery_val: "NIP-44 encrypted, over Nym"
+    row_network_fee: "Network fee"
+    row_network_fee_val: "Deducted from your balance"
+    row_privacy: "Privacy"
+    row_privacy_val: "Mimblewimble + Nym"
+    send_request_btn: "Send request"
+    request_approve_hint: "They'll get a request to approve"
+    hold_to_send: "Hold to send"
+    lower_amount: "Go back and lower the amount"
+    hold_confirm_hint: "Press and hold to confirm"
+    requesting: "Requesting…"
+    sending: "Sending…"
+    they: "They"
+    request_blocked: "%{who} isn't accepting requests. Ask them to send you grin instead."
+    failed_request_title: "Couldn't request"
+    failed_send_title: "Couldn't send"
+    failed_request_body: "We couldn't deliver the request. Ask them to send you grin instead."
+    failed_send_body: "The payment wasn't delivered. Your grin is safe — try again."
+    try_again_btn: "Try again"
+    close_btn: "Close"
+    success:
+      requested: "Requested"
+      sent: "Sent"
+      from: "from"
+      to: "to"
+      subtitle: "%{dir} %{who} · just now"
+      done_btn: "Done"
+      receipt_btn: "Receipt"

@@ -1,0 +1,145 @@
+# Release builds on native runners — one per platform, no cross-compilation
+# (nokhwa's camera backends want each platform's own SDK; see NEXT-STEPS judgment).
+#
+# Manually triggered (Actions → Release → Run workflow) against an existing tag
+# until a run has been validated end-to-end; then this can move to a tag trigger.
+# Android is built locally via scripts/android.sh for now — the gradle `ci`
+# flavor expects maven credentials this repository does not carry.
+name: Release
+
+on:
+  # macOS is DEFERRED until Linux/Windows/Android are polished — so this is
+  # manual-dispatch only for now (no auto-build on release publish). When macOS
+  # is back on the table, re-add `release: { types: [published] }` here and the
+  # macOS job will attach a universal build to each release automatically.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing release tag to build and upload artifacts to (e.g. build27)"
+        required: true
+
+permissions:
+  contents: write
+
+env:
+  TAG: ${{ inputs.tag || github.event.release.tag_name }}
+  # aws-lc-sys (via nym-sdk) needs NASM on native Windows; use its prebuilt NASM.
+  AWS_LC_SYS_PREBUILT_NASM: 1
+
+jobs:
+  linux:
+    name: Linux x86_64
+    runs-on: ubuntu-latest
+    # Built locally and uploaded with the release; only run on manual dispatch.
+    if: github.event_name == 'workflow_dispatch'
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.tag || github.event.release.tag_name }}
+          submodules: recursive
+      - uses: ./.github/actions/fetch-nym
+      - name: Build
+        shell: bash
+        run: GOBLIN_BUILD="${TAG#build}" cargo build --release
+      - name: Package
+        run: |
+          tar -C target/release -czf "goblin-$TAG-linux-x86_64.tar.gz" goblin
+          sha256sum "goblin-$TAG-linux-x86_64.tar.gz" > "goblin-$TAG-linux-x86_64-sha256sum.txt"
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.tag || github.event.release.tag_name }}
+          files: |
+            goblin-${{ inputs.tag || github.event.release.tag_name }}-linux-x86_64.tar.gz
+            goblin-${{ inputs.tag || github.event.release.tag_name }}-linux-x86_64-sha256sum.txt
+
+  windows:
+    name: Windows x86_64 (MSVC)
+    runs-on: windows-latest
+    # Built locally and uploaded with the release; only run on manual dispatch.
+    if: github.event_name == 'workflow_dispatch'
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.tag || github.event.release.tag_name }}
+          submodules: recursive
+      - uses: ./.github/actions/fetch-nym
+      - name: Build
+        shell: bash
+        run: GOBLIN_BUILD="${TAG#build}" cargo build --release
+      - name: Build MSI installer (cargo-wix / WiX 3 — same packaging as GRIM)
+        shell: pwsh
+        run: |
+          # The .msi is built from wix/main.wxs (the cargo-wix default template:
+          # WixUI_Minimal + launch-after-install), so `cargo wix` wires up the
+          # WixUI/WixUtil extensions, cultures and CargoTargetBinDir for us. The
+          # installer + shortcuts + Add/Remove-Programs entry carry wix/Product.ico
+          # (the yellow Goblin icon). --no-build reuses the release exe above so the
+          # embedded GOBLIN_BUILD number is preserved.
+          cargo install cargo-wix --locked
+          $wix = Get-ChildItem 'C:\Program Files (x86)' -Directory -Filter 'WiX Toolset v3*' -ErrorAction SilentlyContinue | Select-Object -Last 1
+          if (-not $wix) {
+            choco install wixtoolset --no-progress -y | Out-Null
+            $wix = Get-ChildItem 'C:\Program Files (x86)' -Directory -Filter 'WiX Toolset v3*' | Select-Object -Last 1
+          }
+          $env:WIX = "$($wix.FullName)\"
+          $env:PATH = "$($wix.FullName)\bin;$env:PATH"
+          $msi = "goblin-$env:TAG-win-x86_64.msi"
+          cargo wix --no-build --nocapture -o "$msi"
+          if ($LASTEXITCODE -ne 0 -or -not (Test-Path "$msi")) { throw "cargo wix failed to produce $msi" }
+          (Get-FileHash "$msi" -Algorithm SHA256).Hash.ToLower() + "  $msi" | Out-File -Encoding ascii "goblin-$env:TAG-win-x86_64-msi-sha256sum.txt"
+      - name: Package portable zip
+        shell: bash
+        run: |
+          7z a "goblin-$TAG-win-x86_64.zip" ./target/release/goblin.exe
+          sha256sum "goblin-$TAG-win-x86_64.zip" > "goblin-$TAG-win-x86_64-sha256sum.txt"
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.tag || github.event.release.tag_name }}
+          files: |
+            goblin-${{ inputs.tag || github.event.release.tag_name }}-win-x86_64.msi
+            goblin-${{ inputs.tag || github.event.release.tag_name }}-win-x86_64-msi-sha256sum.txt
+            goblin-${{ inputs.tag || github.event.release.tag_name }}-win-x86_64.zip
+            goblin-${{ inputs.tag || github.event.release.tag_name }}-win-x86_64-sha256sum.txt
+
+  macos:
+    name: macOS universal
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.tag || github.event.release.tag_name }}
+          submodules: recursive
+      - uses: ./.github/actions/fetch-nym
+      - name: Build both architectures
+        run: |
+          export GOBLIN_BUILD="${TAG#build}"
+          rustup target add aarch64-apple-darwin x86_64-apple-darwin
+          cargo build --release --target aarch64-apple-darwin
+          cargo build --release --target x86_64-apple-darwin
+      - name: Universal binary into Goblin.app bundle
+        run: |
+          # Combine both arches into one universal Mach-O and drop it into the
+          # app bundle's executable slot (CFBundleExecutable=goblin).
+          lipo -create -output goblin \
+            target/aarch64-apple-darwin/release/goblin \
+            target/x86_64-apple-darwin/release/goblin
+          cp goblin macos/Goblin.app/Contents/MacOS/goblin
+          chmod +x macos/Goblin.app/Contents/MacOS/goblin
+          # Drop the placeholder that kept the empty dir tracked in git.
+          rm -f macos/Goblin.app/Contents/MacOS/.gitignore
+          # Ad-hoc sign (no Apple cert in CI). REQUIRED on Apple Silicon: lipo
+          # strips the per-arch signatures cargo/ld add, and an unsigned arm64
+          # Mach-O is killed by the OS. Ad-hoc gives a valid (if unidentified)
+          # signature; users still right-click → Open past Gatekeeper.
+          codesign --force --sign - macos/Goblin.app/Contents/MacOS/goblin
+          codesign --force --sign - macos/Goblin.app
+          # ditto is the macOS-correct way to zip an .app (preserves the bundle
+          # layout, symlinks and permissions; plain `zip` mangles bundles).
+          ditto -c -k --keepParent macos/Goblin.app "goblin-$TAG-macos-universal.zip"
+          shasum -a 256 "goblin-$TAG-macos-universal.zip" > "goblin-$TAG-macos-universal-sha256sum.txt"
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.tag || github.event.release.tag_name }}
+          files: |
+            goblin-${{ inputs.tag || github.event.release.tag_name }}-macos-universal.zip
+            goblin-${{ inputs.tag || github.event.release.tag_name }}-macos-universal-sha256sum.txt

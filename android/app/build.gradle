@@ -1,0 +1,114 @@
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    compileSdk = 36
+    ndkVersion '29.0.14206865'
+    buildToolsVersion = '36.1.0'
+
+    defaultConfig {
+        applicationId "st.goblin.wallet"
+        minSdk 24
+        targetSdk 36
+        versionCode 5
+        versionName "0.3.6"
+    }
+
+    lint {
+        checkReleaseBuilds false
+    }
+
+    def keystorePropertiesFile = rootProject.file("keystore.properties")
+    def keystoreProperties = new Properties()
+    if (keystorePropertiesFile.exists()) {
+        keystoreProperties.load(new FileInputStream(keystorePropertiesFile))
+
+        signingConfigs {
+            release {
+                keyAlias keystoreProperties['keyAlias']
+                keyPassword keystoreProperties['keyPassword']
+                storeFile file(keystoreProperties['storeFile'])
+                storePassword keystoreProperties['storePassword']
+            }
+        }
+
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+        }
+        if (keystorePropertiesFile.exists()) {
+            signedRelease {
+                initWith release
+                signingConfig signingConfigs.release
+            }
+        }
+        debug {
+            minifyEnabled false
+            debuggable true
+        }
+    }
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+    namespace 'mw.gri.android'
+
+    flavorDimensions "mode"
+
+    productFlavors {
+        ci {
+            dimension "mode"
+        }
+        local {
+            dimension "mode"
+        }
+    }
+
+    applicationVariants.all { variant ->
+        def flavor = variant.productFlavors[0].name
+
+        // The ci branch reads the private-mirror properties at configuration time,
+        // which runs for every variant — only enter it when the mirror is configured.
+        if (flavor == "ci" && project.hasProperty("mavenHost")) {
+            repositories {
+                maven {
+                    credentials {
+                        username "$mavenUser"
+                        password "$mavenPassword"
+                    }
+                    url "$mavenHost/repository/maven-central/"
+                    allowInsecureProtocol = true
+                }
+                maven {
+                    credentials {
+                        username "$mavenUser"
+                        password "$mavenPassword"
+                    }
+                    url "$mavenHost/repository/google-android-maven/"
+                    allowInsecureProtocol = true
+                }
+            }
+        } else if (flavor == "local") {
+            repositories {
+                google()
+                mavenCentral()
+            }
+        }
+    }
+}
+
+dependencies {
+    implementation 'androidx.appcompat:appcompat:1.7.0'
+
+    // To use the Games Activity library
+    implementation "androidx.games:games-activity:2.0.2"
+
+    // Android Camera
+    implementation 'androidx.camera:camera-core:1.5.1'
+    implementation 'androidx.camera:camera-camera2:1.5.1'
+    implementation 'androidx.camera:camera-lifecycle:1.5.1'
+}

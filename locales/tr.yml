@@ -1,0 +1,805 @@
+lang_name: Türkçe
+copy: Kopyala
+paste: Yapistir
+continue: Devam
+complete: Tamamla
+error: Hata
+retry: Tekrar Dene
+close: Kapa
+change: Degistir
+show: Goster
+delete: Sil
+clear: Temizle
+create: Olustur
+id: Id
+kernel: Kernel
+settings: Ayarlar
+language: Dil
+scan: Scan
+qr_code: QR kod
+scan_qr: QR kod tara
+repeat: Tekrar
+scan_result: Tarama sonucu
+back: Geri
+share: Paylasmak
+theme: 'Tema:'
+dark: Karanlik
+light: Isik
+file: Dosya
+choose_file: Dosya seçin
+choose_folder: Klasör seç
+crash_report: Ariza Raporu
+crash_report_warning: Uygulama beklenmedik bir sekilde kapandi son kez, kilitlenme raporunu gelistiricilerle paylasabilirsiniz.
+confirmation: Onay
+enter_url: URL'yi girin
+max_short: MAKS
+files_location: Dosya konumu
+moving_files: Dosyalari Tasima
+wrong_path_error: Yanlis yol belirtildi
+check_updates: Başlangiçta güncellemeleri kontrol edin
+update_available: Güncelleme mevcut!
+changelog: 'Değişiklik Günlüğü:'
+wallets:
+  await_conf_amount: Onay bekleniyor
+  await_fin_amount: Tamamlanma bekleniyor
+  locked_amount: Kilitli
+  txs_empty: 'Koinleri al/gonder icin ekranin altinda bulunan   %{receive} / %{send} sekmeleri, cuzdan ayarlar icin %{settings} sekmesini kullanin.'
+  title: Goblin
+  create_desc: Yeni cuzdan olustur veya var olan bakiyeli cuzdani kurtarma kelimelerinizle canlandirin.
+  add: Cuzdan ekle
+  name: 'Ad:'
+  pass: 'Sifre:'
+  pass_empty: Cuzdan Sifresini girin
+  current_pass: Su anki sifre:'
+  new_pass: 'Yeni sifre:'
+  min_tx_conf_count: 'Tx islem için Minimum onay:'
+  recover: Restore et
+  recovery_phrase: Kurtarma kelimeleri
+  words_count: 'Kelime sayisi:'
+  enter_word: 'Kelimeyi gir #%{sira}:'
+  not_valid_word: Girilen kelime yanlis
+  not_valid_phrase: Girilen kurtarma kelimeleri gecerli degil
+  create_phrase_desc: Kurtarma kelimelerini yazın ve mutlaka saklayin!
+  restore_phrase_desc: Kaydettiginiz kurtarma kelimelerini girin.
+  setup_conn_desc: Cuzdan baglanma metodu Sec.
+  conn_method: Baglanti metodu
+  ext_conn: 'Harici baglantilar:'
+  add_node: Node ekle
+  node_url: 'Node URL:'
+  node_secret: 'API Secret (optional):'
+  invalid_url: Girilen URL gecersiz
+  open: Cuzdani Ac
+  wrong_pass: Girilen sifre yanlis
+  locked: Kilitli
+  unlocked: Kilitsiz
+  enable_node: 'Cuzdani kullanmak için Tumlesik node etkinlestirin veya ekranin altindaki %{settings} ogesini secerek  baska baglanti metodu secin.'
+  node_loading: 'Cuzdan tumlesik node senkronize olunca yuklenecektir, ekranin altindan baglanma metod %{settings} degistirebilirsiniz.'
+  loading: Yukleniyor
+  closing: Kapaniyor
+  checking: Denetleniyor
+  default_wallet: Varsayilan cuzdan
+  new_account_desc: 'Yemi hesap ad girin:'
+  wallet_loading: Cuzdan yukleniyor
+  wallet_closing: Cuzdan kapaniyor
+  wallet_checking: Cuzdan denetleniyor
+  tx_loading: Islemler yukleniyor
+  default_account: Varsayilan hesap
+  accounts: Hesaplar
+  tx_sent: Gonderildi
+  tx_received: Alindi
+  tx_sending: Gonderiliyor
+  tx_receiving: Aliniyor
+  tx_confirming: Onaylaniyor
+  tx_canceled: Iptal edildi
+  tx_cancelling: Iptal ediliyor
+  tx_finalizing: Islem tamamlaniyor
+  tx_posting: Islem kaydetme
+  tx_confirmed: Onaylandi
+  txs: Islemler
+  tx: Islem
+  messages: Mesajlar
+  transport: Transferler
+  input_slatepack_desc: 'Islemi Tamamlamak veya cevap Slatepack olusturmak için mesaji girin:'
+  parse_slatepack_err: 'Girilen mesaji okurken hata olustu,girilien mesaji tekrar kontrol et:'
+  pay_balance_error: 'Hesap bakiyesi girilen %{amount} ツ ve ağ ücretini ödemek için yetersiz.'
+  parse_i1_slatepack_desc: '%{amount} ツ ödemek için bu  mesaji aliciya gönderin:'
+  parse_i2_slatepack_desc: '%{amount} ツ Almak için bu islemi tamamlayin:'
+  parse_i3_slatepack_desc: '%{amount} almak için mesaji tamamlama islemi postalayin:'
+  parse_s1_slatepack_desc: '%{amount} ツ almak için mesaji ödeyecek kisiye gönderin:'
+  parse_s2_slatepack_desc: 'Göndereciğiniz  %{amount} ツ islemini  tamamlayin:'
+  parse_s3_slatepack_desc: '%{amount} ツ gönderim  tamamlamak için islemi postalayin:'
+  resp_slatepack_err: 'Cevap slateapack olusturulurken bir hata olustu, girisi kontrol edin:'
+  resp_exists_err: Bu islem zaten mevcut.
+  resp_canceled_err: Bu islem zaten iptal edildi.
+  create_request_desc: 'Para Almak veya göndermek için talep olustur:'
+  send_request_desc: '%{amount} ツ göndermek için bir istek olusturdunuz. Bu mesaji aliciya gönder:'
+  send_slatepack_err: Para gönderme isteği olusturulurken bir hata olustu, girisi kontrol edin.
+  invoice_desc: 'Almak istediginiz tutar %{amount} ツ talebiniz. Slatepack mesajini gondericiye ilet:'
+  invoice_slatepack_err: Fatura duzenlenirken bir hata olustu, girilen bilgiyi kontrol edin.
+  finalize_slatepack_err: 'TX islemi tamamlanirken hata olustu, girilen bilgiyi kontrol edin:'
+  finalize: Tamamla
+  use_dandelion: Dandelion kullan
+  enter_amount_send: '%{amount} ツ var. GONDERIM miktari gir:'
+  enter_amount_receive: 'ALIM miktari gir:'
+  recovery: Kurtarma
+  repair_wallet: Cuzdani Onar
+  repair_desc: Cuzdani check et,yapilmis, gorunmeyen islemler için resynch biraz zaman alir.
+  repair_unavailable: Cuzdani yeniden tam senkronize etmek için Node baglantisi aktif olmali.
+  delete: Cuzdani Sil
+  delete_conf: Cuzdan silinecektir, emin misiniz?
+  delete_desc: Gelecekte, bakiyeli cuzdaninizi restore etmek için kurtarma kelimelerinizi mutlaka saklayin.
+  wallet_loading_err: 'Cuzdan senkronize edilirken hata olustu, tekrar deneyin veya ekranin altinda bulunan ayarlar %{settings} ogesinden baglanti metodunu degistirin.'
+  wallet: Cuzdan
+  send: Gonder
+  receive: Al
+  settings: Cuzdan ayarlar
+  tx_send_cancel_conf: Gonderim tx iptal
+  tx_receive_cancel_conf: Gelen tx iptal
+  rec_phrase_not_found: Sifre kelime bulunmuyor
+  restore_wallet_desc: Cuzdani restore et
+  fee_base_desc: 'Ücret (taban değeri%{value}):'
+  payment_proof: Ödeme kaniti
+  payment_proof_desc: 'Islemi doğrulamak için alinan ödeme kanitini girin:'
+  payment_proof_valid: 'Girilen ödeme kaniti geçerlidir:'
+  payment_proof_error: 'Girilen ödeme kaniti geçerli değildir:'
+  tx_delete_confirmation: Islemi geçmişten silmek istediğinizden emin misiniz?
+transport:
+  desc: 'Adresten senkronize GONDER veya AL:'
+  tor_network: Tor network
+  connected: Baglandi
+  connecting: Baglaniyor
+  disconnecting: Baglanti kesiliyor
+  conn_error: Bagalanti hatasi
+  disconnected: Baglanti yok
+  receiver_address: 'Alicinin adresi:'
+  incorrect_addr_err: 'Girilen adres hatali:'
+  tor_send_error: Tor adresi uzerinden gonderimde aksaklik olustu, alici online olmasi gerek, islem iptal edildi.
+  tor_autorun_desc: Islemleri Tor adresi olarak AL,bunun için  cuzdan acilisinda Tor hizmetinin baslatilip baslatilmayacagi.
+  tor_sending: Tor adrese gonderiliyor
+  tor_settings: Tor Ayarlar
+  bridges: Bridges
+  bridges_desc: Setup bridges to bypass Tor network censorship if usual connection is not working.
+  bin_file: 'Binary file:'
+  conn_line: 'Baglanti line:'
+  bridges_disabled: Bridges etkin degil
+  bridge_name: 'Bridge %{b}'
+network:
+  self: Network
+  type: 'Network tipi:'
+  mainnet: Mainnet
+  testnet: Test agi
+  connections: Baglantilar
+  node: Tumlesik node
+  metrics: Metrikler
+  mining: Madencilik
+  settings: Node ayarlar
+  enable_node: Nodu BASLAT
+  autorun: Autorun
+  disabled_server: 'Tumlesik Nodu Baslat veya ust sol kosede %{dots} basarak baska bir baglanti metodu ekleyin.'
+  no_ips: Sisteminizde hic mevcut IP adresleri yok, server baslatilamadi, network baglantisini kontrol edin.
+  available: Mevcut
+  not_available: Mevcut degil
+  availability_check: Mevcut kontrol
+  android_warning: Android kullanicilarinin dikkatine. Tümlesik NODE basarili bir sekilde senkronize etmek için telefonunuzun sistem ayarlarinda Grim uygulamasi için bildirimlere erisime izin vermeniz ve pil kullanim kisitlamalarini kaldirmaniz gerekir. Bu, arka planda uygulamanin doğru çalismasi için gerekli bir islemdir.
+sync_status:
+  node_restarting: Node yeniden baslatiliyor
+  node_down: Node calismiyor
+  initial: Node bagliyor
+  no_sync: Node calisiyor.
+  awaiting_peers:  Peers bekleniyor
+  header_sync: Downloading headers
+  header_sync_percent: 'Downloading headers: %{percent}%'
+  tx_hashset_pibd: Indiriyor state (PIBD)
+  tx_hashset_pibd_percent: 'İndirme durummu (PIBD): %{percent}%'
+  tx_hashset_download: Downloading state
+  tx_hashset_download_percent: 'Indiriyor state: %{percent}%'
+  tx_hashset_setup_history: 'Durum hazirlaniyor (gecmis): %{percent}%'
+  tx_hashset_setup_position: 'Durum hazirlaniyor (posizyon): %{percent}%'
+  tx_hashset_setup: Durum hazirlama
+  tx_hashset_range_proofs_validation: 'Onaylaniyor durum (range proofs): %{percent}%'
+  tx_hashset_kernels_validation: 'Onaylaniyor durum (kernels): %{percent}%'
+  tx_hashset_save: Zincir durumu Tamamlaniyor
+  body_sync: Bloklar Yukleniyor
+  body_sync_percent: 'Bloklar yukleniyor: %{percent}%'
+  shutdown: Node kapaniyor
+network_node:
+  header: Header
+  block: Block
+  hash: Hash
+  height: Height
+  difficulty: Difficulty
+  time: Time
+  main_pool: Main pool
+  stem_pool: Stem pool
+  data: Data
+  size: Size (GB)
+  peers: Peers
+  error_clean: Node verileri bozuldu, Resync yapmaniz gerekli.
+  resync: Resync
+  error_p2p_api: '%{p2p_api} sunucusu baslatilirken bir hata olustu, ekranin altindaki %{settings} ögesini secerek %{p2p_api} ayarlarini kontrol edin.'
+  error_config: 'Yapilandirmann baslatilmasi sirasinda bir hata olustu; ekranin alt kismindaki %{settings} öğesini seçerek ayarlari kontrol edin.'
+  error_unknown: 'Baslatma sirasinda bir hata olustu. Ekranin altindaki %{settings} öğesini seçerek Tümlesik NODE ayarlariNi kontrol edin veya yeniden Resync edin.'
+network_metrics:
+  loading: Metrikler senkronizasyondan sonra mevcut olur.
+  emission: Emission
+  inflation: Enflasyon
+  supply: Arz
+  block_time: Blok zaman
+  reward: Odul
+  difficulty_window: 'Difficulty penceresi %{size}'
+network_mining:
+  loading: Madencilik senkronizasyondan sonra mevcut olacak.
+  info: 'Madencilik server etkinlesti, ayarlar %{settings} ekranin alt koseden degistirilir. Cihaz bagliyken veriler guncelleniyor.'
+  restart_server_required: Degisiklikleri uygulamak için Server yeniden BASLAT.
+  rewards_wallet: Odul Cuzdani
+  server: Stratum server
+  address: Addres
+  miners: Madenciler
+  devices: Cihazlar
+  blocks_found: Blok bulunan
+  hashrate: 'Hashrate (C%{bits})'
+  connected: Baglandi
+  disconnected: Bagli degil
+network_settings:
+  change_value: Change value
+  stratum_ip: 'Stratum IP address:'
+  stratum_port: 'Stratum port:'
+  port_unavailable: Belirlenen port mevcut degil
+  restart_node_required: Degisiklikler için yeniden Node BASLAT
+  choose_wallet: Cüzdan seç
+  stratum_wallet_warning: Odul almak için cüzdan açilmalidir.
+  enable: Etkinlestir
+  disable: Devredisi birak
+  restart: Restart
+  server: Server
+  api_ip: 'API IP address:'
+  api_port: 'API port:'
+  api_secret: 'Rest API and V2 Owner API token:'
+  foreign_api_secret: 'Foreign API token:'
+  disabled: Mevcut degil
+  enabled: Mevcut
+  ftl: 'The Future Time Limit (FTL):'
+  ftl_description: Blok kabul edilebilmesi için yeni bir bloktaki zaman damgasinin,  NODE  (saniye cinsinden) yerel saatine gore gelecege ne kadar uzak olabilecegine iliskin sinirlama.
+  not_valid_value: Girilen deger gecersiz
+  full_validation: Tam gecerli
+  full_validation_description: Her blogu islerken tam zincir dogrulamasinin calistirilip calistirilmayacagi (senkronizasyon haric).
+  archive_mode: Arsiv mode
+  archive_mode_desc: Tam arsiv NODE calistir (daha fazla disk yeri ve senkronizasyon için zaman gerektirir).
+  attempt_time: 'Mining attempt time (in seconds):'
+  attempt_time_desc: The amount of time to attempt to mine on a particular header before stopping and re-collecting transactions from the pool
+  min_share_diff: 'The minimum acceptable share difficulty:'
+  reset_settings_desc: Node varsayilan degerlere Resetle
+  reset_settings: Reset ayarlar
+  reset: Reset
+  tx_pool: Transaction pool
+  pool_fee: 'Poolakabul edilen taban ücret:'
+  reorg_period: 'Reorg cache retention period (in minutes):'
+  max_tx_pool: 'Pool icindeki maximum islem sayisi:'
+  max_tx_stempool: 'Maksimum islem sayisi stem-pool icindeki:'
+  max_tx_weight: 'Maximum total weight of transactions that can get selected to build a block:'
+  epoch_duration: 'Epoch duration (in seconds):'
+  embargo_timer: 'Embargo timer (in seconds):'
+  aggregation_period: 'Aggregation period (in seconds):'
+  stem_probability: 'Stem phase probability:'
+  stem_txs: Stem islemler
+  p2p_server: P2P server
+  p2p_port: 'P2P port:'
+  add_seed: DNS Seed Ekle
+  seed_address: 'DNS Seed adresi:'
+  add_peer: Peer ekle
+  peer_address: 'Peer adresi:'
+  peer_address_error: 'IP addres veya DNS gir (make sure specified host is available) dogru format, ornek.: 192.168.0.1:1234 or example.com:5678'
+  default: Varsayilan
+  allow_list: Izin listesi
+  allow_list_desc: Sadece bu listedeki Peere baglan.
+  deny_list: Red listesi
+  deny_list_desc: Bu listedeki Peer asla baglanma.
+  favourites: Favoriler
+  favourites_desc: Baglanti için terchi edilen Peer listesi.
+  ban_window: 'Banlanan bir Peer (saniye cinsinden) yasakli kalma suresi:'
+  ban_window_desc: Banlama karari, peerden alinan verilerin dogruluguna bagli olarak Node tarafindan verilir.
+  max_inbound_count: 'Maksimum gelen Peer baglanti sayisi:'
+  max_outbound_count: 'Maksimum giden Peer baglanti sayisi:'
+  reset_data_desc: Node verisini sifirlama. Sadece senkronizasyonda sorun varsa dikkatli kullanin.
+  reset_data: Verileri sifirlama
+modal:
+  cancel: Iptal
+  save: Kaydet
+  add: Ekle
+modal_exit:
+  description: Uygulamadan cikmak için exit, emin misiniz?
+  exit: Exit
+app_settings:
+  proxy: Proxy
+  proxy_desc: Uygulamadan gelen ağ istekleri için bir proxy kullanmaya değer mi.
+keyboard:
+  1: 1
+  2: 2
+  3: 3
+  4: 4
+  5: 5
+  6: 6
+  7: 7
+  8: 8
+  9: 9
+  0: 0
+  01: '-'
+  q: q
+  w: w
+  e: e
+  r: r
+  t: t
+  y: y
+  u: u
+  i: i
+  o: o
+  p: p
+  p1: ü
+  a: a
+  s: s
+  d: d
+  f: f
+  g: g
+  h: h
+  j: j
+  k: k
+  l: l
+  l1: ö
+  l2: ':'
+  z: z
+  x: x
+  c: c
+  v: v
+  b: b
+  n: n
+  m: m
+  m1: ','
+  m2: .
+  m3: /
+goblin:
+  home:
+    anonymous: "Anonim"
+    connected_nym: "Nym üzerinden bağlı"
+    nym_ready: "Nym hazır · relaylar…"
+    connecting_nym: "Nym'e bağlanılıyor…"
+    cant_reach_node: "Düğüme ulaşılamıyor"
+    node_synced: "Düğüm eşitlendi"
+    syncing: "Eşitleniyor…"
+    block: "Blok %{height}"
+    waiting_for_chain: "Zincir bekleniyor…"
+    nav_wallet: "Cüzdan"
+    nav_pay: "Öde"
+    nav_activity: "Etkinlik"
+    nav_receive: "Al"
+    nav_settings: "Ayarlar"
+    activity: "Etkinlik"
+    empty_title: "Henüz etkinlik yok"
+    empty_sub: "Başlamak için grin gönder ya da al."
+    recent: "Son işlemler"
+    scan_to_pay: "Ödemek için tara"
+    type_amount: "Bir tutar gir"
+    request: "İste"
+    pay: "Öde"
+    enter_amount: "Ödemek ya da istemek için bir tutar gir"
+  activity:
+    canceled: "iptal edildi"
+    pending: "beklemede"
+    earlier: "Daha önce"
+    today: "Bugün"
+    yesterday: "Dün"
+    title: "Etkinlik"
+    requests: "İstekler"
+    empty_title: "Henüz etkinlik yok"
+    empty_sub: "Ödemelerin burada görünecek."
+    pending_header: "Beklemede"
+  receipt:
+    title: "Makbuz"
+    not_found: "İşlem bulunamadı"
+    for_note: "%{note} için"
+    details: "İşlem ayrıntıları"
+    canceled: "İptal edildi"
+    expired: "Süresi doldu"
+    funds_returned: "Para iade edildi"
+    complete: "Tamamlandı"
+    payment_received: "Ödeme alındı"
+    payment_sent: "Ödeme başarıyla gönderildi"
+    pending: "Beklemede"
+    confs: "%{c}/%{r} onay"
+    waiting_to_confirm: "Onay bekleniyor"
+    paying: "Ödeniyor…"
+    you: "Sen"
+    to: "Alıcı"
+    from: "Gönderen"
+    nostr: "nostr"
+    fee_none: "Yok"
+    network_fee: "Ağ ücreti"
+    privacy: "Gizlilik"
+    privacy_value: "Mimblewimble + Nym"
+    transaction: "İşlem"
+    cancel_request: "İsteği iptal et"
+    cancel_send: "Ödemeyi iptal et"
+    cancel_send_confirm: "İptal için tekrar dokun — hâlâ alabilir"
+    cancel_send_done: "Ödeme iptal edildi — paranız yeniden kullanılabilir"
+    cancel_send_too_late: "Bu ödeme zaten geçti ve iptal edilemez"
+    waiting_to_receive: "%{name} alana kadar bekleniyor…"
+  request:
+    title: "%{name} istiyor"
+    approve: "Onayla"
+    decline: "Reddet"
+  receive:
+    title: "Al"
+    requesting: "%{amt}%{tsu} isteniyor — ödeme almak için paylaş"
+    clear_request: "İsteği temizle"
+    share_handle: "Ödeme almak için kullanıcı adını paylaş"
+    copied: "Kopyalandı"
+    copy_nostr_id: "nostr kimliğini kopyala"
+    copy_address: "Adresi kopyala"
+    copy_npub: "npub kopyala"
+    share_message: "Goblin'de bana öde (goblin.st) — %{npub}"
+    privacy_note: "Kullanıcı adın herkese açıktır. Ödeme içeriği ağ üzerinde şifreli kalır."
+  profile:
+    title: "Profil"
+    activity: "Etkinlik"
+    no_activity: "Henüz onlarla etkinlik yok."
+    unblock: "Engeli kaldır"
+    block: "Engelle"
+    blocked_blurb: "Engellendi — ödemeleri ve istekleri reddediliyor."
+    block_blurb: "Engellemek, gelen ödeme ve isteklerini düşürür."
+  settings:
+    title: "Ayarlar"
+    connected_nostr: "nostr'a bağlı"
+    connecting_relays: "Relaylara bağlanılıyor…"
+    identity: "Kimlik"
+    copy_npub: "npub kopyala (genel)"
+    rotate_key: "nostr anahtarını değiştir"
+    import_identity: "Kimlik içe aktar (.backup / nsec)"
+    backup_note: "Cihaz mı değiştiriyorsun? İKİSİNİ de yedekle: seed ifaden (bakiye) ve kimlik .backup dosyan (ad + anahtar)."
+    wallet: "Cüzdan"
+    display_unit: "Görüntüleme birimi"
+    relays: "Relaylar"
+    node: "Düğüm"
+    slatepacks: "Slatepackler"
+    slatepacks_value: "Manuel işlem"
+    lock_wallet: "Cüzdanı kilitle"
+    switch_wallet: "Cüzdan değiştir"
+    advanced: "Gelişmiş"
+    privacy: "Gizlilik"
+    mixnet_routing: "Mixnet yönlendirme"
+    messages_lookups: "Mesajlar ve aramalar"
+    auto_accept: "Otomatik kabul"
+    pairing: "Eşleştirme"
+    accept_anyone: "Herkes"
+    accept_contacts: "Yalnızca kişiler"
+    accept_ask: "Her zaman sor"
+    requests: "İstekler"
+    incoming_requests: "Gelen istekler"
+    incoming_requests_sub: "Başkalarının senden para istemesine izin ver"
+    appearance: "Görünüm"
+    theme: "Tema"
+    theme_light: "Açık"
+    theme_dark: "Koyu"
+    theme_yellow: "Sarı"
+    archive: "Arşiv"
+    export_archive: "Arşivi dışa aktar"
+    wipe_history: "Ödeme geçmişini sil"
+    about: "Hakkında"
+    goblin: "Goblin"
+    build: "Sürüm %{build}"
+    network: "Ağ"
+    network_value: "MW + Nym mixnet + nostr"
+    third_party: "Üçüncü taraf"
+    grim: "GRIM (üst kaynak cüzdan)"
+    grin_node: "Grin düğümü"
+    sp_intro: "Gelişmiş — GRIM'in yaptığı gibi ham slatepackleri elle değiş tokuş et. Bunu yalnızca bir username üzerinden ödeme yapamadığında ya da alamadığında kullan."
+    sp_receive_group: "Al ya da tamamla"
+    sp_receive_blurb: "Birinin sana verdiği bir slatepack'i yapıştır. Goblin ödemeyi alır, faturayı öder ya da tamamlayıp zincire gönderir."
+    sp_process: "Slatepack işle"
+    sp_paste_first: "Önce bir slatepack yapıştır."
+    sp_reply_ready: "Yanıt hazır — gönderene geri yolla."
+    sp_finalizing: "Tamamlanıp zincire gönderiliyor…"
+    sp_create_group: "Ödeme oluştur"
+    sp_create_blurb: "Birine vermek için bir slatepack oluştur. Onlar alır, yanıtı geri gönderir, sen de yukarıda tamamlarsın."
+    sp_amount_hint: "Grin cinsinden tutar"
+    sp_addr_hint: "Alıcı adresi (isteğe bağlı)"
+    sp_create: "Slatepack oluştur"
+    sp_ready: "Slatepack hazır — alıcıya ver."
+    sp_amount_gt_zero: "Sıfırdan büyük bir tutar gir."
+    sp_to_send: "Gönderilecek slatepack"
+    sp_copy: "Slatepack kopyala"
+    rotate_line1: "• Tamamen yeni RASTGELE bir anahtar alırsın; eski npub artık almaz. Aralarında türetme zinciri yoktur."
+    rotate_line2: "• Yeni anahtar tohumundan kurtarılamaz — anahtarı değiştirdikten hemen sonra yeni nsec'i yedekle."
+    rotate_line3: "• Kullanıcı adın SERBEST BIRAKILIR — hemen ardından aynı adı ya da yeni bir ad al (serbest kaldığında başkası da kapabilir)."
+    rotate_line4: "• Eski anahtara hâlâ yoldaki ödemeler KESİNTİYE uğrar — önce bekleyen ödemelerin bitmesini bekle."
+    rotate_line5: "• npub'unu doğrudan kaydeden kişiler seni yeniden bulmalı — yeni npub'unu ya da yeniden aldığın username'i paylaş."
+    cancel: "İptal"
+    continue: "Devam"
+    final_confirmation: "Son onay"
+    rotate_confirm_blurb: "Bu işlem uygulamadan geri alınamaz. Değiştirmek için RESET yaz ve cüzdan parolanı gir."
+    type_reset: "RESET yaz"
+    wallet_password: "Cüzdan parolası"
+    rotate_key_btn: "Anahtarı değiştir"
+    rotating_key: "Anahtar değiştiriliyor…"
+    key_rotated: "Anahtar değiştirildi"
+    new_npub: "Yeni npub: %{npub}"
+    backup_new_key: "YENİ gizli anahtarı şimdi yedekle — tohumun onu kurtaramaz."
+    copy_new_nsec: "Yeni nsec yedeğini kopyala"
+    done: "Bitti"
+    rotation_failed: "Değiştirme başarısız"
+    close: "Kapat"
+    import_identity_title: "Kimlik içe aktar"
+    import_blurb: "Bu cüzdanın nostr kimliğini değiştirir — bir GOBLIN .backup dosyası seç ya da nsec yapıştır. Yedek ayrıca kullanıcı adını ve geçmişini geri yükler. Hâlâ gerekiyorsa önce mevcut anahtarı yedekle."
+    import_nsec_hint: "nsec1… veya yapıştırılan yedek"
+    backup_password_hint: "Yedek parolası (yalnızca başka yerde dışa aktarıldıysa)"
+    import_btn: "İçe aktar"
+    importing: "İçe aktarılıyor…"
+    identity_replaced: "Kimlik değiştirildi"
+    now_using: "Şu an kullanılan: %{npub}"
+    import_failed: "İçe aktarma başarısız"
+    name_authority: "İsim otoritesi"
+    name_authority_title: "İsim otoritesini değiştir"
+    name_authority_blurb: "Adları kaydeden ve doğrulayan sunucu. Başka bir örneğe yönlendirerek oradaki adları kullan ve öde."
+    name_authority_invalid: "Tam bir URL gir (https://…)."
+    reset: "Sıfırla"
+    save: "Kaydet"
+    backup_file: "Dosyaya yedekle"
+    choose_backup_file: "Bir .backup dosyası seç"
+    backup_read_failed: "Dosya okunamadı."
+    backup_saved: "Yedek kaydedildi"
+    backup_saved_sub: ".backup dosyasını güvende tut — hem ona hem de parolana sahip olan kimliğini geri yükleyebilir."
+    backup_file_title: "Kimliği yedekle"
+    backup_file_blurb: "Kullanıcı adın ve anahtarınla tek bir şifreli .backup dosyası oluşturur. Mühürlemek için cüzdan parolanı gir."
+    backup_write_failed: "Dosya kaydedilemedi."
+    create_backup: "Yedek oluştur"
+    registered: "%{name} kaydedildi"
+    released_msg: "Bırakıldı — ad artık alınabilir"
+    release_confirm: "%{name} bırakılsın mı?"
+    release_blurb: "Serbest kalır kalmaz herkes alabilir — döndüğün bir sonraki anahtar dahil. 10 dakika boyunca başka bir kullanıcı adı kaydedemezsin."
+    releasing: "Bırakılıyor…"
+    keep_it: "Vazgeç"
+    release_it: "Bırak"
+    username: "Kullanıcı adı"
+    username_note: "you olarak gösterilir. goblin.st'de herkese açık. Ödemeler şifreli kalır."
+    release_username: "Kullanıcı adını bırak"
+    pick_username: "Bir kullanıcı adı seç — isteğe bağlı"
+    working: "Çalışıyor…"
+    claim: "Al"
+    err_just_taken: "O kullanıcı adı az önce alındı"
+    err_cooldown: "Yakın zamanda bir kullanıcı adı bıraktın — 10 dakika içinde yenisini kaydedebilirsin."
+    err_unreachable: "goblin.st'ye ulaşılamadı — bağlantı sorunu. Tekrar dene."
+    err_release: "Bırakılamadı: %{err}"
+    avail_available: "Müsait!"
+    avail_taken: "Alınmış"
+    avail_reserved: "Ayrılmış"
+    avail_invalid: "Adlar 3–20 karakter: a–z, 0–9, _ ya da -"
+    avail_quarantined: "Müsait değil"
+    avail_unknown: "Kontrol edilemedi — bağlantı sorunu. Tekrar dene."
+  advanced:
+    title: "Gelişmiş"
+    intro: "GRIM'den düşük seviyeli cüzdan araçları. Bunlara normalde ihtiyacın olmaz."
+    own_node_desc: "Herkese açık bir düğüme güvenmek yerine bu cihazda tam bir Grin düğümü senkronize edin."
+    own_node_active: "Kendi düğümünüz çalışıyor"
+    repair: "Cüzdanı onar"
+    repair_desc: "Zinciri yeniden tara ve eksik çıktıları geri yükle. Bu biraz zaman alabilir."
+    repair_unavailable: "Önce senkronize bir düğüm bağlantısı gerekir."
+    repairing: "Onarılıyor… %{pct}%"
+    restore: "Cüzdanı geri yükle"
+    restore_desc: "Yerel verileri sil ve tohumundan yeniden oluştur. Onarım işe yaramadıysa bunu kullan — sonra cüzdanı yeniden açarsın."
+    restore_confirm: "Geri yüklemek için tekrar dokun"
+    show_phrase: "Kurtarma ifadesi"
+    phrase_desc: "24 grin tohum kelimen — fonları kurtarmanın tek yolu. Onları çevrimdışı ve gizli tut."
+    reveal: "İfadeyi göster"
+    hide: "Gizle"
+    password: "Cüzdan parolası"
+    wrong_password: "Yanlış parola."
+    delete: "Cüzdanı sil"
+    delete_desc: "Bu cüzdanı bu cihazdan kalıcı olarak kaldır. Tohumun olmadan fonlar kurtarılamaz."
+    delete_confirm: "Silmek için tekrar dokun"
+    manage_node: "Düğüm bağlantısını yönet"
+    repair_confirm: "Evet, şimdi onar"
+    repair_confirm_note: "Onarım zinciri yeniden tarar ve birkaç dakika sürebilir."
+    restore_confirm_note: "Bu, yerel verileri siler ve seed'inizden yeniden oluşturur — birkaç dakika sürebilir."
+  privacy:
+    title: "Ağ gizliliği"
+    intro: "Goblin özel trafiğini Nym mixnet üzerinden gönderir — kimin kiminle konuştuğunu gizleyen beş atlamalı bir ağ, böylece bir relay bir ödemeyi sana bağlayamaz."
+    payments: "Ödemeler"
+    payments_blurb: "Slatepack taşıyan her nostr mesajı."
+    usernames: "usernamelar"
+    usernames_blurb: "goblin.st'ye ve oradan NIP-05 ad aramaları."
+    price_avatars: "Fiyat"
+    price_avatars_blurb: "Tutarların yanında gösterilen anlık kur."
+    over_mixnet: "Mixnet üzerinden"
+    direct_connection: "Doğrudan bağlantı"
+    grin_node: "Grin düğümü"
+    grin_node_blurb: "Blok eşitleme ve işlemini ağa yayma. Bu, herkes için aynı olan genel zincir verisidir ve kimliğinle ilişkilendirilmez."
+  pairing:
+    title: "Eşleştirme"
+    intro: "Bakiyenin ve tutarların neye göre gösterildiği."
+    pair_with: "Eşleştir"
+    rates_note: "Kurlar yalnızca bir eşleştirme açıkken Nym mixnet üzerinden alınır — kapalıysa cihazından hiçbir kur isteği çıkmaz."
+  relays:
+    title: "Relaylar"
+    intro: "Ödeme mesajları aşağıdaki her relay'e yansıtılır; almak için ulaşılabilir tek bir relay yeterlidir."
+    your_relays: "Relaylarn"
+    add_relay: "Relay ekle"
+    add_relay_btn: "Relay ekle"
+    save_reconnect: "Kaydet ve yeniden bağlan"
+    none: "yok"
+    count: "%{n} relay"
+  node:
+    title: "Düğüm"
+    connection: "Bağlantı"
+    integrated: "Tümleşik düğüm"
+    applies_after: "Cüzdan kilitlenip yeniden açıldıktan sonra geçerli olur."
+    add_external: "Harici düğüm ekle"
+    api_secret_hint: "API gizli anahtarı (isteğe bağlı)"
+    add_node: "Düğüm ekle"
+    integrated_host: "tümleşik düğüm"
+    summary_syncing: "%{conn} · eşitleniyor"
+    summary_block: "Blok %{height} · %{conn}"
+  nips:
+    title: "nostr ve NIPler"
+    intro1: "Goblin nostr konuşur — basit relay sunucuları üzerinden geçen imzalı mesajların açık bir protokolü. Cüzdanın kendi nostr kimliğini taşır: bağımsız rastgele bir anahtar, paran ve tohumundan kasıtlı olarak ayrı tutulur. Her ödeme, slatepack içinde olacak şekilde, kimlikler arasında uçtan uca şifreli bir doğrudan mesaj olarak gider."
+    intro2: "goblin.st, Goblin'in ad servisidir: bir kullanıcı adı almak orada bir ad → anahtar eşlemesi yayımlar (NIP-05), böylece insanlar uzun bir npub yerine you'ya ödeme yapabilir. Kullanıcı adı herkese açıktır; ödeme içeriği asla değil. NIPler protokolün yapı taşlarıdır — özelliği okumak için birine dokun."
+    n05_title: "Adlar"
+    n05_blurb: "username@goblin.st'yi anahtarına eşler, böylece kullanıcı adları adres gibi çalışır."
+    n17_title: "Özel mesajlar"
+    n17_blurb: "Her ödemenin içinde gittiği şifreli DM zarfı."
+    n44_title: "Şifreleme"
+    n44_blurb: "Bu mesajların içinde kullanılan kimlik doğrulamalı şifreleme."
+    n49_title: "Anahtar şifreleme"
+    n49_blurb: "Gizli anahtarın parolanla kilitli olarak nasıl depolandığı."
+    n59_title: "Hediye paketi"
+    n59_blurb: "Mesajları sarar, böylece relaylar kimin kiminle konuştuğunu göremez."
+    n98_title: "HTTP kimlik doğrulama"
+    n98_blurb: "goblin.st'ye gönderilen kullanıcı adı kayıt isteğini imzalar."
+  onboarding:
+    intro:
+      private_money_head: "Özel para"
+      private_money_body: "Goblin, grin için bir cüzdan — zincirinde tutar ya da adres bulunmayan dijital nakit."
+      send_like_message_head: "Mesaj gibi gönder"
+      send_like_message_body: "Bir username ya da npub'a öde, nostr ve Nym mixnet üzerinden uçtan uca şifreli bir mesaj olarak ulaşır — aradaki hiç kimse tutarı ya da kimlerin dahil olduğunu göremez."
+      yours_alone_head: "Yalnızca senin"
+      yours_alone_body: "Anahtarlar, adlar ve geçmiş bu cihazda yaşar. GRIM cüzdanı üzerine kuruludur."
+      get_started: "Başla"
+      footnote: "Yaklaşık bir dakika sürer. Her şeyi sonradan değiştirebilirsin."
+    node:
+      kicker: "ADIM 1 / 3 · AĞ"
+      title: "Goblin zinciri nasıl\nizlesin?"
+      own_title: "Kendi düğümümü çalıştır"
+      own_badge: "Özel"
+      own_body: "Kimseye güvenmez — cüzdanın zinciri kendisi kontrol eder. Sen kurulumu bitirirken arka planda eşitlenir."
+      connect_title: "Bir düğüme bağlan"
+      connect_badge: "Anında"
+      connect_body: "Eşitleme beklemesi yok. Seçtiğin düğüm cüzdanının sorgularını görebilir."
+      changeable: "Ayarlar → Düğüm'den istediğin zaman değiştirilebilir."
+      continue: "Devam"
+      url_invalid: "Düğüm URL'si http:// ya da https:// ile başlamalı"
+    wallet:
+      kicker: "ADIM 2 / 3 · CÜZDAN"
+      title: "Cüzdanını kur"
+      create_new: "Yeni oluştur"
+      restore_from_seed: "Tohumdan geri yükle"
+      name_hint: "Cüzdan adı"
+      password_hint: "Parola"
+      repeat_password_hint: "Parolayı tekrarla"
+      restore_hint: "Tohum kelimelerini hazır tut — onları sonra gireceksin."
+      create_hint: "Sırada yazman için 24 tohum kelimesi var. Onlar paradır — onları elinde tutan paranı elinde tutar."
+      continue: "Devam"
+      passwords_no_match: "Parolalar eşleşmiyor"
+    words:
+      kicker: "ADIM 2 / 3 · CÜZDAN"
+      title_restore: "Tohum kelimelerini gir"
+      title_create: "Bu kelimeleri yaz"
+      write_down_hint: "Kâğıda, sırayla. Bu kelimelere sahip olan paranı alabilir; onlar olmadan kaybolan bir cihaz kaybolan para demektir."
+      paste: "Yapıştır"
+      scan_qr: "QR tara"
+      copy_clipboard: "Panoya kopyala (bundan kaçın)"
+      restore_wallet: "Cüzdanı geri yükle"
+      wrote_them_down: "Onları yazdım"
+      fill_every_word: "Her kelimeyi doldur — düzenlemek için bir kelimeye dokun ya da ifadeyi yapıştır."
+    confirm:
+      kicker: "ADIM 2 / 3 · CÜZDAN"
+      title: "Şimdi kanıtla"
+      enter_hint: "Az önce yazdığın kelimeleri gir. Yazmak için bir kelimeye dokun."
+      paste: "Yapıştır"
+      create_wallet: "Cüzdan oluştur"
+      keep_going: "Devam et — her kelime, sırayla."
+    identity:
+      kicker: "ADIM 3 / 3 · KİMLİK"
+      title: "Ödeme kimliğin"
+      key_being_made: "anahtar oluşturuluyor…"
+      connected_nym: "Nym üzerinden bağlı"
+      connecting_nym: "Nym üzerinden bağlanılıyor…"
+      fresh_key_blurb: "Seed'inin parçası olmayan bir ödeme anahtarı — paranı hiç ellemeden istediğin an döndür."
+      clean_slate_blurb: "Temiz bir sayfa mı istiyorsun? İstediğin zaman yepyeni bir anahtar tak — yeni sen eskisine bağlı değil. Aynı cüzdan, yeni yüz."
+      pick_username: "Bir kullanıcı adı seç — isteğe bağlı"
+      username_blurb: "Arkadaşların uzun bir anahtar yerine adına öder. İsteğe bağlı — istediğin an al."
+      username_field_hint: "adınız"
+      working: "Çalışıyor…"
+      claim_username: "Kullanıcı adı al"
+      available_when_connected: "Mixnet bağlandığında müsait — ya da atla ve sonra al."
+      youre: "Sen %{name}'sin"
+      claimed_title: "%{name} artık senin"
+      claimed_blurb: "Arkadaşların artık sana adınla ödeme yapabilir. Her şey hazır — cüzdanını aç."
+      open_wallet: "Cüzdanımı aç"
+      skip_for_now: "Şimdilik atla"
+      import_existing: "Zaten bir Goblin kimliğin var mı? İçe aktar"
+      import_title: "Kimliğini içe aktar"
+      import_blurb: "Bu yeni anahtar yerine mevcut anahtarını ve kullanıcı adını korumak için nsec'ini yapıştır veya bir .backup dosyası seç."
+    errors:
+      cant_open: "Cüzdan açılamadı: %{err}"
+      cant_create: "Cüzdan oluşturulamadı: %{err}"
+  send:
+    scan_to_request: "İstemek için tara"
+    scan_to_pay: "Ödemek için tara"
+    tab_scan: "Tara"
+    tab_my_code: "Kodum"
+    request_from: "Şundan iste"
+    send_to: "Şuna gönder"
+    search_hint: "handle, npub ya da ad"
+    suggested: "%{icon}  Önerilen"
+    no_contacts: "Henüz kişi yok. Birini handle ile bul."
+    no_profile: "profil yok"
+    tag_contact: "kişi"
+    tag_on_nostr: "nostr'da"
+    searching_nostr: "nostr aranıyor…"
+    unverified_title: "Doğrulanmamış bir anahtara ödeme yapılsın mı?"
+    unverified_body: "Bu anahtar için yayımlanmış bir nostr profili yok — yepyeni, anonim ya da yanlış yazılmış olabilir. Göndermeden önce doğru olduğunu iki kez kontrol et."
+    keep_looking: "Aramaya devam et"
+    pay_anyway: "Yine de öde"
+    scan_not_recipient: "O QR bir goblin alıcısı değil — bir npub ya da handle bekleniyordu"
+    scan_prompt: "Etkinleştirmek için bir goblin kodunu görüntüye getir"
+    scan_to_pay_me: "Bana ödemek için tara"
+    share_btn: "%{icon} Paylaş"
+    share_message: "Goblin'de bana öde — %{handle}\n%{link}\nnpub: %{npub}"
+    none_found: "%{label} için kimse bulunamadı"
+    enter_recipient: "Bir handle, npub ya da ad gir"
+    amount_title: "Tutar"
+    to_name: "%{name} için"
+    not_enough: "Yeterli grin yok"
+    max: "Maks"
+    note_label: "Not"
+    note_hint: "Bir not ekle…"
+    add_note: "Not ekle"
+    edit_note: "Notu düzenle"
+    note_cancel: "İptal"
+    note_save: "Kaydet"
+    review_btn: "İncele"
+    confirm_request: "İsteği onayla"
+    review_title: "İncele"
+    requesting_from: "%{name} kişisinden isteniyor"
+    youre_sending: "%{name} kişisine gönderiyorsun"
+    row_from: "Gönderen"
+    row_to: "Alıcı"
+    row_note: "Not"
+    row_they_pay: "Onlar öder"
+    row_they_pay_val: "Yalnızca onaylarlarsa"
+    row_delivery: "Teslimat"
+    row_delivery_val: "NIP-44 şifreli, Nym üzerinden"
+    row_network_fee: "Ağ ücreti"
+    row_network_fee_val: "Bakiyenden düşülür"
+    row_privacy: "Gizlilik"
+    row_privacy_val: "Mimblewimble + Nym"
+    send_request_btn: "İstek gönder"
+    request_approve_hint: "Onaylamaları için bir istek alacaklar"
+    hold_to_send: "Göndermek için basılı tut"
+    lower_amount: "Geri dön ve tutarı düşür"
+    hold_confirm_hint: "Onaylamak için basılı tut"
+    requesting: "İsteniyor…"
+    sending: "Gönderiliyor…"
+    they: "Onlar"
+    request_blocked: "%{who} istek kabul etmiyor. Bunun yerine sana grin göndermesini iste."
+    failed_request_title: "İstenemedi"
+    failed_send_title: "Gönderilemedi"
+    failed_request_body: "İsteği teslim edemedik. Bunun yerine sana grin göndermesini iste."
+    failed_send_body: "Ödeme teslim edilemedi. Grin'in güvende — tekrar dene."
+    try_again_btn: "Tekrar dene"
+    close_btn: "Kapat"
+    success:
+      requested: "İstendi"
+      sent: "Gönderildi"
+      from: "şuradan"
+      to: "şuraya"
+      subtitle: "%{dir} %{who} · az önce"
+      done_btn: "Bitti"
+      receipt_btn: "Makbuz"
