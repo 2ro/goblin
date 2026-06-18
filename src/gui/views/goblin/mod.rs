@@ -2657,7 +2657,9 @@ impl GoblinWalletView {
 				let mut open_nips = false;
 				settings_group(ui, &t!("goblin.settings.third_party"), |ui| {
 					if settings_row_nav(ui, &t!("goblin.settings.grim"), crate::VERSION) {
-						open_url(ui, "https://github.com/ardocrat/grim");
+						// Live upstream GRIM (GitHub mirror of code.gri.mw/GUI/grim).
+						// Was github.com/ardocrat/grim — a stale personal fork.
+						open_url(ui, "https://github.com/GetGrin/grim");
 					}
 					if settings_row_nav(ui, &t!("goblin.settings.grin_node"), "5.4.0") {
 						open_url(ui, "https://github.com/mimblewimble/grin");
