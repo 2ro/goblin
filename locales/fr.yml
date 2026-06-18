@@ -1,0 +1,808 @@
+lang_name: Français
+copy: Copier
+paste: Coller
+continue: Continuer
+complete: Terminer
+error: Erreur
+retry: Réessayer
+close: Fermer
+change: Changer
+show: Afficher
+delete: Supprimer
+clear: Effacer
+create: Créer
+id: Identifiant
+kernel: Noyau
+settings: Paramètres
+language: Langue
+scan: Scanner
+qr_code: QR Code
+scan_qr: Scanner le QR code
+repeat: Répéter
+scan_result: Résultat du scan
+back: Retour
+share: Partager
+theme: 'Thème:'
+dark: Sombre
+light: Clair
+file: Fichier
+choose_file: Choisir un fichier
+choose_folder: Choisir un dossier
+crash_report: Rapport d'échec
+crash_report_warning: L'application s'est fermée de manière inattendue la dernière fois, vous pouvez partager un rapport d'incident avec les développeurs.
+confirmation: Confirmation
+enter_url: Entrez l'URL
+max_short: MAX
+files_location: Emplacement du fichier
+moving_files: Déplacer des fichiers
+wrong_path_error: Chemin incorrect spécifié
+check_updates: Vérifiez les mises à jour au démarrage
+update_available: Mise à jour disponible!
+changelog: 'Journal des modifications:'
+wallets:
+  await_conf_amount: En attente de confirmation
+  await_fin_amount: En attente de finalisation
+  locked_amount: Verrouillé
+  txs_empty: "Pour recevoir des fonds manuellement ou par transport, utilisez les boutons %{message} ou %{transport} en bas de l'écran. Pour modifier les paramètres du portefeuille, appuyez sur le bouton %{settings}."
+  title: Goblin
+  create_desc: Créer ou importer un portefeuille existant à partir de la phrase de récupération sauvegardée.
+  add: Ajouter un portefeuille
+  name: 'Nom:'
+  pass: 'Mot de passe:'
+  pass_empty: Entrez le mot de passe du portefeuille
+  current_pass: 'Mot de passe actuel:'
+  new_pass: 'Nouveau mot de passe:'
+  min_tx_conf_count: 'Nombre minimum de confirmations pour les transactions:'
+  recover: Restaurer
+  recovery_phrase: Phrase de récupération
+  words_count: 'Nombre de mots:'
+  enter_word: 'Entrez le mot #%{number}:'
+  not_valid_word: Mot entré non valide
+  not_valid_phrase: Phrase entrée non valide
+  create_phrase_desc: Notez et sauvegardez votre phrase de récupération en toute sécurité.
+  restore_phrase_desc: Entrez les mots de votre phrase de récupération sauvegardée.
+  setup_conn_desc: Choisissez comment votre portefeuille se connecte au réseau.
+  conn_method: Méthode de connexion
+  ext_conn: 'Connexions externes:'
+  add_node: Ajouter un noeud
+  node_url: 'URL du noeud:'
+  node_secret: 'Secret API (facultatif):'
+  invalid_url: URL entrée non valide
+  open: Ouvrir le portefeuille
+  wrong_pass: Mot de passe entré incorrect
+  locked: Verrouillé
+  unlocked: Déverrouillé
+  enable_node: "Activez le noeud intégré pour utiliser le portefeuille ou changez les paramètres de connexion en sélectionnant %{settings} en bas de l'écran."
+  node_loading: "Le portefeuille sera chargé après la synchronisation du noeud intégré. Vous pouvez changer la connexion en sélectionnant %{settings} en bas de l'écran."
+  loading: Chargement
+  closing: Fermeture
+  checking: Vérification
+  default_wallet: Portefeuille par défaut
+  new_account_desc: 'Entrez le nom du nouveau compte:'
+  wallet_loading: Chargement du portefeuille
+  wallet_closing: Fermeture du portefeuille
+  wallet_checking: Vérification du portefeuille
+  tx_loading: Chargement des transactions
+  default_account: Compte par défaut
+  accounts: Comptes
+  tx_sent: Envoyé
+  tx_received: Reçu
+  tx_sending: Envoi
+  tx_receiving: Réception
+  tx_confirming: En attente de confirmation
+  tx_canceled: Annulé
+  tx_cancelling: Annulation
+  tx_finalizing: Finalisation
+  tx_posting: Publication
+  tx_confirmed: Confirmé
+  txs: Transactions
+  tx: Transaction
+  messages: Messages
+  transport: Transport
+  input_slatepack_desc: 'Entrez le message Slatepack reçu pour créer une réponse ou finaliser la demande:'
+  parse_slatepack_err: "Une erreur s'est produite lors de la lecture du message, vérifiez l'entrée:"
+  pay_balance_error: 'Le solde du compte est insuffisant pour payer %{amount} ツ et les frais de réseau.'
+  parse_i1_slatepack_desc: 'Pour payer %{amount} ツ, envoyez ce message au destinataire:'
+  parse_i2_slatepack_desc: 'Finalisez la transaction pour recevoir %{amount} ツ:'
+  parse_i3_slatepack_desc: 'Publiez la transaction pour finaliser la réception de %{amount} ツ:'
+  parse_s1_slatepack_desc: "Pour recevoir %{amount} ツ, envoyez ce message à l'expéditeur:"
+  parse_s2_slatepack_desc: 'Finalisez la transaction pour envoyer %{amount} ツ:'
+  parse_s3_slatepack_desc: "Publiez la transaction pour finaliser l'envoi de %{amount} ツ:"
+  resp_slatepack_err: "Une erreur s'est produite lors de la création de la réponse, vérifiez les données saisies ou réessayez:"
+  resp_exists_err: Une telle transaction existe déjà.
+  resp_canceled_err: Une telle transaction a déjà été annulée.
+  create_request_desc: 'Créez une demande pour envoyer ou recevoir des fonds:'
+  send_request_desc: 'Vous avez créé une demande pour envoyer %{amount} ツ. Envoyez ce message au destinataire:'
+  send_slatepack_err: "Une erreur s'est produite lors de la création de la demande d'envoi de fonds, vérifiez les données saisies ou réessayez."
+  invoice_desc: "Vous avez créé une demande pour recevoir %{amount} ツ. Envoyez ce message à l'expéditeur:"
+  invoice_slatepack_err: "Une erreur s'est produite lors de l'émission de la facture, vérifiez les données saisies ou réessayez."
+  finalize_slatepack_err: "Une erreur s'est produite lors de la finalisation, vérifiez les données saisies ou réessayez:"
+  finalize: Finaliser
+  use_dandelion: Utiliser Dandelion
+  enter_amount_send: 'Vous avez %{amount} ツ. Entrez le montant à envoyer:'
+  enter_amount_receive: 'Entrez le montant à recevoir:'
+  recovery: Récupération
+  repair_wallet: Réparer le portefeuille
+  repair_desc: Vérifiez un portefeuille, réparez et restaurez les sorties manquantes si nécessaire. Cette opération prendra du temps.
+  repair_unavailable: "Vous avez besoin d'une connexion active au noeud et d'une synchronisation complète du portefeuille."
+  delete: Supprimer le portefeuille
+  delete_conf: Êtes-vous sûr de vouloir supprimer le portefeuille?
+  delete_desc: "Assurez-vous d'avoir sauvegardé votre phrase de récupération pour accéder aux fonds plus tard."
+  wallet_loading_err: "Une erreur s'est produite lors de la synchronisation du portefeuille. Vous pouvez réessayer ou changer les paramètres de connexion en sélectionnant %{settings} en bas de l'écran."
+  wallet: Portefeuille
+  send: Envoyer
+  receive: Recevoir
+  settings: Paramètres du portefeuille
+  tx_send_cancel_conf: "Êtes-vous sûr de vouloir annuler l'envoi de %{amount} ツ?"
+  tx_receive_cancel_conf: 'Êtes-vous sûr de vouloir annuler la réception de %{amount} ツ?'
+  rec_phrase_not_found: Phrase de récupération non trouvée.
+  restore_wallet_desc: "Restaurer le portefeuille en supprimant tous les fichiers si la réparation habituelle n'a pas aidé. Vous devrez rouvrir votre portefeuille."
+  fee_base_desc: 'Frais (valeur de base%{value}):'
+  payment_proof: Preuve de paiement
+  payment_proof_desc: 'Saisissez la preuve de paiement reçue pour vérifier la transaction:'
+  payment_proof_valid: 'La preuve de paiement saisie est valide:'
+  payment_proof_error: "La preuve de paiement saisie n'est pas valide:"
+  tx_delete_confirmation: Êtes-vous sûr de vouloir supprimer la transaction de l'historique?
+transport:
+  desc: 'Utilisez le transport pour recevoir ou envoyer des messages de manière synchronisée:'
+  tor_network: Réseau Tor
+  connected: Connecté
+  connecting: Connexion en cours
+  disconnecting: Déconnexion en cours
+  conn_error: Erreur de connexion
+  disconnected: Déconnecté
+  receiver_address: 'Adresse du destinataire:'
+  incorrect_addr_err: 'Adresse entrée incorrecte:'
+  tor_send_error: "Une erreur s'est produite lors de l'envoi via Tor. Assurez-vous que le destinataire est en ligne, la transaction a été annulée."
+  tor_autorun_desc: "Lancer automatiquement le service Tor à l'ouverture du portefeuille pour recevoir les transactions de manière synchronisée."
+  tor_sending: Envoi via Tor
+  tor_settings: Paramètres Tor
+  bridges: Passerelles
+  bridges_desc: Configurez des passerelles pour contourner la censure du réseau Tor si la connexion habituelle ne fonctionne pas.
+  bin_file: 'Fichier binaire:'
+  conn_line: 'Ligne de connexion:'
+  bridges_disabled: Passerelles désactivés
+  bridge_name: 'Passerelles %{b}'
+network:
+  self: Réseau
+  type: 'Type de réseau:'
+  mainnet: Principal
+  testnet: Test
+  connections: Connexions
+  node: Noeud intégré
+  metrics: Métriques
+  mining: Minage
+  settings: Paramètres du noeud
+  enable_node: Activer le noeud
+  autorun: Exécution automatique
+  disabled_server: "Activez le noeud intégré ou ajoutez une autre méthode de connexion en appuyant sur %{dots} dans le coin supérieur gauche de l'écran."
+  no_ips: "Il n'y a pas d'adresses IP disponibles sur votre système, le serveur ne peut pas démarrer, vérifiez votre connectivité réseau"
+  available: Disponible
+not_available: Indisponible
+availability_check: Vérification de la disponibilité
+android_warning: "Attention aux utilisateurs Android. Pour synchroniser correctement le noeud intégré, vous devez autoriser l'accès aux notifications et supprimer les restrictions d'utilisation de la batterie pour l'application Grim dans les paramètres système de votre téléphone. Cette opération est nécessaire pour le bon fonctionnement de l'application en arrière-plan."
+sync_status:
+  node_restarting: Le noeud redémarre
+  node_down: Le noeud est hors ligne
+  initial: Le noeud démarre
+  no_sync: Le noeud fonctionne
+  awaiting_peers: En attente de pairs
+  header_sync: Téléchargement des en-têtes
+  header_sync_percent: 'Téléchargement des en-têtes : %{percent}%'
+  tx_hashset_pibd: "Téléchargement de l'état (PIBD)"
+  tx_hashset_pibd_percent: "Téléchargement de l'état (PIBD) : %{percent}%"
+  tx_hashset_download: "Téléchargement de l'état"
+  tx_hashset_download_percent: "Téléchargement de l'état : %{percent}%"
+  tx_hashset_setup_history: "Préparation de l'état (historique) : %{percent}%"
+  tx_hashset_setup_position: "Préparation de l'état (position) : %{percent}%"
+  tx_hashset_setup: "Préparation de l'état"
+  tx_hashset_range_proofs_validation: "Validation de l'état (preuves de plage) : %{percent}%"
+  tx_hashset_kernels_validation: "Validation de l'état (kernels) : %{percent}%"
+  tx_hashset_save: "Finalisation de l'état de la chaîne"
+  body_sync: Téléchargement des blocs
+  body_sync_percent: 'Téléchargement des blocs : %{percent}%'
+  shutdown: Le noeud se ferme
+network_node:
+  header: En-tête
+  block: Bloc
+  hash: Hash
+  height: Hauteur
+  difficulty: Difficulté
+  time: Temps
+  main_pool: Pool principal
+  stem_pool: Pool secondaire
+  data: Données
+  size: Taille (GB)
+  peers: Pairs
+  error_clean: Les données du noeud ont été corrompues, une resynchronisation est nécessaire.
+  resync: Resynchronisation
+  error_p2p_api: "Une erreur s'est produite lors de l'initialisation du serveur %{p2p_api}, vérifiez les paramètres %{p2p_api} en sélectionnant %{settings} en bas de l'écran."
+  error_config: "Une erreur s'est produite lors de l'initialisation de la configuration, vérifiez les paramètres en sélectionnant %{settings} en bas de l'écran."
+  error_unknown: "Une erreur s'est produite lors de l'initialisation, vérifiez les paramètres du noeud intégré en sélectionnant %{settings} en bas de l'écran ou resynchronisez."
+network_metrics:
+  loading: Les métriques seront disponibles après la synchronisation
+  emission: Émission
+  inflation: Inflation
+  supply: Offre
+  block_time: Temps de bloc
+  reward: Récompense
+  difficulty_window: 'Fenêtre de difficulté %{size}'
+network_mining:
+  loading: Le minage sera disponible après la synchronisation
+  info: "Le serveur de minage est activé, vous pouvez changer ses paramètres en sélectionnant %{settings} en bas de l'écran. Les données sont mises à jour lorsque les appareils sont connectés."
+  restart_server_required: Le redémarrage du serveur est nécessaire pour appliquer les modifications.
+  rewards_wallet: Portefeuille pour les récompenses
+  server: Serveur Stratum
+  address: Adresse
+  miners: Mineurs
+  devices: Appareils
+  blocks_found: Blocs trouvés
+  hashrate: 'Taux de hachage (C%{bits})'
+  connected: Connecté
+  disconnected: Déconnecté
+network_settings:
+  change_value: Modifier la valeur
+  stratum_ip: 'Adresse IP Stratum :'
+  stratum_port: 'Port Stratum :'
+  port_unavailable: Le port spécifié est indisponible
+  restart_node_required: Le redémarrage du noeud est nécessaire pour appliquer les modifications.
+  choose_wallet: Choisir un portefeuille
+  stratum_wallet_warning: Le portefeuille doit être ouvert pour recevoir des récompenses.
+  enable: Activer
+  disable: Désactiver
+  restart: Redémarrer
+  server: Serveur
+  api_ip: 'Adresse IP API :'
+  api_port: 'Port API :'
+  api_secret: 'Jeton API Rest et API Propriétaire V2 :'
+  foreign_api_secret: 'Jeton API étranger :'
+  disabled: Désactivé
+  enabled: Activé
+  ftl: 'La Limite de Temps Futur (FTL) :'
+  ftl_description: "Limite de combien de temps dans le futur, par rapport à l'heure locale d'un noeud en secondes, l'horodatage sur un nouveau bloc peut être, afin que le bloc soit accepté."
+  not_valid_value: "La valeur entrée n'est pas valide"
+  full_validation: Validation complète
+  full_validation_description: Exécuter une validation complète de la chaîne lors du traitement de chaque bloc (sauf pendant la synchronisation).
+  archive_mode: Mode archive
+  archive_mode_desc: "Exécuter le noeud en mode archive complet (plus d'espace disque et de temps seront nécessaires pour la synchronisation)."
+  attempt_time: 'Temps de tentative de minage (en secondes) :'
+  attempt_time_desc: "Le temps pendant lequel tenter de miner sur un en-tête particulier avant d'arrêter et de récupérer à nouveau les transactions du pool"
+  min_share_diff: 'La difficulté minimale acceptable du partage :'
+  reset_settings_desc: Réinitialiser les paramètres du noeud aux valeurs par défaut
+  reset_settings: Réinitialiser les paramètres
+  reset: Réinitialiser
+  tx_pool: Pool de transactions
+  pool_fee: 'Frais de base acceptés dans le pool :'
+  reorg_period: 'Période de rétention du cache de réorganisation (en minutes) :'
+  max_tx_pool: 'Nombre maximum de transactions dans le pool :'
+  max_tx_stempool: 'Nombre maximum de transactions dans le pool secondaire :'
+  max_tx_weight: 'Poids total maximum des transactions pouvant être sélectionnées pour créer un bloc :'
+  epoch_duration: "Durée de l'époque (en secondes) :"
+  embargo_timer: "Minuterie d'embargo (en secondes) :"
+  aggregation_period: "Période d'agrégation (en secondes) :"
+  stem_probability: 'Probabilité de la phase secondaire :'
+  stem_txs: Transactions secondaires
+  p2p_server: Serveur P2P
+  p2p_port: 'Port P2P :'
+  add_seed: Ajouter une seed DNS
+  seed_address: 'Adresse de la seed DNS :'
+  add_peer: Ajouter un pair
+  peer_address: 'Adresse du pair :'
+  peer_address_error: "Entrez l'adresse IP ou le nom DNS (assurez-vous que l'hôte spécifié est disponible) au format correct, par exemple : 192.168.0.1:1234 ou example.com:5678"
+  default: Par défaut
+  allow_list: Liste autorisée
+  allow_list_desc: Se connecter uniquement aux pairs de cette liste.
+  deny_list: Liste refusée
+  deny_list_desc: Ne jamais se connecter aux pairs de cette liste.
+  favourites: Favoris
+  favourites_desc: Une liste de pairs préférés à connecter.
+  ban_window: 'Combien de temps (en secondes) un pair banni doit rester banni :'
+  ban_window_desc: La décision de bannir est prise par le noeud, en fonction de la validité des données reçues du pair.
+  max_inbound_count: 'Nombre maximum de connexions de pairs entrants :'
+  max_outbound_count: 'Nombre maximum de connexions de pairs sortants :'
+  reset_data_desc: Réinitialisez les données du noeud. Utilisez-le avec prudence uniquement en cas de problème de synchronisation.
+  reset_data: Réinitialisation des données
+modal:
+  cancel: Annuler
+  save: Sauvegarder
+  add: Ajouter
+modal_exit:
+  description: "Êtes-vous sûr de vouloir quitter l'application ?"
+  exit: Quitter
+app_settings:
+  proxy: Proxy
+  proxy_desc: Vaut-il la peine d'utiliser un proxy pour les requêtes réseau de l'application.
+keyboard:
+  1: 1
+  2: 2
+  3: 3
+  4: 4
+  5: 5
+  6: 6
+  7: 7
+  8: 8
+  9: 9
+  0: 0
+  01: '`'
+  q: a
+  w: z
+  e: e
+  r: r
+  t: t
+  y: y
+  u: u
+  i: i
+  o: o
+  p: p
+  p1: ç
+  a: q
+  s: s
+  d: d
+  f: f
+  g: g
+  h: h
+  j: j
+  k: k
+  l: l
+  l1: m
+  l2: ù
+  z: w
+  x: x
+  c: c
+  v: v
+  b: b
+  n: n
+  m: ','
+  m1: .
+  m2: ':'
+  m3: /
+goblin:
+  home:
+    anonymous: "Anonyme"
+    connected_nym: "Connecté via Nym"
+    nym_ready: "Nym prêt · relais…"
+    connecting_nym: "Connexion à Nym…"
+    cant_reach_node: "Nœud injoignable"
+    node_synced: "Nœud synchronisé"
+    syncing: "Synchronisation…"
+    block: "Bloc %{height}"
+    waiting_for_chain: "En attente de la chaîne…"
+    nav_wallet: "Portefeuille"
+    nav_pay: "Payer"
+    nav_activity: "Activité"
+    nav_receive: "Recevoir"
+    nav_settings: "Réglages"
+    activity: "Activité"
+    empty_title: "Aucune activité"
+    empty_sub: "Envoyez ou recevez des grin pour commencer."
+    recent: "Récent"
+    scan_to_pay: "Scanner pour payer"
+    type_amount: "Saisir un montant"
+    request: "Demander"
+    pay: "Payer"
+    enter_amount: "Saisissez un montant à payer ou demander"
+  activity:
+    canceled: "annulé"
+    pending: "en attente"
+    earlier: "Plus tôt"
+    today: "Aujourd'hui"
+    yesterday: "Hier"
+    title: "Activité"
+    requests: "Demandes"
+    empty_title: "Aucune activité"
+    empty_sub: "Vos paiements apparaîtront ici."
+    pending_header: "En attente"
+  receipt:
+    title: "Reçu"
+    not_found: "Transaction introuvable"
+    for_note: "Pour %{note}"
+    details: "Détails de la transaction"
+    canceled: "Annulé"
+    expired: "Expiré"
+    funds_returned: "Fonds retournés"
+    complete: "Terminé"
+    payment_received: "Paiement reçu"
+    payment_sent: "Paiement envoyé avec succès"
+    pending: "En attente"
+    confs: "%{c}/%{r} confirmations"
+    waiting_to_confirm: "En attente de confirmation"
+    paying: "Paiement…"
+    you: "Vous"
+    to: "À"
+    from: "De"
+    nostr: "nostr"
+    fee_none: "Aucun"
+    network_fee: "Frais de réseau"
+    privacy: "Confidentialité"
+    privacy_value: "Mimblewimble + Nym"
+    transaction: "Transaction"
+    cancel_request: "Annuler la demande"
+    cancel_send: "Annuler le paiement"
+    cancel_send_confirm: "Appuyez à nouveau pour annuler — il peut encore le recevoir"
+    cancel_send_done: "Paiement annulé — vos fonds sont à nouveau disponibles"
+    cancel_send_too_late: "Ce paiement est déjà passé et ne peut pas être annulé"
+    waiting_to_receive: "En attente de réception par %{name}…"
+  request:
+    title: "%{name} demande"
+    approve: "Approuver"
+    decline: "Refuser"
+    review_title: "Vérifier la demande"
+    hold_to_accept: "Maintenir pour accepter"
+    hold_accept_hint: "Maintenez pour payer cette demande"
+  receive:
+    title: "Recevoir"
+    requesting: "Demande de %{amt}%{tsu} — partagez pour être payé"
+    clear_request: "Effacer la demande"
+    share_handle: "Partagez votre identifiant pour être payé"
+    copied: "Copié"
+    copy_nostr_id: "Copier l'ID nostr"
+    copy_address: "Copier l'adresse"
+    copy_npub: "Copier npub"
+    share_message: "Payez-moi sur Goblin (goblin.st) — %{npub}"
+    privacy_note: "Votre nom d'utilisateur est public. Le contenu des paiements reste chiffré sur le réseau."
+  profile:
+    title: "Profil"
+    activity: "Activité"
+    no_activity: "Aucune activité avec cette personne."
+    unblock: "Débloquer"
+    block: "Bloquer"
+    blocked_blurb: "Bloqué — ses paiements et demandes sont ignorés."
+    block_blurb: "Le blocage ignore ses paiements et demandes entrants."
+  settings:
+    title: "Réglages"
+    connected_nostr: "Connecté à nostr"
+    connecting_relays: "Connexion aux relais…"
+    identity: "Identité"
+    copy_npub: "Copier le npub (public)"
+    rotate_key: "Renouveler la clé nostr"
+    import_identity: "Importer l'identité (.backup / nsec)"
+    backup_note: "Changement d'appareil ? Sauvegardez les DEUX : votre phrase seed (fonds) et votre fichier .backup d'identité (nom + clé)."
+    wallet: "Portefeuille"
+    display_unit: "Unité d'affichage"
+    relays: "Relais"
+    node: "Nœud"
+    slatepacks: "Slatepacks"
+    slatepacks_value: "Transaction manuelle"
+    lock_wallet: "Verrouiller le portefeuille"
+    switch_wallet: "Changer de portefeuille"
+    advanced: "Avancé"
+    privacy: "Confidentialité"
+    mixnet_routing: "Routage par mixnet"
+    messages_lookups: "Messages et recherches"
+    auto_accept: "Acceptation auto"
+    pairing: "Appairage"
+    accept_anyone: "Tout le monde"
+    accept_contacts: "Contacts seulement"
+    accept_ask: "Toujours demander"
+    requests: "Demandes"
+    incoming_requests: "Demandes entrantes"
+    incoming_requests_sub: "Laisser les autres vous demander de l'argent"
+    appearance: "Apparence"
+    theme: "Thème"
+    theme_light: "Clair"
+    theme_dark: "Sombre"
+    theme_yellow: "Jaune"
+    archive: "Archive"
+    export_archive: "Exporter l'archive"
+    wipe_history: "Effacer l'historique des paiements"
+    about: "À propos"
+    goblin: "Goblin"
+    build: "Build %{build}"
+    network: "Réseau"
+    network_value: "MW + mixnet Nym + nostr"
+    third_party: "Tiers"
+    grim: "GRIM (portefeuille amont)"
+    grin_node: "Nœud grin"
+    sp_intro: "Avancé — échangez des slatepacks bruts à la main, comme le fait GRIM. À utiliser seulement si vous ne pouvez pas payer ou être payé via un username."
+    sp_receive_group: "Recevoir ou finaliser"
+    sp_receive_blurb: "Collez un slatepack qu'on vous a donné. Goblin reçoit le paiement, règle la facture, ou le finalise et le publie."
+    sp_process: "Traiter le slatepack"
+    sp_paste_first: "Collez d'abord un slatepack."
+    sp_reply_ready: "Réponse prête — renvoyez-la à l'expéditeur."
+    sp_finalizing: "Finalisation et publication sur la chaîne…"
+    sp_create_group: "Créer un paiement"
+    sp_create_blurb: "Créez un slatepack à remettre à quelqu'un. Il le reçoit, vous renvoie la réponse, et vous le finalisez ci-dessus."
+    sp_amount_hint: "Montant en grin"
+    sp_addr_hint: "Adresse du destinataire (facultatif)"
+    sp_create: "Créer un slatepack"
+    sp_ready: "Slatepack prêt — remettez-le au destinataire."
+    sp_amount_gt_zero: "Saisissez un montant supérieur à zéro."
+    sp_to_send: "Slatepack à envoyer"
+    sp_copy: "Copier le slatepack"
+    rotate_line1: "• Vous obtenez une toute nouvelle clé ALÉATOIRE ; l'ancien npub cesse de recevoir. Il n'y a aucune chaîne de dérivation entre eux."
+    rotate_line2: "• La nouvelle clé n'est PAS récupérable depuis votre phrase de récupération — sauvegardez le nouveau nsec juste après le renouvellement."
+    rotate_line3: "• Votre nom d'utilisateur est LIBÉRÉ — réclamez le même ou un nouveau juste après (une fois libre, n'importe qui peut le prendre)."
+    rotate_line4: "• Les paiements encore en cours vers l'ancienne clé SERONT interrompus — attendez d'abord la fin des paiements en attente."
+    rotate_line5: "• Les contacts qui ont enregistré votre npub directement doivent vous retrouver — partagez votre nouveau npub ou votre username re-réservé."
+    cancel: "Annuler"
+    continue: "Continuer"
+    final_confirmation: "Confirmation finale"
+    rotate_confirm_blurb: "Cette action est irréversible depuis l'app. Tapez RESET et saisissez le mot de passe du portefeuille pour renouveler."
+    type_reset: "Tapez RESET"
+    wallet_password: "Mot de passe du portefeuille"
+    rotate_key_btn: "Renouveler la clé"
+    rotating_key: "Renouvellement de la clé…"
+    key_rotated: "Clé renouvelée"
+    new_npub: "Nouveau npub : %{npub}"
+    backup_new_key: "Sauvegardez la NOUVELLE clé secrète maintenant — votre phrase de récupération ne peut pas la restaurer."
+    copy_new_nsec: "Copier la sauvegarde du nouveau nsec"
+    done: "Terminé"
+    rotation_failed: "Échec du renouvellement"
+    close: "Fermer"
+    import_identity_title: "Importer une identité"
+    import_blurb: "Remplace l'identité nostr de ce portefeuille — choisissez un fichier .backup GOBLIN, ou collez un nsec. Une sauvegarde restaure aussi votre nom d'utilisateur et votre historique. Sauvegardez d'abord la clé actuelle si besoin."
+    import_nsec_hint: "nsec1… ou sauvegarde collée"
+    backup_password_hint: "Mot de passe de sauvegarde (uniquement si exportée ailleurs)"
+    import_btn: "Importer"
+    importing: "Importation…"
+    identity_replaced: "Identité remplacée"
+    now_using: "Utilise maintenant : %{npub}"
+    import_failed: "Échec de l'importation"
+    name_authority: "Autorité de noms"
+    name_authority_title: "Changer l'autorité de noms"
+    name_authority_blurb: "Le serveur qui enregistre et vérifie les noms. Pointez-le vers une autre instance pour utiliser et payer des noms qui y sont hébergés."
+    name_authority_invalid: "Saisissez une URL complète (https://…)."
+    reset: "Réinitialiser"
+    save: "Enregistrer"
+    backup_file: "Sauvegarder dans un fichier"
+    choose_backup_file: "Choisir un fichier .backup"
+    backup_read_failed: "Impossible de lire ce fichier."
+    backup_saved: "Sauvegarde enregistrée"
+    backup_saved_sub: "Conservez le fichier .backup en lieu sûr — quiconque l'a AVEC votre mot de passe peut restaurer votre identité."
+    backup_file_title: "Sauvegarder l'identité"
+    backup_file_blurb: "Crée un fichier .backup chiffré avec votre nom d'utilisateur et votre clé. Saisissez le mot de passe du portefeuille pour le sceller."
+    backup_write_failed: "Impossible d'enregistrer le fichier."
+    create_backup: "Créer la sauvegarde"
+    registered: "%{name} enregistré"
+    released_msg: "Libéré — le nom est disponible"
+    release_confirm: "Libérer %{name} ?"
+    release_blurb: "Dès qu'il est libre, il est disponible — n'importe qui peut le réclamer, y compris votre prochaine clé. Vous ne pourrez pas enregistrer un autre nom d'utilisateur pendant 10 minutes."
+    releasing: "Libération…"
+    keep_it: "Le garder"
+    release_it: "Le libérer"
+    username: "Nom d'utilisateur"
+    username_note: "Affiché comme you. Public sur goblin.st. Les paiements restent chiffrés."
+    release_username: "Libérer le nom d'utilisateur"
+    pick_username: "Choisir un nom d'utilisateur — facultatif"
+    working: "En cours…"
+    claim: "Réserver"
+    err_just_taken: "Ce nom d'utilisateur vient d'être pris"
+    err_cooldown: "Vous avez récemment libéré un nom d'utilisateur — vous pouvez en enregistrer un nouveau dans les 10 minutes."
+    err_unreachable: "Impossible de joindre goblin.st — souci de connexion. Réessayez."
+    err_release: "Impossible de libérer : %{err}"
+    avail_available: "Disponible !"
+    avail_taken: "Pris"
+    avail_reserved: "Réservé"
+    avail_invalid: "Les noms font 3 à 20 caractères : a–z, 0–9, _ ou -"
+    avail_quarantined: "Indisponible"
+    avail_unknown: "Vérification impossible — souci de connexion. Réessayez."
+  advanced:
+    title: "Avancé"
+    intro: "Outils de portefeuille bas niveau de GRIM. Vous n'en aurez normalement pas besoin."
+    own_node_desc: "Synchronisez un nœud Grin complet sur cet appareil au lieu de faire confiance à un nœud public."
+    own_node_active: "Votre propre nœud est actif"
+    repair: "Réparer le portefeuille"
+    repair_desc: "Re-scanner la chaîne et restaurer les sorties manquantes. Cela peut prendre du temps."
+    repair_unavailable: "Nécessite d'abord une connexion à un nœud synchronisé."
+    repairing: "Réparation… %{pct}%"
+    restore: "Restaurer le portefeuille"
+    restore_desc: "Supprimer les données locales et reconstruire depuis votre seed. À utiliser si une réparation n'a pas aidé — vous rouvrirez le portefeuille ensuite."
+    restore_confirm: "Touchez à nouveau pour restaurer"
+    show_phrase: "Phrase de récupération"
+    phrase_desc: "Vos 24 mots de seed grin — le seul moyen de récupérer les fonds. Gardez-les hors ligne et privés."
+    reveal: "Afficher la phrase"
+    hide: "Masquer"
+    password: "Mot de passe du portefeuille"
+    wrong_password: "Mot de passe incorrect."
+    delete: "Supprimer le portefeuille"
+    delete_desc: "Supprimer définitivement ce portefeuille de cet appareil. Sans votre seed, les fonds sont irrécupérables."
+    delete_confirm: "Touchez à nouveau pour supprimer"
+    manage_node: "Gérer la connexion au nœud"
+    repair_confirm: "Oui, réparer maintenant"
+    repair_confirm_note: "La réparation réanalyse la chaîne et peut prendre quelques minutes."
+    restore_confirm_note: "Cela efface les données locales et les reconstruit depuis votre seed — cela peut prendre plusieurs minutes."
+  privacy:
+    title: "Confidentialité réseau"
+    intro: "Goblin envoie son trafic privé via le mixnet Nym — un réseau à cinq sauts qui masque qui parle à qui, afin qu'un relais ne puisse pas relier un paiement à vous."
+    payments: "Paiements"
+    payments_blurb: "Chaque message nostr transportant un slatepack."
+    usernames: "usernames"
+    usernames_blurb: "Recherches de noms NIP-05 vers et depuis goblin.st."
+    price_avatars: "Prix"
+    price_avatars_blurb: "Le taux en temps réel affiché à côté des montants."
+    over_mixnet: "Via le mixnet"
+    direct_connection: "Connexion directe"
+    grin_node: "Nœud grin"
+    grin_node_blurb: "Synchronisation des blocs et diffusion de votre transaction sur le réseau. Ce sont des données de chaîne publiques, identiques pour tous, et non liées à votre identité."
+  pairing:
+    title: "Appairage"
+    intro: "Ce à quoi votre solde et vos montants sont comparés."
+    pair_with: "Apparier avec"
+    rates_note: "Les cours sont récupérés via le mixnet Nym, uniquement tant qu'un appairage est actif — désactivé, aucune requête de cours ne quitte votre appareil."
+  relays:
+    title: "Relais"
+    intro: "Les messages de paiement sont répliqués sur tous les relais ci-dessous ; un seul relais joignable suffit pour recevoir."
+    your_relays: "Vos relais"
+    add_relay: "Ajouter un relais"
+    add_relay_btn: "Ajouter un relais"
+    save_reconnect: "Enregistrer et reconnecter"
+    none: "aucun"
+    count: "%{n} relais"
+  node:
+    title: "Nœud"
+    connection: "Connexion"
+    integrated: "Nœud intégré"
+    applies_after: "S'applique après le verrouillage puis déverrouillage du portefeuille."
+    add_external: "Ajouter un nœud externe"
+    api_secret_hint: "Secret API (facultatif)"
+    add_node: "Ajouter le nœud"
+    integrated_host: "nœud intégré"
+    summary_syncing: "%{conn} · synchronisation"
+    summary_block: "Bloc %{height} · %{conn}"
+  nips:
+    title: "nostr et NIP"
+    intro1: "Goblin parle nostr — un protocole ouvert de messages signés transmis via de simples serveurs relais. Votre portefeuille porte sa propre identité nostr : une clé aléatoire autonome, gardée délibérément indépendante de vos fonds et de votre phrase de récupération. Chaque paiement voyage comme un message direct chiffré de bout en bout entre identités, le slatepack à l'intérieur."
+    intro2: "goblin.st est le service de noms de Goblin : réserver un nom d'utilisateur y publie une correspondance nom → clé (NIP-05), pour qu'on puisse payer you au lieu d'un long npub. Le nom d'utilisateur est public ; le contenu des paiements ne l'est jamais. Les NIP sont les briques du protocole — touchez-en un pour lire la spécification."
+    n05_title: "Noms"
+    n05_blurb: "Associe username@goblin.st à votre clé, pour que les identifiants fonctionnent comme des adresses."
+    n17_title: "Messages privés"
+    n17_blurb: "L'enveloppe de DM chiffré dans laquelle voyage chaque paiement."
+    n44_title: "Chiffrement"
+    n44_blurb: "Le chiffrement authentifié utilisé à l'intérieur de ces messages."
+    n49_title: "Chiffrement de clé"
+    n49_blurb: "Comment la clé secrète est stockée au repos, verrouillée par votre mot de passe."
+    n59_title: "Emballage cadeau"
+    n59_blurb: "Enveloppe les messages pour que les relais ne voient pas qui parle à qui."
+    n98_title: "Auth HTTP"
+    n98_blurb: "Signe la demande d'enregistrement du nom d'utilisateur auprès de goblin.st."
+  onboarding:
+    intro:
+      private_money_head: "Argent privé"
+      private_money_body: "Goblin est un portefeuille pour grin — de l'argent numérique sans montants ni adresses sur sa chaîne."
+      send_like_message_head: "Envoyer comme un message"
+      send_like_message_body: "Payez un username ou un npub et cela arrive comme un message chiffré de bout en bout via nostr et le mixnet Nym — personne entre les deux ne voit le montant ni les personnes impliquées."
+      yours_alone_head: "À vous seul"
+      yours_alone_body: "Clés, noms et historique vivent sur cet appareil. Construit sur le portefeuille GRIM."
+      get_started: "Commencer"
+      footnote: "Environ une minute. Vous pourrez tout changer plus tard."
+    node:
+      kicker: "ÉTAPE 1 SUR 3 · RÉSEAU"
+      title: "Comment Goblin doit-il\nsurveiller la chaîne ?"
+      own_title: "Lancer mon propre nœud"
+      own_badge: "Privé"
+      own_body: "Ne fait confiance à personne — votre portefeuille vérifie la chaîne lui-même. Se synchronise en arrière-plan pendant que vous terminez la configuration."
+      connect_title: "Se connecter à un nœud"
+      connect_badge: "Instantané"
+      connect_body: "Aucune attente de synchronisation. Le nœud que vous choisissez peut voir les requêtes de votre portefeuille."
+      changeable: "Modifiable à tout moment dans Réglages → Nœud."
+      continue: "Continuer"
+      url_invalid: "L'URL du nœud doit commencer par http:// ou https://"
+    wallet:
+      kicker: "ÉTAPE 2 SUR 3 · PORTEFEUILLE"
+      title: "Configurez votre portefeuille"
+      create_new: "Créer un nouveau"
+      restore_from_seed: "Restaurer depuis la phrase"
+      name_hint: "Nom du portefeuille"
+      password_hint: "Mot de passe"
+      repeat_password_hint: "Répéter le mot de passe"
+      restore_hint: "Préparez vos mots de récupération — vous les saisirez ensuite."
+      create_hint: "Vous obtiendrez ensuite 24 mots de récupération à noter. Ce sont l'argent — quiconque les détient détient vos fonds."
+      continue: "Continuer"
+      passwords_no_match: "Les mots de passe ne correspondent pas"
+    words:
+      kicker: "ÉTAPE 2 SUR 3 · PORTEFEUILLE"
+      title_restore: "Saisissez vos mots de récupération"
+      title_create: "Notez ces mots"
+      write_down_hint: "Sur papier, dans l'ordre. Quiconque a ces mots peut prendre vos fonds ; sans eux, un appareil perdu signifie des fonds perdus."
+      paste: "Coller"
+      scan_qr: "Scanner le QR"
+      copy_clipboard: "Copier dans le presse-papiers (à éviter)"
+      restore_wallet: "Restaurer le portefeuille"
+      wrote_them_down: "Je les ai notés"
+      fill_every_word: "Remplissez chaque mot — touchez un mot pour le modifier, ou collez la phrase."
+    confirm:
+      kicker: "ÉTAPE 2 SUR 3 · PORTEFEUILLE"
+      title: "Maintenant prouvez-le"
+      enter_hint: "Saisissez les mots que vous venez de noter. Touchez un mot pour le taper."
+      paste: "Coller"
+      create_wallet: "Créer le portefeuille"
+      keep_going: "Continuez — chaque mot, dans l'ordre."
+    identity:
+      kicker: "ÉTAPE 3 SUR 3 · IDENTITÉ"
+      title: "Votre identité de paiement"
+      key_being_made: "clé en cours de création…"
+      connected_nym: "connecté via Nym"
+      connecting_nym: "connexion via Nym…"
+      fresh_key_blurb: "Une clé de paiement qui ne fait pas partie de votre seed — renouvelable à tout moment, sans toucher à vos fonds."
+      clean_slate_blurb: "Envie de repartir à zéro ? Remplacez par une toute nouvelle clé à tout moment — le nouveau vous n'est pas lié à l'ancien. Même portefeuille, nouveau visage."
+      pick_username: "Choisir un nom d'utilisateur — facultatif"
+      username_blurb: "Vos amis paient votre nom au lieu d'une longue clé. Facultatif — réclamez-en un à tout moment."
+      username_field_hint: "votrenom"
+      working: "En cours…"
+      claim_username: "Réserver le nom d'utilisateur"
+      available_when_connected: "Disponible une fois le mixnet connecté — ou passez et réservez plus tard."
+      youre: "Vous êtes %{name}"
+      claimed_title: "%{name} est à vous"
+      claimed_blurb: "Vos amis peuvent désormais vous payer par votre nom. Tout est prêt — ouvrez votre portefeuille."
+      open_wallet: "Ouvrir mon portefeuille"
+      skip_for_now: "Passer pour l'instant"
+      import_existing: "Vous avez déjà une identité Goblin ? Importez-la"
+      import_title: "Importer votre identité"
+      import_blurb: "Collez votre nsec ou choisissez un fichier .backup pour conserver votre clé et votre nom existants au lieu de ce nouveau."
+    errors:
+      cant_open: "Impossible d'ouvrir le portefeuille : %{err}"
+      cant_create: "Impossible de créer le portefeuille : %{err}"
+  send:
+    scan_to_request: "Scanner pour demander"
+    scan_to_pay: "Scanner pour payer"
+    tab_scan: "Scanner"
+    tab_my_code: "Mon code"
+    request_from: "Demander à"
+    send_to: "Envoyer à"
+    search_hint: "handle, npub ou nom"
+    suggested: "%{icon}  Suggéré"
+    no_contacts: "Aucun contact pour l'instant. Trouvez quelqu'un par son handle."
+    no_profile: "pas de profil"
+    tag_contact: "contact"
+    tag_on_nostr: "sur nostr"
+    searching_nostr: "Recherche sur nostr…"
+    unverified_title: "Payer une clé non vérifiée ?"
+    unverified_body: "Aucun profil nostr n'est publié pour cette clé — elle peut être toute neuve, anonyme ou mal saisie. Vérifiez bien qu'il s'agit de la bonne avant d'envoyer."
+    keep_looking: "Continuer à chercher"
+    pay_anyway: "Payer quand même"
+    scan_not_recipient: "Ce QR n'est pas un destinataire goblin — un npub ou handle est attendu"
+    scan_prompt: "Placez un code goblin dans le champ pour activer"
+    scan_to_pay_me: "Scannez pour me payer"
+    share_btn: "%{icon} Partager"
+    share_message: "Payez-moi sur Goblin — %{handle}\n%{link}\nnpub : %{npub}"
+    none_found: "Personne trouvé pour %{label}"
+    enter_recipient: "Saisissez un handle, un npub ou un nom"
+    amount_title: "Montant"
+    to_name: "À %{name}"
+    not_enough: "Vous n'avez pas assez de grin"
+    max: "Max"
+    note_label: "Note"
+    note_hint: "Ajouter une note…"
+    add_note: "Ajouter une note"
+    edit_note: "Modifier la note"
+    note_cancel: "Annuler"
+    note_save: "Enregistrer"
+    review_btn: "Vérifier"
+    confirm_request: "Confirmer la demande"
+    review_title: "Vérification"
+    requesting_from: "Demande à %{name}"
+    youre_sending: "Vous envoyez %{name}"
+    row_from: "De"
+    row_to: "À"
+    row_note: "Note"
+    row_they_pay: "Ils paient"
+    row_they_pay_val: "Seulement s'ils approuvent"
+    row_delivery: "Livraison"
+    row_delivery_val: "Chiffré NIP-44, via Nym"
+    row_network_fee: "Frais de réseau"
+    row_network_fee_val: "Déduit de votre solde"
+    row_privacy: "Confidentialité"
+    row_privacy_val: "Mimblewimble + Nym"
+    send_request_btn: "Envoyer la demande"
+    request_approve_hint: "Ils recevront une demande à approuver"
+    hold_to_send: "Maintenir pour envoyer"
+    lower_amount: "Revenez et baissez le montant"
+    hold_confirm_hint: "Appuyez et maintenez pour confirmer"
+    requesting: "Demande en cours…"
+    sending: "Envoi…"
+    they: "Ils"
+    request_blocked: "%{who} n'accepte pas les demandes. Demandez-lui de vous envoyer des grin à la place."
+    failed_request_title: "Échec de la demande"
+    failed_send_title: "Échec de l'envoi"
+    failed_request_body: "Impossible de livrer la demande. Demandez-lui de vous envoyer des grin à la place."
+    failed_send_body: "Le paiement n'a pas été livré. Vos grin sont en sécurité — réessayez."
+    try_again_btn: "Réessayer"
+    close_btn: "Fermer"
+    success:
+      requested: "Demandé"
+      sent: "Envoyé"
+      from: "de"
+      to: "à"
+      subtitle: "%{dir} %{who} · à l'instant"
+      done_btn: "Terminé"
+      receipt_btn: "Reçu"

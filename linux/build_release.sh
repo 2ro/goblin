@@ -1,0 +1,57 @@
+#!/bin/bash
+#
+# Build a portable, single-file Goblin AppImage.
+#
+# Usage: linux/build_release.sh [platform]
+#   platform: 'x86_64' (default) or 'arm'
+#
+# Goblin links the Nym SDK IN-PROCESS (src/nym/), so the AppImage is one
+# self-contained binary with no sidecar to embed or ship beside it.
+
+set -euo pipefail
+
+platform="${1:-x86_64}"
+case "${platform}" in
+  x86_64) arch="x86_64-unknown-linux-gnu" ;;
+  arm)    arch="aarch64-unknown-linux-gnu" ;;
+  *) echo "Usage: build_release.sh [platform]  (platform: 'x86_64' | 'arm')" >&2; exit 1 ;;
+esac
+
+# Repo root (this script lives in linux/).
+BASEDIR=$(cd "$(dirname "$0")" && pwd)
+cd "${BASEDIR}/.."
+
+# Prefer the GRIM-canonical toolchains (zig + appimagetool from code.gri.mw/DEV);
+# scripts/toolchain.sh fetches them and writes this env. Falls back to system
+# installs when it's absent.
+[ -f .toolchains/env.sh ] && source .toolchains/env.sh
+
+rustup target add "${arch}"
+command -v cargo-zigbuild >/dev/null || cargo install cargo-zigbuild
+
+# Portable cross-build to glibc 2.17. Three zig-specific fixes:
+#  - CRoaring's AVX512 path won't compile under zig's clang (evex512 error).
+#  - OpenSSL is vendored in Cargo.toml, so no system libssl is needed.
+#  - v4l2-sys (camera/QR backend) runs bindgen over linux/videodev2.h, a kernel
+#    UAPI header missing from zig 0.12.1's glibc-2.17 sysroot; point bindgen at
+#    the host's kernel headers. This only reads struct layouts — the actual libc
+#    linkage stays glibc-2.17, so portability is unaffected.
+export CFLAGS_x86_64_unknown_linux_gnu="-DCROARING_COMPILER_SUPPORTS_AVX512=0"
+export CXXFLAGS_x86_64_unknown_linux_gnu="-DCROARING_COMPILER_SUPPORTS_AVX512=0"
+export BINDGEN_EXTRA_CLANG_ARGS="${BINDGEN_EXTRA_CLANG_ARGS:-} -I/usr/include"
+cargo zigbuild --release --target "${arch}.2.17"
+
+# Assemble the AppDir: AppRun IS the goblin binary (Nym SDK linked in), plus the
+# icon + desktop entry. Nothing else.
+appdir="linux/Goblin.AppDir"
+cp "target/${arch}/release/goblin" "${appdir}/AppRun"
+chmod +x "${appdir}/AppRun"
+
+out="target/${arch}/release/Goblin-${platform}.AppImage"
+rm -f "target/${arch}/release/"*.AppImage
+# Use the DEV appimagetool + type2 runtime when fetched, else the system tool.
+appimagetool_bin="${GOBLIN_APPIMAGETOOL:-appimagetool}"
+runtime_arg=()
+[ -n "${GOBLIN_APPIMAGE_RUNTIME:-}" ] && runtime_arg=(--runtime-file "${GOBLIN_APPIMAGE_RUNTIME}")
+ARCH=x86_64 "${appimagetool_bin}" "${runtime_arg[@]}" "${appdir}" "${out}"
+echo "built: ${out}"

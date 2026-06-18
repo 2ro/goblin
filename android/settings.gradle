@@ -1,0 +1,26 @@
+pluginManagement {
+    repositories {
+        // Private mirror only when its coordinates are supplied (-PmavenHost=… as in upstream CI);
+        // everyone else resolves plugins from the public repositories.
+        def mavenHost = providers.gradleProperty("mavenHost")
+        if (mavenHost.present) {
+            def mavenUser = providers.gradleProperty("mavenUser").get()
+            def mavenPassword = providers.gradleProperty("mavenPassword").get()
+            ["gradle-plugin-portal", "google-maven", "maven-central"].each { repo ->
+                maven {
+                    credentials {
+                        username mavenUser
+                        password mavenPassword
+                    }
+                    url "${mavenHost.get()}/repository/${repo}/"
+                    allowInsecureProtocol = true
+                }
+            }
+        } else {
+            gradlePluginPortal()
+            google()
+            mavenCentral()
+        }
+    }
+}
+include ':app'

@@ -1,0 +1,808 @@
+lang_name: 英语
+copy: 复制
+paste: 粘贴
+continue: 继续
+complete: 完成
+error: 错误
+retry: 重试
+close: 关闭
+change: 更改
+show: 显示
+delete: 删除
+clear: 清楚
+create: 创建
+id: 标识
+kernel: 核心
+settings: 设置
+language: 语言
+scan: 扫描
+qr_code: 二维码
+scan_qr: 扫描二维码
+repeat: 重复
+scan_result: 扫描结果
+back: 返回
+share: 分享
+theme: '主题:'
+dark: 深色
+light: 淡色
+file: 文件
+choose_file: 选择文件
+choose_folder: 选择文件夹
+crash_report: 崩溃报告
+crash_report_warning: 上次应用程序意外关闭，您可以报告开发人员崩溃事件.
+confirmation: 确认
+enter_url: 输入 URL
+max_short: 最大數量
+files_location: 檔案位置
+moving_files: 檔案移動
+wrong_path_error: 指定錯誤路徑
+check_updates: 啟動時請查看更新
+update_available: 最新消息已发布！
+changelog: '更新日誌:'
+wallets:
+  await_conf_amount: 等待确认中
+  await_fin_amount: 等待确定中
+  locked_amount: 锁定帐户
+  txs_empty: '手动接收资金或通过传输接收资金 %{message} or %{transport} 更改钱包设置, 请按屏幕底部的按钮 %{settings} 按钮.'
+  title: Goblin
+  create_desc: 创建或种子单词导入已有钱包.
+  add: 添加钱包
+  name: '用户名:'
+  pass: '密码:'
+  pass_empty: 输入钱包的密码
+  current_pass: '目前密码:'
+  new_pass: '新密码:'
+  min_tx_conf_count: '确认交易的最低数量:'
+  recover: 恢复
+  recovery_phrase: 助记词
+  words_count: '字数:'
+  enter_word: '输入单词 #%{number}:'
+  not_valid_word: 输入的单词无效
+  not_valid_phrase: 输入的助记词无效
+  create_phrase_desc: 已安全地写下并保存助记词.
+  restore_phrase_desc: 从已保存的助记词中输入.
+  setup_conn_desc: 选择钱包连接到网络的方式.
+  conn_method: 连接方式
+  ext_conn: '外部连接:'
+  add_node: 添加节点
+  node_url: '节点网址:'
+  node_secret: 'API 密钥 (可选):'
+  invalid_url: 输入的网址无效
+  open: 打开钱包
+  wrong_pass: 输入的密码错误
+  locked: 已锁定
+  unlocked: 解锁
+  enable_node: '通过选择屏幕底部的按钮 %{settings} 启用集成节点以使用钱包或更改连接设置.'
+  node_loading: '集成节点同步后钱包会加载，你可选择屏幕底部的按钮 %{settings} 更改连接.'
+  loading: 正在加载
+  closing: 正在关闭
+  checking: 检查中
+  default_wallet: 默认钱包
+  new_account_desc: '输入新帐户的名称:'
+  wallet_loading: 加载钱包
+  wallet_closing: 关闭钱包
+  wallet_checking: 检查钱包
+  tx_loading: 加载事务
+  default_account: 默认账户
+  accounts: 账户
+  tx_sent: 已发送
+  tx_received: 已接收
+  tx_sending: 发送中
+  tx_receiving: 接收中
+  tx_confirming: 等待确认
+  tx_canceled: 已取消
+  tx_cancelling: 取消
+  tx_finalizing: 完成
+  tx_posting: 过账交易
+  tx_confirmed: 已确认
+  txs: 所有交易
+  tx: 交易
+  messages: 消息
+  transport: 传输
+  input_slatepack_desc: '输入收到的 Slatepack 消息创建响应或完成的请求:'
+  parse_slatepack_err: '读取消息时出错，请检查输入:'
+  pay_balance_error: '账户余额不足以支付 %{amount} ツ 和网络费用.'
+  parse_i1_slatepack_desc: '要支付 %{amount} ツ 请将此消息发送给接收者:'
+  parse_i2_slatepack_desc: '完成交易以接收 %{amount} ツ:'
+  parse_i3_slatepack_desc: '发布交易以完成 %{amount} ツ的接收 ツ:'
+  parse_s1_slatepack_desc: '要接收 %{amount} ツ 请将此消息发送给发件人:'
+  parse_s2_slatepack_desc: '完成交易以发送 %{amount} ツ:'
+  parse_s3_slatepack_desc: '发布交易以完成 %{amount} ツ的发送:'
+  resp_slatepack_err: '创建响应时出错，请检查输入数据或重试:'
+  resp_exists_err: 此交易已存在.
+  resp_canceled_err: 此交易已被取消.
+  create_request_desc: '创建发送或接收资金的请求:'
+  send_request_desc: '您已创建发送请求 %{amount} ツ. 将此消息发送给接收者:'
+  send_slatepack_err: 创建发送资金请求时出错，请检查输入数据或重试.
+  invoice_desc: '您已创建接收请求 %{amount} ツ. 将此消息发送给发送者:'
+  invoice_slatepack_err: 发票开具时出错，请检查输入数据或重试.
+  finalize_slatepack_err: '完结时出错，请检查输入数据或重试:'
+  finalize: 完成
+  use_dandelion: 使用蒲公英
+  enter_amount_send: '你有 %{amount} ツ. 输入要发送的金额:'
+  enter_amount_receive: '输入要接收的金额:'
+  recovery: 恢复
+  repair_wallet: 修复钱包
+  repair_desc: 检查钱包，必要时修复和恢复丢失的输出. 此操作需要时间.
+  repair_unavailable: 您需要与节点建立有效连接并完成钱包同步.
+  delete: 删除钱包
+  delete_conf: 您确定要删除钱包吗？
+  delete_desc: 确保您已保存恢复助记语，以便日后使用资金。.
+  wallet_loading_err: '同步钱包时出错，你可以通过选择屏幕底部的按钮 %{settings} 来重试或更改连接设置.'
+  wallet: 钱包
+  send: 发送
+  receive: 接收
+  settings: 钱包设置
+  tx_send_cancel_conf: '您确定要取消 %{amount} ツ的发送吗?'
+  tx_receive_cancel_conf: '您确定要取消 %{amount} ツ的接收吗?'
+  rec_phrase_not_found: 找不到恢复助记词.
+  restore_wallet_desc: 如果常规修复没有帮助，通过删除所有文件来恢复钱包.您将需要重新打开您的钱包.
+  fee_base_desc: '费用 (基值%{value}):'
+  payment_proof: 付款證明
+  payment_proof_desc: '輸入已收款證明以驗證交易:'
+  payment_proof_valid: '輸入的付款證明有效:'
+  payment_proof_error: '輸入的付款證明無效:'
+  tx_delete_confirmation: 你確定要從歷史紀錄中刪除這筆交易嗎？
+transport:
+  desc: '使用传输同步接收或发送消息:'
+  tor_network: Tor 网络
+  connected: 已连接
+  connecting: 正在连接
+  disconnecting: 断开连接
+  conn_error: 连接错误
+  disconnected: 已断开连接
+  receiver_address: '接收者的地址:'
+  incorrect_addr_err: '输入的地址不正确:'
+  tor_send_error: 通过 Tor 发送时出错，请确保接收方在线, 交易已取消.
+  tor_autorun_desc: 是否在开钱包时启动 Tor 服务以同步接收交易.
+  tor_sending: 通过 Tor 发送
+  tor_settings: Tor 设置
+  bridges: 桥梁
+  bridges_desc: 如果常规连接不正常，设置网桥，可以绕过 Tor 网络审查.
+  bin_file: '二进制文件:'
+  conn_line: '连接线:'
+  bridges_disabled: 网桥已禁用
+  bridge_name: '网桥%{b}'
+network:
+  self: 网络
+  type: '网络类型:'
+  mainnet: 主网
+  testnet: 测试网
+  connections: 连接
+  node: 集成节点
+  metrics: 指标
+  mining: 挖矿
+  settings: 节点设置
+  enable_node: 启用节点
+  autorun: 自动运行
+  disabled_server: '按屏幕左上角的按钮 %{dots}启用集成节点或添加其他连接方法.'
+  no_ips: T您的系统上没有可用的 IP 地址，服务器无法启动，请检查您的网络连接.
+  available: 可用
+  not_available: 不可用
+  availability_check: 检查是否可用
+  android_warning: Android 用户注意 .要成功同步集成节点，您必须在手机的系统设置中允许访问通知并取消 Grim 应用程序的电池使用限制.这是在后台正确运行应用程序的必要操作.
+sync_status:
+  node_restarting: 节点正在重新启动
+  node_down: 节点已关闭
+  initial: 节点正在启动
+  no_sync: 节点正在运行
+  awaiting_peers: 等待网络对点
+  header_sync: 正下载标题
+  header_sync_percent: '正在下载标题: %{percent}%'
+  tx_hashset_pibd: 下载状态 (PIBD)
+  tx_hashset_pibd_percent: '下载状态 (PIBD): %{percent}%'
+  tx_hashset_download: 正在下载状态
+  tx_hashset_download_percent: '下载状态: %{percent}%'
+  tx_hashset_setup_history: '正在准备状态（历史记录）: %{percent}%'
+  tx_hashset_setup_position: '正在准备状态（位置）: %{percent}%'
+  tx_hashset_setup: 正在准备状态
+  tx_hashset_range_proofs_validation: '验证状态（范围证明）: %{percent}%'
+  tx_hashset_kernels_validation: '正在验证状态（核心）: %{percent}%'
+  tx_hashset_save: 最终确定链状态
+  body_sync: 下载区块
+  body_sync_percent: '下载区块中: %{percent}%'
+  shutdown: 节点正在关闭
+network_node:
+  header: 标题
+  block: 区块
+  hash: 哈希值
+  height: 高度
+  difficulty: 难度
+  time: 时间
+  main_pool: 主池
+  stem_pool: stem池
+  data: 数据
+  size: 大小 (GB)
+  peers: 网络对点
+  error_clean: 点数据已损坏，需要重新同步.
+  resync: 重新同步
+  error_p2p_api: '%{p2p_api} 服务器初始化时出错，请选择屏幕底部的按钮 %{p2p_api} 来检查 %{settings}设置.'
+  error_config: '配置初始化时出错，请选择屏幕底部的按钮 %{settings} 检查设置.'
+  error_unknown: '初始化时出错，请选择屏幕底部的按钮 %{settings} 来检查集成节点设置，或者重新同步.'
+network_metrics:
+  loading: 指标在同步后将可用
+  emission: 发射
+  inflation: 通货膨胀
+  supply: 供应
+  block_time: Block time
+  reward: 奖励
+  difficulty_window: '难度窗口 %{size}'
+network_mining:
+  loading: 同步后即可挖矿
+  info: '挖矿服务器已启用，您可以通过选择屏幕底部的按钮 %{settings} 来更改其设置。连接设备后，数据会更新.'
+  restart_server_required: 需要重启服务器才能应用更改.
+  rewards_wallet: 奖励钱包
+  server: 阶层服务器
+  address: 地址
+  miners: 矿工
+  devices: 设备
+  blocks_found: 找到的区块
+  hashrate: '哈希率 (C%{bits})'
+  connected: 已连接
+  disconnected: 已断开连接
+network_settings:
+  change_value: 更改值
+  stratum_ip: '层 IP 地址:'
+  stratum_port: '层端口:'
+  port_unavailable: 指定的端口不可用
+  restart_node_required: 需要重启节点才能应用更改.
+  choose_wallet: 选择钱包
+  stratum_wallet_warning: 必须打开钱包才能获得奖励.
+  enable: 启用
+  disable: 禁用
+  restart: 重新启动
+  server: 服务器
+  api_ip: 'API IP 地址:'
+  api_port: 'API 端口:'
+  api_secret: '其它API 和 V2 所有者 API 令牌:'
+  foreign_api_secret: '外部 API 令牌:'
+  disabled: 已禁用
+  enabled: 已启用
+  ftl: '未来时间限制 (FTL):'
+  ftl_description: 限制未来多长时间, 相对于节点的本地时间，以秒为单位, 新区块的时间戳可以被接受.
+  not_valid_value: 输入的值无效
+  full_validation: 完全验证
+  full_validation_description: 在处理每个区块时是否运行全链验证(同步期间除外).
+  archive_mode: 存档模式
+  archive_mode_desc: 以全部存档模式运行全节点（同步需要更多的磁盘空间和时间）.
+  attempt_time: '尝试挖矿时间 (秒):'
+  attempt_time_desc: 在停止并从池中重新收集交易之前尝试对特定标题进行挖矿的时间
+  min_share_diff: '可接受的最低份额难度:'
+  reset_settings_desc: 将节点设置重置为默认值
+  reset_settings: 重置设置
+  reset: 重置
+  tx_pool: 交易池
+  pool_fee: '接受到矿池的基本费用:'
+  reorg_period: '重组缓存保留期（以分钟为单位）:'
+  max_tx_pool: '池中的最大交易数:'
+  max_tx_stempool: 'stem池中的最大交易数:'
+  max_tx_weight: '可以选择构建区块交易的最大总权重:'
+  epoch_duration: '纪元持续时间（以秒为单位):'
+  embargo_timer: '禁止计时器（以秒为单位):'
+  aggregation_period: '聚合周期（以秒为单位):'
+  stem_probability: 'stem助记词概率:'
+  stem_txs: stem交易
+  p2p_server: P2P 服务器
+  p2p_port: 'P2P 端口:'
+  add_seed: 添加 DNS 种子
+  seed_address: 'DNS 种子地址:'
+  add_peer: 添加网络对点
+  peer_address: '网络对点地址:'
+  peer_address_error: '以正确的格式输入 IP 地址或 DNS 名称（确保指定的主机可用），例如：192.168.0.1：1234 或 example.com:5678'
+  default: 默认
+  allow_list: 允许列表
+  allow_list_desc: 仅连接到此列表中的网络对点.
+  deny_list: 拒绝列表
+  deny_list_desc: 切勿连接到此列表中的网络对点.
+  favourites: 收藏夹
+  favourites_desc: 要连接的首选网络对点列表.
+  ban_window: '被封禁的网络对点应该保持被封禁多长时间（以秒为单位）:'
+  ban_window_desc: 禁止的决定是由节点 根据从网络对点收到的数据的正确性做出的.
+  max_inbound_count: '入站网络对点连接的最大数量:'
+  max_outbound_count: '最大出站网络对点连接数:'
+  reset_data_desc: 重置节点数据。只有在出现同步问题时才需谨慎使用.
+  reset_data: 重置数据
+modal:
+  cancel: 取消
+  save: 保存
+  add: 添加
+modal_exit:
+  description: 您确定要退出应用程序吗？
+  exit: 退出手
+app_settings:
+  proxy: 代理
+  proxy_desc: 是否值得对来自应用程序的网络请求使用代理.
+keyboard:
+  1: 1
+  2: 2
+  3: 3
+  4: 4
+  5: 5
+  6: 6
+  7: 7
+  8: 8
+  9: 9
+  0: 0
+  01: '-'  
+  q: 手
+  w: 田
+  e: 水
+  r: 口
+  t: 廿
+  y: 卜
+  u: 山
+  i: 戈
+  o: 人
+  p: 心
+  p1: '"'
+  a: 日
+  s: 尸
+  d: 木
+  f: 火
+  g: 土
+  h: 竹
+  j: 十
+  k: 大
+  l: 中
+  l1: \
+  l2: ':'
+  z: 重
+  x: 難
+  c: 金
+  v: 女
+  b: 月
+  n: 弓
+  m: 一
+  m1: ','
+  m2: .
+  m3: /
+goblin:
+  home:
+    anonymous: "匿名"
+    connected_nym: "已通过 Nym 连接"
+    nym_ready: "Nym 就绪 · 连接中继…"
+    connecting_nym: "正在连接 Nym…"
+    cant_reach_node: "无法连接节点"
+    node_synced: "节点已同步"
+    syncing: "同步中…"
+    block: "区块 %{height}"
+    waiting_for_chain: "等待链数据…"
+    nav_wallet: "钱包"
+    nav_pay: "支付"
+    nav_activity: "动态"
+    nav_receive: "收款"
+    nav_settings: "设置"
+    activity: "动态"
+    empty_title: "暂无动态"
+    empty_sub: "收发 grin 即可开始。"
+    recent: "最近"
+    scan_to_pay: "扫码支付"
+    type_amount: "输入金额"
+    request: "请求"
+    pay: "支付"
+    enter_amount: "输入要支付或请求的金额"
+  activity:
+    canceled: "已取消"
+    pending: "待处理"
+    earlier: "更早"
+    today: "今天"
+    yesterday: "昨天"
+    title: "动态"
+    requests: "请求"
+    empty_title: "暂无动态"
+    empty_sub: "你的付款将显示在这里。"
+    pending_header: "待处理"
+  receipt:
+    title: "收据"
+    not_found: "未找到交易"
+    for_note: "用于 %{note}"
+    details: "交易详情"
+    canceled: "已取消"
+    expired: "已过期"
+    funds_returned: "资金已退回"
+    complete: "已完成"
+    payment_received: "已收到付款"
+    payment_sent: "付款发送成功"
+    pending: "待处理"
+    confs: "%{c}/%{r} 次确认"
+    waiting_to_confirm: "等待确认"
+    paying: "支付中…"
+    you: "你"
+    to: "收款方"
+    from: "付款方"
+    nostr: "nostr"
+    fee_none: "无"
+    network_fee: "网络费用"
+    privacy: "隐私"
+    privacy_value: "Mimblewimble + Nym"
+    transaction: "交易"
+    cancel_request: "取消请求"
+    cancel_send: "取消付款"
+    cancel_send_confirm: "再次点按以取消 — 对方可能仍会收到"
+    cancel_send_done: "付款已取消 — 你的资金已重新可用"
+    cancel_send_too_late: "这笔付款已经完成，无法取消"
+    waiting_to_receive: "等待 %{name} 接收…"
+  request:
+    title: "%{name} 发起请求"
+    approve: "同意"
+    decline: "拒绝"
+    review_title: "审核请求"
+    hold_to_accept: "按住以接受"
+    hold_accept_hint: "按住以支付此请求"
+  receive:
+    title: "收款"
+    requesting: "正在请求 %{amt}%{tsu} — 分享以收款"
+    clear_request: "清除请求"
+    share_handle: "分享你的用户名以收款"
+    copied: "已复制"
+    copy_nostr_id: "复制 nostr ID"
+    copy_address: "复制地址"
+    copy_npub: "复制 npub"
+    share_message: "在 Goblin 上向我付款 (goblin.st) — %{npub}"
+    privacy_note: "你的用户名是公开的。付款内容在网络中保持加密。"
+  profile:
+    title: "资料"
+    activity: "动态"
+    no_activity: "尚无往来记录。"
+    unblock: "取消屏蔽"
+    block: "屏蔽"
+    blocked_blurb: "已屏蔽 — 其付款和请求会被丢弃。"
+    block_blurb: "屏蔽后将丢弃对方发来的付款和请求。"
+  settings:
+    title: "设置"
+    connected_nostr: "已连接 nostr"
+    connecting_relays: "正在连接中继…"
+    identity: "身份"
+    copy_npub: "复制 npub（公开）"
+    rotate_key: "轮换 nostr 密钥"
+    import_identity: "导入身份（.backup / nsec）"
+    backup_note: "更换设备？两者都要备份：你的助记词（资金）和身份 .backup 文件（名称 + 密钥）。"
+    wallet: "钱包"
+    display_unit: "显示单位"
+    relays: "中继"
+    node: "节点"
+    slatepacks: "Slatepack"
+    slatepacks_value: "手动交易"
+    lock_wallet: "锁定钱包"
+    switch_wallet: "切换钱包"
+    advanced: "高级"
+    privacy: "隐私"
+    mixnet_routing: "mixnet 路由"
+    messages_lookups: "消息和查询"
+    auto_accept: "自动接受"
+    pairing: "配对"
+    accept_anyone: "任何人"
+    accept_contacts: "仅联系人"
+    accept_ask: "每次询问"
+    requests: "请求"
+    incoming_requests: "收到的请求"
+    incoming_requests_sub: "允许他人向你请求付款"
+    appearance: "外观"
+    theme: "主题"
+    theme_light: "浅色"
+    theme_dark: "深色"
+    theme_yellow: "黄色"
+    archive: "存档"
+    export_archive: "导出存档"
+    wipe_history: "清除付款记录"
+    about: "关于"
+    goblin: "Goblin"
+    build: "构建 %{build}"
+    network: "网络"
+    network_value: "MW + Nym mixnet + nostr"
+    third_party: "第三方"
+    grim: "GRIM（上游钱包）"
+    grin_node: "Grin 节点"
+    sp_intro: "高级功能 — 像 GRIM 那样手动交换原始 slatepack。仅在无法通过 username 收付款时使用。"
+    sp_receive_group: "接收或确认"
+    sp_receive_blurb: "粘贴别人给你的 slatepack。Goblin 会接收付款、支付账单，或确认并广播到链上。"
+    sp_process: "处理 slatepack"
+    sp_paste_first: "请先粘贴 slatepack。"
+    sp_reply_ready: "回复已就绪 — 发回给发送方。"
+    sp_finalizing: "正在确认并广播到链上…"
+    sp_create_group: "创建付款"
+    sp_create_blurb: "生成一个 slatepack 交给他人。对方接收后将回复发回，你在上方确认即可。"
+    sp_amount_hint: "金额（grin）"
+    sp_addr_hint: "收款地址（可选）"
+    sp_create: "创建 slatepack"
+    sp_ready: "slatepack 已就绪 — 交给收款方。"
+    sp_amount_gt_zero: "请输入大于零的金额。"
+    sp_to_send: "待发送的 slatepack"
+    sp_copy: "复制 slatepack"
+    rotate_line1: "• 你会得到一个全新的随机密钥；旧 npub 将停止接收。两者之间没有任何派生关系。"
+    rotate_line2: "• 新密钥无法从助记词恢复 — 轮换后请立即备份新的 nsec。"
+    rotate_line3: "• 你的用户名将被释放——请立即认领相同或新的名称（一旦释放，他人也可抢注）。"
+    rotate_line4: "• 正在发往旧密钥的付款将受影响 — 请先等待待处理付款完成。"
+    rotate_line5: "• 直接保存了你 npub 的联系人需要重新查找你 — 分享你的新 npub 或重新注册的 username。"
+    cancel: "取消"
+    continue: "继续"
+    final_confirmation: "最终确认"
+    rotate_confirm_blurb: "此操作在应用内无法撤销。输入 RESET 并输入钱包密码以进行轮换。"
+    type_reset: "输入 RESET"
+    wallet_password: "钱包密码"
+    rotate_key_btn: "轮换密钥"
+    rotating_key: "正在轮换密钥…"
+    key_rotated: "密钥已轮换"
+    new_npub: "新 npub：%{npub}"
+    backup_new_key: "立即备份新私钥 — 助记词无法恢复它。"
+    copy_new_nsec: "复制新 nsec 备份"
+    done: "完成"
+    rotation_failed: "轮换失败"
+    close: "关闭"
+    import_identity_title: "导入身份"
+    import_blurb: "替换此钱包的 nostr 身份——选择一个 GOBLIN .backup 文件，或粘贴 nsec。备份也会恢复你的用户名和历史。如果仍需要当前密钥，请先备份。"
+    import_nsec_hint: "nsec1… 或粘贴的备份"
+    backup_password_hint: "备份密码（仅当在他处导出时需要）"
+    import_btn: "导入"
+    importing: "正在导入…"
+    identity_replaced: "身份已替换"
+    now_using: "当前使用：%{npub}"
+    import_failed: "导入失败"
+    name_authority: "名称授权方"
+    name_authority_title: "更改名称授权方"
+    name_authority_blurb: "注册和验证名称的服务器。指向另一个实例即可使用并支付那里托管的名称。"
+    name_authority_invalid: "请输入完整网址（https://…）。"
+    reset: "重置"
+    save: "保存"
+    backup_file: "备份到文件"
+    choose_backup_file: "选择 .backup 文件"
+    backup_read_failed: "无法读取该文件。"
+    backup_saved: "备份已保存"
+    backup_saved_sub: "妥善保管 .backup 文件——同时拥有它和你密码的人都能恢复你的身份。"
+    backup_file_title: "备份身份"
+    backup_file_blurb: "创建一个包含你的用户名和密钥的加密 .backup 文件。输入钱包密码以封存它。"
+    backup_write_failed: "无法保存文件。"
+    create_backup: "创建备份"
+    registered: "已注册 %{name}"
+    released_msg: "已释放 — 用户名可被抢注"
+    release_confirm: "释放 %{name}？"
+    release_blurb: "一旦释放即可被认领——任何人都可以，包括你接下来轮换到的密钥。10 分钟内你无法注册另一个用户名。"
+    releasing: "正在释放…"
+    keep_it: "保留"
+    release_it: "释放"
+    username: "用户名"
+    username_note: "显示为 you。在 goblin.st 上公开。付款保持加密。"
+    release_username: "释放用户名"
+    pick_username: "选择用户名 — 可选"
+    working: "处理中…"
+    claim: "注册"
+    err_just_taken: "该用户名刚被占用"
+    err_cooldown: "你刚释放了一个用户名 — 10 分钟内无法注册新用户名。"
+    err_unreachable: "无法连接 goblin.st — 连接中断。请重试。"
+    err_release: "无法释放：%{err}"
+    avail_available: "可用！"
+    avail_taken: "已被占用"
+    avail_reserved: "已保留"
+    avail_invalid: "用户名为 3–20 个字符：a–z、0–9、_ 或 -"
+    avail_quarantined: "不可用"
+    avail_unknown: "无法检查 — 连接中断。请重试。"
+  advanced:
+    title: "高级"
+    intro: "来自 GRIM 的底层钱包工具。通常你用不到这些。"
+    own_node_desc: "在本设备上同步完整的 Grin 节点，而不是信任公共节点。"
+    own_node_active: "正在运行你自己的节点"
+    repair: "修复钱包"
+    repair_desc: "重新扫描链并恢复任何缺失的输出。这可能需要一些时间。"
+    repair_unavailable: "需要先有已同步的节点连接。"
+    repairing: "修复中… %{pct}%"
+    restore: "恢复钱包"
+    restore_desc: "删除本地数据并从助记词重建。如果修复无效，请使用此功能 — 之后需重新打开钱包。"
+    restore_confirm: "再次点击以恢复"
+    show_phrase: "恢复助记词"
+    phrase_desc: "你的 24 个 grin 助记词 — 恢复资金的唯一方式。请离线且私密保存。"
+    reveal: "显示助记词"
+    hide: "隐藏"
+    password: "钱包密码"
+    wrong_password: "密码错误。"
+    delete: "删除钱包"
+    delete_desc: "从此设备永久移除该钱包。没有助记词，资金将无法找回。"
+    delete_confirm: "再次点击以删除"
+    manage_node: "管理节点连接"
+    repair_confirm: "是的，立即修复"
+    repair_confirm_note: "修复会重新扫描链，可能需要几分钟。"
+    restore_confirm_note: "这会清除本地数据并从助记词重建——可能需要几分钟。"
+  privacy:
+    title: "网络隐私"
+    intro: "Goblin 通过 Nym mixnet 发送其私密流量 — 这是一个五跳网络，可隐藏通信双方的身份，使中继无法将付款关联到你。"
+    payments: "付款"
+    payments_blurb: "每条携带 slatepack 的 nostr 消息。"
+    usernames: "用户名"
+    usernames_blurb: "往返 goblin.st 的 NIP-05 名称查询。"
+    price_avatars: "价格"
+    price_avatars_blurb: "金额旁显示的实时法币汇率。"
+    over_mixnet: "经由 mixnet"
+    direct_connection: "直接连接"
+    grin_node: "Grin 节点"
+    grin_node_blurb: "区块同步及向网络广播你的交易。这是公开的链上数据，对所有人都一样，且不与你的身份关联。"
+  pairing:
+    title: "配对"
+    intro: "你的余额和金额以何种货币显示。"
+    pair_with: "配对货币"
+    rates_note: "汇率仅在开启配对时通过 Nym mixnet 获取 — 关闭后不会有任何汇率请求离开你的设备。"
+  relays:
+    title: "中继"
+    intro: "付款消息会镜像到下方每个中继；只要有一个可达的中继即可收款。"
+    your_relays: "你的中继"
+    add_relay: "添加中继"
+    add_relay_btn: "添加中继"
+    save_reconnect: "保存并重新连接"
+    none: "无"
+    count: "%{n} 个中继"
+  node:
+    title: "节点"
+    connection: "连接"
+    integrated: "集成节点"
+    applies_after: "在钱包锁定并再次解锁后生效。"
+    add_external: "添加外部节点"
+    api_secret_hint: "API 密钥（可选）"
+    add_node: "添加节点"
+    integrated_host: "集成节点"
+    summary_syncing: "%{conn} · 同步中"
+    summary_block: "区块 %{height} · %{conn}"
+  nips:
+    title: "nostr 与 NIPs"
+    intro1: "Goblin 使用 nostr — 一种通过简单中继服务器传递签名消息的开放协议。你的钱包拥有自己的 nostr 身份：一个独立的随机密钥，刻意与你的资金和助记词保持独立。每笔付款都作为身份之间的端到端加密私信传输，slatepack 就包含在其中。"
+    intro2: "goblin.st 是 Goblin 的名称服务：注册用户名会在此发布名称 → 密钥的映射（NIP-05），让人们可以付款给 you 而不必使用冗长的 npub。用户名是公开的；付款内容则永不公开。NIPs 是该协议的构建模块 — 点击任意一项可阅读规范。"
+    n05_title: "名称"
+    n05_blurb: "将 username@goblin.st 映射到你的密钥，让用户名像地址一样使用。"
+    n17_title: "私密消息"
+    n17_blurb: "每笔付款传输所用的加密私信信封。"
+    n44_title: "加密"
+    n44_blurb: "这些消息内部使用的认证加密算法。"
+    n49_title: "密钥加密"
+    n49_blurb: "私钥静态存储的方式，由你的密码锁定。"
+    n59_title: "礼物包装"
+    n59_blurb: "包装消息，使中继无法看到通信双方是谁。"
+    n98_title: "HTTP 认证"
+    n98_blurb: "为向 goblin.st 注册用户名的请求签名。"
+  onboarding:
+    intro:
+      private_money_head: "私密货币"
+      private_money_body: "Goblin 是一个 grin 钱包 — 链上无金额、无地址的数字现金。"
+      send_like_message_head: "像发消息一样付款"
+      send_like_message_body: "向 username 或 npub 付款，款项会作为端到端加密消息通过 nostr 和 Nym mixnet 送达 — 中间任何人都看不到金额或参与者。"
+      yours_alone_head: "完全属于你"
+      yours_alone_body: "密钥、用户名和历史记录都存于本设备。基于 GRIM 钱包构建。"
+      get_started: "开始使用"
+      footnote: "约需一分钟。之后一切均可更改。"
+    node:
+      kicker: "步骤 1 / 3 · 网络"
+      title: "Goblin 该如何\n监视链？"
+      own_title: "运行我自己的节点"
+      own_badge: "私密"
+      own_body: "无需信任任何人 — 钱包自行验证链。完成设置时在后台同步。"
+      connect_title: "连接到节点"
+      connect_badge: "即时"
+      connect_body: "无需等待同步。你选择的节点可看到钱包的查询。"
+      changeable: "随时可在 设置 → 节点 中更改。"
+      continue: "继续"
+      url_invalid: "节点 URL 必须以 http:// 或 https:// 开头"
+    wallet:
+      kicker: "步骤 2 / 3 · 钱包"
+      title: "设置你的钱包"
+      create_new: "新建"
+      restore_from_seed: "从助记词恢复"
+      name_hint: "钱包名称"
+      password_hint: "密码"
+      repeat_password_hint: "重复密码"
+      restore_hint: "准备好你的助记词 — 下一步将输入。"
+      create_hint: "接下来你会得到 24 个助记词以供抄写。它们就是钱 — 谁持有它们，谁就掌握你的资金。"
+      continue: "继续"
+      passwords_no_match: "密码不一致"
+    words:
+      kicker: "步骤 2 / 3 · 钱包"
+      title_restore: "输入你的助记词"
+      title_create: "抄下这些词"
+      write_down_hint: "按顺序写在纸上。任何持有这些词的人都能取走你的资金；丢失这些词又丢失设备，资金将无法找回。"
+      paste: "粘贴"
+      scan_qr: "扫描二维码"
+      copy_clipboard: "复制到剪贴板（不建议）"
+      restore_wallet: "恢复钱包"
+      wrote_them_down: "我已抄好"
+      fill_every_word: "填写每个词 — 点击某个词进行编辑，或粘贴整个短语。"
+    confirm:
+      kicker: "步骤 2 / 3 · 钱包"
+      title: "现在来验证"
+      enter_hint: "输入你刚抄下的词。点击某个词进行输入。"
+      paste: "粘贴"
+      create_wallet: "创建钱包"
+      keep_going: "继续 — 每个词,按顺序。"
+    identity:
+      kicker: "步骤 3 / 3 · 身份"
+      title: "你的付款身份"
+      key_being_made: "正在生成密钥…"
+      connected_nym: "已通过 Nym 连接"
+      connecting_nym: "正在通过 Nym 连接…"
+      fresh_key_blurb: "一个不属于助记词的支付密钥——可随时轮换以保护隐私，且不影响你的资金。"
+      clean_slate_blurb: "想要全新开始？随时换上一个全新密钥 — 新的你与旧的毫无关联。同一个钱包,焕然一新。"
+      pick_username: "选择用户名 — 可选"
+      username_blurb: "朋友支付给你的名称，而不是一长串密钥。可选——随时认领。"
+      username_field_hint: "你的用户名"
+      working: "处理中…"
+      claim_username: "注册用户名"
+      available_when_connected: "mixnet 连接后可用 — 或跳过,稍后注册。"
+      youre: "你是 %{name}"
+      claimed_title: "%{name} 已归你所有"
+      claimed_blurb: "朋友现在可以用你的用户名向你付款。一切就绪——打开钱包吧。"
+      open_wallet: "打开我的钱包"
+      skip_for_now: "暂时跳过"
+      import_existing: "已有 Goblin 身份？导入它"
+      import_title: "导入你的身份"
+      import_blurb: "粘贴你的 nsec 或选择一个 .backup 文件，保留你现有的密钥和用户名，而不是这个新的。"
+    errors:
+      cant_open: "无法打开钱包：%{err}"
+      cant_create: "无法创建钱包：%{err}"
+  send:
+    scan_to_request: "扫码请求"
+    scan_to_pay: "扫码支付"
+    tab_scan: "扫描"
+    tab_my_code: "我的二维码"
+    request_from: "向谁请求"
+    send_to: "发送给"
+    search_hint: "handle、npub 或名称"
+    suggested: "%{icon}  建议"
+    no_contacts: "暂无联系人。通过 handle 查找某人。"
+    no_profile: "无资料"
+    tag_contact: "联系人"
+    tag_on_nostr: "在 nostr 上"
+    searching_nostr: "正在搜索 nostr…"
+    unverified_title: "向未验证的密钥付款？"
+    unverified_body: "此密钥未发布 nostr 资料 — 它可能是全新的、匿名的或输错的。发送前请仔细核对是否正确。"
+    keep_looking: "继续查找"
+    pay_anyway: "仍然付款"
+    scan_not_recipient: "该二维码不是 goblin 收款方 — 应为 npub 或 handle"
+    scan_prompt: "将 goblin 二维码对准取景框以激活"
+    scan_to_pay_me: "扫码向我付款"
+    share_btn: "%{icon} 分享"
+    share_message: "在 Goblin 上向我付款 — %{handle}\n%{link}\nnpub：%{npub}"
+    none_found: "未找到与 %{label} 匹配的人"
+    enter_recipient: "输入 handle、npub 或名称"
+    amount_title: "金额"
+    to_name: "发送给 %{name}"
+    not_enough: "你的 grin 余额不足"
+    max: "最大"
+    note_label: "备注"
+    note_hint: "添加备注…"
+    add_note: "添加备注"
+    edit_note: "编辑备注"
+    note_cancel: "取消"
+    note_save: "保存"
+    review_btn: "查看"
+    confirm_request: "确认请求"
+    review_title: "查看"
+    requesting_from: "向 %{name} 请求"
+    youre_sending: "你正在发送给 %{name}"
+    row_from: "付款方"
+    row_to: "收款方"
+    row_note: "备注"
+    row_they_pay: "对方支付"
+    row_they_pay_val: "仅当对方同意时"
+    row_delivery: "传输"
+    row_delivery_val: "NIP-44 加密,经由 Nym"
+    row_network_fee: "网络费用"
+    row_network_fee_val: "从你的余额中扣除"
+    row_privacy: "隐私"
+    row_privacy_val: "Mimblewimble + Nym"
+    send_request_btn: "发送请求"
+    request_approve_hint: "对方将收到一条待同意的请求"
+    hold_to_send: "长按发送"
+    lower_amount: "返回并降低金额"
+    hold_confirm_hint: "按住以确认"
+    requesting: "正在请求…"
+    sending: "正在发送…"
+    they: "对方"
+    request_blocked: "%{who} 不接受请求。请对方改为向你发送 grin。"
+    failed_request_title: "请求失败"
+    failed_send_title: "发送失败"
+    failed_request_body: "我们无法送达请求。请对方改为向你发送 grin。"
+    failed_send_body: "付款未送达。你的 grin 是安全的 — 请重试。"
+    try_again_btn: "重试"
+    close_btn: "关闭"
+    success:
+      requested: "已请求"
+      sent: "已发送"
+      from: "来自"
+      to: "发往"
+      subtitle: "%{dir} %{who} · 刚刚"
+      done_btn: "完成"
+      receipt_btn: "收据"
