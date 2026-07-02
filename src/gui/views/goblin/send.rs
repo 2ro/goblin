@@ -424,6 +424,7 @@ impl SendFlow {
 					.hint_text(t!("goblin.send.search_hint"))
 					.text_color(t.surface_text)
 					.body()
+					.paste()
 					.scan_qr();
 				te.ui(ui, &mut search, cb);
 				// scan_qr() already starts the camera on tap.
