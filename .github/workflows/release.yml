@@ -8,10 +8,12 @@
 name: Release
 
 on:
-  # macOS is DEFERRED until Linux/Windows/Android are polished — so this is
-  # manual-dispatch only for now (no auto-build on release publish). When macOS
-  # is back on the table, re-add `release: { types: [published] }` here and the
-  # macOS job will attach a universal build to each release automatically.
+  # macOS builds on its native runner automatically when a release is published
+  # (the macOS job has no dispatch-only gate). Linux/Windows stay dispatch-only —
+  # they are built locally and uploaded with the release; run the workflow by hand
+  # to (re)build those on runners against an existing tag.
+  release:
+    types: [published]
   workflow_dispatch:
     inputs:
       tag:

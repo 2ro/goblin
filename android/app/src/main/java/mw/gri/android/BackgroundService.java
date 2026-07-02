@@ -74,12 +74,13 @@ public class BackgroundService extends Service {
                     if (Build.VERSION.SDK_INT > 25) {
                         startStopIntent.putExtra(EXTRA_NOTIFICATION_ID, NOTIFICATION_ID);
                     }
-                    if (canStart) {
-                        startStopIntent.setAction(ACTION_START_NODE);
-                        PendingIntent i = PendingIntent
-                                .getBroadcast(BackgroundService.this, 1, startStopIntent, PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_ONE_SHOT);
-                        mNotificationBuilder.addAction(R.drawable.ic_start, getStartText(), i);
-                    } else if (canStop) {
+                    // Goblin's background job is the light Nostr-over-Nym payment
+                    // listen (the "Listening for payments" status); the heavy
+                    // integrated node is never STARTED from this notification --
+                    // Goblin defaults to an external node, so the GRIM "Enable"
+                    // action is removed. Only offer STOP as a safety valve if the
+                    // node is somehow already running (started elsewhere).
+                    if (canStop) {
                         startStopIntent.setAction(ACTION_STOP_NODE);
                         PendingIntent i = PendingIntent
                                 .getBroadcast(BackgroundService.this, 1, startStopIntent, PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_ONE_SHOT);
