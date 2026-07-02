@@ -323,13 +323,16 @@ pub async fn probe(url: &str) -> bool {
 
 /// The pool's "discovery" relays that pass the lazy NIP-11 gate right now.
 pub async fn usable_discovery_relays() -> Vec<String> {
-	let mut out = vec![];
-	for url in load().discovery_relays() {
-		if probe(&url).await {
-			out.push(url);
-		}
-	}
-	out
+	// Probe every candidate CONCURRENTLY (each is a NIP-11 HTTP round trip over
+	// the mixnet — sequentially this cost ~N × a full round trip). The PROBES
+	// cache is RwLock-safe under concurrent access. Zip the pass/fail results back
+	// to the urls and keep the passing ones in the original pool order.
+	let urls = load().discovery_relays();
+	let results = futures::future::join_all(urls.iter().map(|url| probe(url))).await;
+	urls.into_iter()
+		.zip(results)
+		.filter_map(|(url, ok)| ok.then_some(url))
+		.collect()
 }
 
 /// Weighted-random candidate ORDER for the advertised set: the Goblin relay

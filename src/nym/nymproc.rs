@@ -79,6 +79,10 @@ static RELAY_CONSUMER: AtomicBool = AtomicBool::new(false);
 /// Guards the background bootstrap thread so `warm_up()` is idempotent.
 static STARTED: AtomicBool = AtomicBool::new(false);
 
+/// Guards the one-shot scoped-exit prewarm so it fires exactly once — after the
+/// FIRST tunnel is published — and never again on a later reselect.
+static PREWARMED: AtomicBool = AtomicBool::new(false);
+
 /// Pre-warm the mixnet tunnel in the background so relays / NIP-05 / price are
 /// ready by first use. Idempotent — later calls (including the lazy-init path
 /// in [`wait_for_tunnel`]) are no-ops.
@@ -190,31 +194,12 @@ fn run_tunnel() {
 		// True while a FALLBACK (auto-selected) exit carries the traffic even
 		// though an anchor is configured — makes the ANCHOR RECOVERED log honest.
 		let mut fell_back = false;
-		// COLD-START SEQUENCING (money path first): if the pool advertises a
-		// co-located scoped exit, let ITS mixnet client grab its Nym free-tier
-		// bandwidth grant before this tunnel competes for one. Two ephemeral
-		// clients bootstrapping at once serialize on the grant (~1 min); waiting a
-		// bounded head-start for the exit client means only ONE bootstraps at a
-		// time, so the money-path relay connects in seconds and this tunnel
-		// (fallback / HTTP / discovery, all non-blocking) builds right after. No
-		// exit in the pool → no wait. Cold start only: on a later reselect the
-		// exit is long-ready, so `is_ready()` returns instantly.
-		if crate::nostr::pool::load().has_exit() {
-			// Kick the exit client's bootstrap NOW — nothing else touches it
-			// until the first relay dial (after a wallet opens), so waiting
-			// without this would just burn the head start and the grant race
-			// would happen anyway.
-			tokio::spawn(super::streamexit::prewarm());
-			let head_start = Instant::now();
-			while !super::streamexit::is_ready() && head_start.elapsed() < EXIT_HEAD_START {
-				tokio::time::sleep(Duration::from_millis(200)).await;
-			}
-			info!(
-				"[timing] nym: tunnel bootstrap proceeding after {}ms exit head-start (exit ready: {})",
-				head_start.elapsed().as_millis(),
-				super::streamexit::is_ready()
-			);
-		}
+		// COLD-START SEQUENCING (reads-first): the TUNNEL bootstraps first and takes
+		// its Nym free-tier bandwidth grant, so interactive reads get the tunnel
+		// ~2-3s sooner. The scoped money-path exit is prewarmed AFTER the first
+		// tunnel is published (see the `PREWARMED` guard below `MIXNET_READY`), which
+		// preserves grant-sequencing (tunnel first, then exit) without making reads
+		// wait out an exit head-start on cold start.
 		loop {
 			let started = Instant::now();
 			attempt += 1;
@@ -240,7 +225,8 @@ fn run_tunnel() {
 			// Cap the build: a dead gateway pick otherwise blocks on the Nym SDK's
 			// own long "connection response" timeout (~74s measured) before we can
 			// reselect. Abandoning the future drops the half-built tunnel.
-			let build = match tokio::time::timeout(BOOTSTRAP_TIMEOUT, build_tunnel(pin)).await {
+			let build_cap = tunnel_build_timeout();
+			let build = match tokio::time::timeout(build_cap, build_tunnel(pin)).await {
 				Ok(result) => result,
 				Err(_) => {
 					if choice == ExitChoice::Anchor {
@@ -249,14 +235,14 @@ fn run_tunnel() {
 						warn!(
 							"[timing] nym: ANCHOR DEAD — anchor build exceeded {}s (attempt {attempt}); \
 							 FALLBACK to auto-select now",
-							BOOTSTRAP_TIMEOUT.as_secs()
+							build_cap.as_secs()
 						);
 						continue;
 					}
 					warn!(
 						"[timing] nym: DEAD GATEWAY — build_tunnel exceeded {}s (attempt {attempt}); \
 						 re-selecting immediately",
-						BOOTSTRAP_TIMEOUT.as_secs()
+						build_cap.as_secs()
 					);
 					delay = Duration::from_secs(5);
 					continue;
@@ -328,6 +314,16 @@ fn run_tunnel() {
 					}
 					*TUNNEL.write() = Some(tunnel.clone());
 					MIXNET_READY.store(true, Ordering::Relaxed);
+					// Prewarm the scoped money-path exit ONCE, now that the tunnel is
+					// up (grant-sequencing: the tunnel already took its grant, the exit
+					// takes the next one) — but reads already have the tunnel. Guarded
+					// so a later reselect never re-fires it, and gated on the pool
+					// actually advertising a co-located exit.
+					if crate::nostr::pool::load().has_exit()
+						&& !PREWARMED.swap(true, Ordering::SeqCst)
+					{
+						tokio::spawn(super::streamexit::prewarm());
+					}
 					delay = Duration::from_secs(5);
 					// Hold the exit warm and govern its health. The watchdog weighs TWO
 					// signals: the cheap DNS keepalive (as before) AND — authoritatively,
@@ -427,23 +423,33 @@ const RELAY_HARD_GRACE: Duration = Duration::from_secs(90);
 /// mixnet into the 2-3 minute loop this build fixes.
 const MIN_EXIT_LIFETIME: Duration = Duration::from_secs(20);
 
-/// Abandon a single `build_tunnel()` that hasn't finished within this and
-/// re-select. A healthy gateway+IPR bootstrap completes in ~4-7s; without this
-/// cap a DEAD first pick blocked for ~74s (measured) on the Nym SDK's own
-/// "listening for connection response" timeout before we even got to reselect.
-/// A few seconds of patience, not a minute. Shared with the scoped-exit egress
-/// ([`super::streamexit`]) as ITS dial cap, so both mixnet bootstraps fail
-/// equally fast.
+/// The scoped-exit (money-path) mixnet dial cap: how long
+/// [`super::streamexit::open_stream`] (and the HTTP exit fallback in
+/// [`super::exit_connect`]) may spend bootstrapping before failing over. Without a
+/// cap a DEAD pick blocked for ~74s (measured) on the Nym SDK's own "listening for
+/// connection response" timeout. The TUNNEL's own build uses the shorter
+/// [`TUNNEL_BUILD_TIMEOUT`]; this stays at 20s so the money path — which has no
+/// tunnel to fall back to — gets more patience before it gives up.
 pub(crate) const BOOTSTRAP_TIMEOUT: Duration = Duration::from_secs(20);
 
-/// Cold-start head start for the scoped-exit client: the public-IPR tunnel waits
-/// up to this long for [`super::streamexit::is_ready`] before it bootstraps, so
-/// the money-path exit client claims its Nym free-tier bandwidth grant FIRST and
-/// the two ephemeral clients don't serialize on the grant (~1 min otherwise; see
-/// the cold-start sequencer in [`run_tunnel`] and the NOTE in
-/// [`super::streamexit`]). Bounded so a missing/failed exit never holds the
-/// tunnel more than briefly; the exit typically readies well inside it.
-const EXIT_HEAD_START: Duration = Duration::from_secs(12);
+/// Abandon a single `build_tunnel()` that hasn't finished within this and
+/// re-select — the TUNNEL's build cap (the exit keeps [`BOOTSTRAP_TIMEOUT`] as
+/// its money-path dial cap). A healthy gateway+IPR bootstrap completes in ~4-7s,
+/// so 10s gives one slow-but-working build room while a dead first pick is
+/// abandoned in a third of the old 30s. Runtime-overridable (seconds) via
+/// `GOBLIN_NYM_BUILD_TIMEOUT` for the timing harness.
+const TUNNEL_BUILD_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// The effective tunnel build cap: [`TUNNEL_BUILD_TIMEOUT`] unless
+/// `GOBLIN_NYM_BUILD_TIMEOUT` (whole seconds) overrides it. Re-read each attempt
+/// so a timing harness can flip it without a restart.
+fn tunnel_build_timeout() -> Duration {
+	std::env::var("GOBLIN_NYM_BUILD_TIMEOUT")
+		.ok()
+		.and_then(|s| s.parse::<u64>().ok())
+		.map(Duration::from_secs)
+		.unwrap_or(TUNNEL_BUILD_TIMEOUT)
+}
 
 /// Watchdog poll cadence. The relay-reachability check is a bare atomic load
 /// (free), so a short cadence costs nothing and never touches the network; the

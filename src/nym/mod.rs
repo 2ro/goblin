@@ -136,12 +136,15 @@ async fn request_once(
 	let https = url.scheme() == "https";
 	let port = url.port().unwrap_or(if https { 443 } else { 80 });
 
-	// MONEY-PATH ANCHOR fork: HTTPS to a host whose relay advertises a
-	// co-located scoped Nym exit (its NIP-11 probe, in practice) rides a
-	// MixnetStream to that exit instead of the tunnel — no public DNS, no
-	// public IPR. Failure just falls through to the tunnel path below (anchor
-	// + fallback, never pin-only).
-	let exit_io = if https {
+	// TUNNEL-FIRST for HTTP. NIP-11/HTTP is PUBLIC data (relay docs, price, name
+	// authority) and both egresses are mixnet-private, so in steady state we ride
+	// the already-warm tunnel — opening a fresh MixnetStream + settle to a scoped
+	// exit PER request was pure latency here. Only when the tunnel isn't up yet
+	// (`!is_ready()`) do we fall to a host's co-located scoped exit to avoid a cold
+	// wait; failure there just falls through to the tunnel path below. transport.rs
+	// (relay websockets) stays exit-first and is untouched — this is the HTTP path
+	// only.
+	let exit_io = if https && !nymproc::is_ready() {
 		match crate::nostr::pool::load().exit_for_host(&host) {
 			Some(exit) => exit_connect(&host, &exit).await,
 			None => None,

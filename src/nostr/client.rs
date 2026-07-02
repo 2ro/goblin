@@ -67,8 +67,10 @@ const RATE_UNKNOWN_PER_HOUR: usize = 10;
 const RESEND_WINDOW_SECS: i64 = 7 * 86_400;
 /// How often a cached @username is re-validated against the identity server, so
 /// a released or reassigned name stops being shown. Doubles as the freshness
-/// gate in `resolve_contact_identity`.
-const NAME_REVERIFY_INTERVAL_SECS: i64 = 78;
+/// gate in `resolve_contact_identity`. Tuned for release/name-change detection
+/// freshness, not liveness — a name rarely changes, so 6h is ample and keeps the
+/// mixnet re-verify traffic off the interactive path.
+const NAME_REVERIFY_INTERVAL_SECS: i64 = 6 * 3600;
 /// Cap on contacts re-verified per sweep, so a large contact list rolls through
 /// instead of bursting dozens of simultaneous mixnet lookups at once.
 const NAME_REVERIFY_MAX_PER_TICK: usize = 8;
@@ -227,15 +229,25 @@ impl NostrService {
 				connect_relays(&client, &dial).await;
 			}
 			let filter = Filter::new().kind(Kind::Metadata).author(pk).limit(1);
-			let events = client
-				.fetch_events(filter, Duration::from_secs(10))
+			// First-event-wins, scoped to the relays we just dialed: stream from
+			// exactly that set and return on the FIRST kind-0 that parses as
+			// Metadata (capped at 10s by the stream's own auto-close). The old
+			// `fetch_events` waited for EVERY relay (or the full 10s), so a single
+			// dead hint relay in the set always cost the whole 10s.
+			use futures::StreamExt;
+			let mut stream = client
+				.stream_events_from(dial, filter, Duration::from_secs(10))
 				.await
 				.ok()?;
-			let md: Metadata = serde_json::from_str(&events.first()?.content).ok()?;
-			Some(NostrProfile {
-				name: md.name.filter(|s| !s.is_empty()),
-				nip05: md.nip05.filter(|s| !s.is_empty()),
-			})
+			while let Some(event) = stream.next().await {
+				if let Ok(md) = serde_json::from_str::<Metadata>(&event.content) {
+					return Some(NostrProfile {
+						name: md.name.filter(|s| !s.is_empty()),
+						nip05: md.nip05.filter(|s| !s.is_empty()),
+					});
+				}
+			}
+			None
 		})
 	}
 
@@ -247,14 +259,23 @@ impl NostrService {
 		let client = self.client.read().clone()?;
 		let pk = PublicKey::from_hex(hex).ok()?;
 		let filter = Filter::new().kind(Kind::Metadata).author(pk).limit(1);
-		let events = client
-			.fetch_events(filter, Duration::from_secs(8))
+		// First-event-wins, scoped to our own connected relays (cap 8s): return on
+		// the first kind-0 that parses as Metadata rather than waiting on every
+		// relay / the full timeout, so one dead relay can't stall the request gate.
+		use futures::StreamExt;
+		let mut stream = client
+			.stream_events_from(self.relays(), filter, Duration::from_secs(8))
 			.await
 			.ok()?;
-		let md: Metadata = serde_json::from_str(&events.first()?.content).ok()?;
-		md.custom
-			.get("goblin_accepts_requests")
-			.and_then(|v| v.as_bool())
+		while let Some(event) = stream.next().await {
+			if let Ok(md) = serde_json::from_str::<Metadata>(&event.content) {
+				return md
+					.custom
+					.get("goblin_accepts_requests")
+					.and_then(|v| v.as_bool());
+			}
+		}
+		None
 	}
 
 	/// Republish our kind-0 profile + kind-10050 DM relays (e.g. after toggling
@@ -637,8 +658,12 @@ impl NostrService {
 		let filter = Filter::new().kind(Kind::InboxRelays).author(*pk).limit(1);
 		let mut out = vec![];
 		let mut v3 = false;
-		if let Ok(events) = client.fetch_events_from(&from, filter, FETCH_TIMEOUT).await
-			&& let Some(event) = events.first()
+		// Cap at 10s (not the 30s catch-up FETCH_TIMEOUT): this is on the
+		// interactive send path, so a slow/dead discovery relay must fail fast and
+		// fall back to relay hints + our own set rather than stall the send.
+		if let Ok(events) = client
+			.fetch_events_from(&from, filter, Duration::from_secs(10))
+			.await && let Some(event) = events.first()
 		{
 			for tag in event.tags.iter() {
 				let parts = tag.as_slice();

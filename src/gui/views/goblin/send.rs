@@ -1492,7 +1492,18 @@ fn resolve_nip05_blocking(name: &str, domain: &str) -> Option<nip05::Nip05Resolu
 			.enable_all()
 			.build()
 			.ok()?;
-		rt.block_on(nip05::resolve(&name, &domain))
+		// Overall 15s cap: without it a miss could block ~90s (up to a 30s tunnel
+		// wait + a 60s HTTP timeout), which reads to the user as a silent
+		// indefinite hang. Capping makes a miss fast and retryable instead.
+		rt.block_on(async {
+			tokio::time::timeout(
+				std::time::Duration::from_secs(15),
+				nip05::resolve(&name, &domain),
+			)
+			.await
+			.ok()
+			.flatten()
+		})
 	})
 	.join()
 	.ok()
