@@ -63,10 +63,10 @@ const MIN_BACKDATE_SECS: u64 = 172_800;
 const PINNED_POOL: &str = r#"{
   "version": 1,
   "updated": "2026-07-02",
-  "notes": "Goblin wallet relay candidate pool. Clients verify each entry locally (NIP-11 probe) before use. Requirements: max_message_length >= 131072, no payment or auth required for writes, tolerates NIP-59 backdating. The optional per-relay 'exit' is that operator's co-located scoped Nym exit (Recipient address); wallets may reach the relay over the mixnet through it without public DNS.",
+  "notes": "Goblin wallet relay candidate pool. Clients verify each entry locally (NIP-11 probe) before use. Requirements: max_message_length >= 131072, no payment or auth required for writes, tolerates NIP-59 backdating. The optional per-relay 'exit' is that operator's co-located scoped mixnet exit; it is intentionally UNSET for now because bootstrapping a second mixnet client blocks first-connect on a cold start.",
   "min_message_length": 131072,
   "relays": [
-    { "url": "wss://relay.goblin.st",    "roles": ["dm", "discovery"], "vetted": "2026-07-01", "exit": "4XPnpmFdieZBY1BM2jU9Qn915v5RGz58ywpgQhuFKBao.8NMrW1i4VaPhY6qhV7supid7P1YcWJ9mGZBKjGEuqN9U@B8bX5x5yKa7oQMCNioLS9seYwNCio3U9jYPxgCZoKjk5" },
+    { "url": "wss://relay.goblin.st",    "roles": ["dm", "discovery"], "vetted": "2026-07-01" },
     { "url": "wss://relay.primal.net",   "roles": ["dm"],              "vetted": "2026-07-01" },
     { "url": "wss://relay.damus.io",     "roles": ["dm"],              "vetted": "2026-07-01" },
     { "url": "wss://nos.lol",            "roles": ["dm"],              "vetted": "2026-07-01" },
@@ -368,17 +368,11 @@ mod tests {
 
 	#[test]
 	fn exit_field_is_optional_and_looked_up_by_url() {
-		// The pinned pool advertises the co-located scoped exit for the money-path
-		// relay; no other pinned entry carries one.
+		// No exit is pinned right now (a second mixnet client cold-boot regresses
+		// first-connect); the field is still parsed + looked up when present.
 		let pinned = RelayPool::parse(PINNED_POOL).unwrap();
-		assert!(pinned.exit_for("wss://relay.goblin.st").is_some());
-		assert!(
-			pinned
-				.relays
-				.iter()
-				.filter(|r| r.url.trim_end_matches('/') != "wss://relay.goblin.st")
-				.all(|r| r.exit.is_none())
-		);
+		assert!(pinned.relays.iter().all(|r| r.exit.is_none()));
+		assert!(pinned.exit_for("wss://relay.goblin.st").is_none());
 
 		// A pool that DOES advertise an exit for one relay.
 		let pool = RelayPool::parse(
