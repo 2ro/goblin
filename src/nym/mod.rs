@@ -14,16 +14,12 @@
 
 //! Nym mixnet transport. Everything Goblin sends — nostr relay traffic and
 //! every HTTP request (NIP-05, price, relay pool) — rides the 5-hop mixnet:
-//! by default one in-process smolmix [`Tunnel`](smolmix::Tunnel) to an
-//! auto-selected public IPR exit, so neither the payload nor the
-//! destination-in-flight ever touches the clearnet. Hostnames resolve through
-//! the same tunnel too ([`dns`], DoT — DNS-over-TLS), so nothing goes
-//! clearnet. MONEY-PATH ANCHOR: a host whose relay advertises a co-located
-//! scoped exit in the pool is instead dialed over a MixnetStream straight to
-//! that exit ([`streamexit`]) — no DNS and no public IPR at all — falling
-//! back to the tunnel on any failure. The mixnet breaks the sender↔receiver
-//! timing correlation that Mimblewimble's interactive slate exchange
-//! otherwise leaks at the network layer.
+//! one in-process smolmix [`Tunnel`](smolmix::Tunnel) to an auto-selected
+//! public IPR exit, so neither the payload nor the destination-in-flight ever
+//! touches the clearnet. Hostnames resolve through the same tunnel too
+//! ([`dns`], DoT — DNS-over-TLS), so nothing goes clearnet. The mixnet breaks
+//! the sender↔receiver timing correlation that Mimblewimble's interactive
+//! slate exchange otherwise leaks at the network layer.
 //!
 //! DNS reliability was the one weak spot: the original mix-dns sent UDP over the
 //! mixnet, and mixnet UDP loses packets — resolves stalled on multi-second
@@ -35,7 +31,6 @@
 
 pub mod dns;
 pub mod nymproc;
-pub mod streamexit;
 pub mod transport;
 
 use std::sync::Arc;
@@ -137,43 +132,24 @@ async fn request_once(
 	let https = url.scheme() == "https";
 	let port = url.port().unwrap_or(if https { 443 } else { 80 });
 
-	// MONEY-PATH ANCHOR fork: HTTPS to a host whose relay advertises a
-	// co-located scoped Nym exit (its NIP-11 probe, in practice) rides a
-	// MixnetStream to that exit instead of the tunnel — no public DNS, no
-	// public IPR. Failure just falls through to the tunnel path below (anchor
-	// + fallback, never pin-only).
-	let exit_io = if https {
-		match crate::nostr::pool::load().exit_for_host(&host) {
-			Some(exit) => exit_connect(&host, &exit).await,
-			None => None,
+	// Resolve the host over the tunnel (DoT — see dns), then dial that
+	// IP through the same tunnel so nothing (lookup or body) touches
+	// the clear.
+	let addr = dns::resolve(tunnel, &host, port).await?;
+	let tcp = match tunnel.tcp_connect(addr).await {
+		Ok(s) => s,
+		Err(e) => {
+			warn!("nym http: connect to {host} failed: {e}");
+			return None;
+		}
+	};
+	let io: Box<dyn Stream> = if https {
+		match tls_connect(&host, tcp).await {
+			Some(tls) => Box::new(tls),
+			None => return None,
 		}
 	} else {
-		None
-	};
-
-	let io: Box<dyn Stream> = match exit_io {
-		Some(io) => io,
-		None => {
-			// Resolve the host over the tunnel (DoT — see dns), then dial that
-			// IP through the same tunnel so nothing (lookup or body) touches
-			// the clear.
-			let addr = dns::resolve(tunnel, &host, port).await?;
-			let tcp = match tunnel.tcp_connect(addr).await {
-				Ok(s) => s,
-				Err(e) => {
-					warn!("nym http: connect to {host} failed: {e}");
-					return None;
-				}
-			};
-			if https {
-				match tls_connect(&host, tcp).await {
-					Some(tls) => Box::new(tls),
-					None => return None,
-				}
-			} else {
-				Box::new(tcp)
-			}
-		}
+		Box::new(tcp)
 	};
 
 	let (mut sender, conn) = hyper::client::conn::http1::handshake(TokioIo::new(io))
@@ -224,35 +200,6 @@ async fn request_once(
 	};
 	let bytes = resp.into_body().collect().await.ok()?.to_bytes().to_vec();
 	Some((status, bytes, location))
-}
-
-/// Try the scoped-exit egress for an HTTPS `host`: a MixnetStream to the
-/// relay operator's exit ([`streamexit`]), then the SAME hostname-validated
-/// [`tls_connect`] as the tunnel path — SNI = `host`, so the exit sees only
-/// ciphertext. `None` (logged) on ANY failure, and the whole attempt is
-/// bounded by the shared bootstrap cap — a dead exit costs seconds inside the
-/// caller's [`HTTP_TIMEOUT`] budget, leaving room to fall back to the tunnel.
-async fn exit_connect(host: &str, exit: &str) -> Option<Box<dyn Stream>> {
-	let cap = nymproc::BOOTSTRAP_TIMEOUT;
-	let dial = async {
-		let stream = streamexit::open_stream(exit, cap)
-			.await
-			.map_err(|e| warn!("nym http: scoped exit for {host} unavailable: {e}"))
-			.ok()?;
-		let tls = tls_connect(host, stream).await?;
-		debug!("nym http: {host} riding its operator's scoped exit");
-		Some(Box::new(tls) as Box<dyn Stream>)
-	};
-	match tokio::time::timeout(cap, dial).await {
-		Ok(io) => io,
-		Err(_) => {
-			warn!(
-				"nym http: scoped exit dial for {host} exceeded {}s; falling back to the tunnel",
-				cap.as_secs()
-			);
-			None
-		}
-	}
 }
 
 /// Everything hyper needs from the tunneled stream, boxable for the plain

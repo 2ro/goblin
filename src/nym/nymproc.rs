@@ -23,12 +23,8 @@
 //! re-selects, so there is no single-exit SPOF. Hostnames resolve via
 //! [`super::dns`] over DoT through the same tunnel, so nothing touches clearnet.
 //!
-//! This is the FALLBACK / discovery-and-secondary-relay path. The MONEY-PATH
-//! primary relay is reached over a SCOPED MixnetStream to a Floonet operator's
-//! CO-LOCATED exit when the pool advertises one ([`crate::nostr::pool::PoolRelay::exit`]),
-//! which needs no public DNS and no public IPR — see the streamexit egress
-//! (design in ~/.claude/plans/floonet-nym-exit.md). That anchor+fallback split
-//! is the "prefer our exit, never pin-only" rule at the transport level.
+//! This is the wallet's ONLY mixnet path — every relay and HTTP dial rides
+//! this tunnel.
 //!
 //! Should smolmix ever regress, the fallback design (SOCKS5 network requester
 //! + ordered exit failover) is specified in the plan, section G14.
@@ -406,9 +402,7 @@ const MIN_EXIT_LIFETIME: Duration = Duration::from_secs(20);
 /// re-select. A healthy gateway+IPR bootstrap completes in ~4-7s; without this
 /// cap a DEAD first pick blocked for ~74s (measured) on the Nym SDK's own
 /// "listening for connection response" timeout before we even got to reselect.
-/// A few seconds of patience, not a minute. Shared with the scoped-exit egress
-/// ([`super::streamexit`]) as ITS dial cap, so both mixnet bootstraps fail
-/// equally fast.
+/// A few seconds of patience, not a minute.
 pub(crate) const BOOTSTRAP_TIMEOUT: Duration = Duration::from_secs(20);
 
 /// Restore the pre-Build-98 watchdog (condemn on RELAY_GRACE of no-relay alone,

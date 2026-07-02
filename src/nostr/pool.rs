@@ -91,18 +91,6 @@ pub struct PoolRelay {
 	/// Last-vetted date; presence marks the entry as vetted.
 	#[serde(default)]
 	pub vetted: Option<String>,
-	/// This relay operator's CO-LOCATED Nym exit address, when they run one (the
-	/// bundled floonet-rs / floonet-strfry `exit = true` feature). It is a Nym
-	/// `Recipient` (`<client>.<enc>@<gateway>`) for a SCOPED MixnetStream proxy
-	/// that forwards ONLY to this relay — so the wallet can reach the relay over
-	/// the mixnet WITHOUT public DNS and WITHOUT depending on a public IPR exit
-	/// (the anchor; see [`crate::nym::nymproc`]). Absent → this relay is reached
-	/// the old way (public-IPR smolmix + in-tunnel DoT). Carried in the pinned
-	/// pool so the money-path default relay's exit bootstraps OFFLINE, before any
-	/// network — breaking the chicken-and-egg of learning it over the very path
-	/// it is meant to replace.
-	#[serde(default)]
-	pub exit: Option<String>,
 }
 
 impl PoolRelay {
@@ -148,36 +136,6 @@ impl RelayPool {
 			.filter(|r| r.has_role("discovery"))
 			.map(|r| r.url.clone())
 			.collect()
-	}
-
-	/// The operator's co-located Nym exit address for `url`, if the pool
-	/// advertises one (url compared modulo a trailing slash). `None` → reach the
-	/// relay over the public-IPR path as before. This is how the wallet learns
-	/// the anchor exit for its money-path relay (see [`PoolRelay::exit`]).
-	pub fn exit_for(&self, url: &str) -> Option<String> {
-		let want = url.trim_end_matches('/');
-		self.relays
-			.iter()
-			.find(|r| r.url.trim_end_matches('/') == want)
-			.and_then(|r| r.exit.clone())
-			.filter(|e| !e.trim().is_empty())
-	}
-
-	/// Like [`Self::exit_for`], but keyed on the HOSTNAME — the HTTP dial site
-	/// ([`crate::nym::request_once`]) knows only `host`, never the relay's ws
-	/// URL. HTTPS to a host whose relay advertises a co-located exit (its
-	/// NIP-11 probe, in practice) rides that exit too.
-	pub fn exit_for_host(&self, host: &str) -> Option<String> {
-		self.relays
-			.iter()
-			.find(|r| {
-				url::Url::parse(&r.url)
-					.ok()
-					.and_then(|u| u.host_str().map(|h| h.eq_ignore_ascii_case(host)))
-					.unwrap_or(false)
-			})
-			.and_then(|r| r.exit.clone())
-			.filter(|e| !e.trim().is_empty())
 	}
 }
 
@@ -367,48 +325,6 @@ mod tests {
 	}
 
 	#[test]
-	fn exit_field_is_optional_and_looked_up_by_url() {
-		// No exit is pinned right now (a second mixnet client cold-boot regresses
-		// first-connect); the field is still parsed + looked up when present.
-		let pinned = RelayPool::parse(PINNED_POOL).unwrap();
-		assert!(pinned.relays.iter().all(|r| r.exit.is_none()));
-		assert!(pinned.exit_for("wss://relay.goblin.st").is_none());
-
-		// A pool that DOES advertise an exit for one relay.
-		let pool = RelayPool::parse(
-			r#"{"version":1,"updated":"x","min_message_length":131072,"relays":[
-			  {"url":"wss://relay.goblin.st/","roles":["dm"],"exit":"aaa.bbb@ccc"},
-			  {"url":"wss://nos.lol","roles":["dm"]},
-			  {"url":"wss://blank.example","roles":["dm"],"exit":"  "}
-			]}"#,
-		)
-		.unwrap();
-		// Trailing-slash-insensitive lookup.
-		assert_eq!(
-			pool.exit_for("wss://relay.goblin.st"),
-			Some("aaa.bbb@ccc".to_string())
-		);
-		// No exit field → None; blank exit → None (treated as unset).
-		assert!(pool.exit_for("wss://nos.lol").is_none());
-		assert!(pool.exit_for("wss://blank.example").is_none());
-		// Unknown url → None.
-		assert!(pool.exit_for("wss://unknown.example").is_none());
-
-		// Host-keyed lookup (the HTTP dial site): same answers by hostname.
-		assert_eq!(
-			pool.exit_for_host("relay.goblin.st"),
-			Some("aaa.bbb@ccc".to_string())
-		);
-		assert_eq!(
-			pool.exit_for_host("RELAY.GOBLIN.ST"),
-			Some("aaa.bbb@ccc".to_string())
-		);
-		assert!(pool.exit_for_host("nos.lol").is_none());
-		assert!(pool.exit_for_host("blank.example").is_none());
-		assert!(pool.exit_for_host("unknown.example").is_none());
-	}
-
-	#[test]
 	fn pool_validation_rejects_bad_documents() {
 		assert!(RelayPool::parse("not json").is_none());
 		assert!(RelayPool::parse("{}").is_none());
@@ -475,7 +391,6 @@ mod tests {
 			url: url.to_string(),
 			roles: vec!["dm".to_string()],
 			vetted: vetted.then(|| "2026-07-01".to_string()),
-			exit: None,
 		};
 		vec![
 			mk("wss://a.example", false),
@@ -500,7 +415,6 @@ mod tests {
 			url: "wss://relay.goblin.st".to_string(),
 			roles: vec!["dm".to_string()],
 			vetted: Some("2026-07-01".to_string()),
-			exit: None,
 		});
 		let order = weighted_order("wss://relay.goblin.st", &with_goblin, |_| 0);
 		assert_eq!(order.len(), 4);
