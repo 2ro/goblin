@@ -44,3 +44,5 @@ pub use client::{NostrProfile, NostrService, send_phase};
 
 pub mod avatar;
 pub mod nip05;
+
+pub mod payuri;

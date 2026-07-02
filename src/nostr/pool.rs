@@ -203,6 +203,12 @@ pub fn load() -> RelayPool {
 	std::fs::read_to_string(cache_path())
 		.ok()
 		.and_then(|raw| RelayPool::parse(&raw))
+		// A cache written by a pre-exit build parses fine but hides the
+		// scoped-exit money path (and the current primary relay) for up to
+		// CACHE_MAX_AGE_SECS after an app update — relay connects then ride
+		// the slow public-IPR path for days. The pinned pool is newer than
+		// any exit-less file, so prefer it until the next gist refresh.
+		.filter(RelayPool::has_exit)
 		.unwrap_or_else(|| RelayPool::parse(PINNED_POOL).expect("pinned pool parses"))
 }
 
@@ -220,7 +226,14 @@ pub async fn refresh_if_stale() {
 		.and_then(|m| m.modified().ok())
 		.and_then(|t| t.elapsed().ok())
 		.map(|age| age.as_secs() < CACHE_MAX_AGE_SECS)
-		.unwrap_or(false);
+		.unwrap_or(false)
+		// An exit-less cache predates the current pool shape (see `load`,
+		// which already ignores it) — replace it now instead of serving the
+		// pinned fallback for the rest of the file's 7 days.
+		&& std::fs::read_to_string(&path)
+			.ok()
+			.and_then(|raw| RelayPool::parse(&raw))
+			.is_some_and(|p| p.has_exit());
 	if fresh {
 		return;
 	}

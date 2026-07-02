@@ -115,15 +115,6 @@ impl AvatarTextures {
 		None
 	}
 
-	/// Install the just-uploaded avatar without waiting for a round-trip.
-	pub fn set_own(&mut self, ctx: &egui::Context, name: &str, hash: &str, png: &[u8]) {
-		let name = name.trim_start_matches('@').to_lowercase();
-		self.cache.store(&name, hash, png);
-		let tex = decode(png)
-			.map(|img| ctx.load_texture(format!("avatar_{name}"), img, Default::default()));
-		self.textures.insert(name, tex);
-	}
-
 	/// Forget a name (released or rotated away).
 	pub fn invalidate(&mut self, name: &str) {
 		let name = name.trim_start_matches('@').to_lowercase();

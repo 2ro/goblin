@@ -170,10 +170,6 @@ impl NostrStore {
 		self.put_json(&self.contacts, &contact.npub, contact);
 	}
 
-	pub fn delete_contact(&self, npub_hex: &str) {
-		self.delete(&self.contacts, npub_hex);
-	}
-
 	pub fn all_contacts(&self) -> Vec<Contact> {
 		self.all_json(&self.contacts)
 	}
@@ -311,12 +307,5 @@ impl NostrStore {
 		self.clear(&self.tx_meta);
 		self.clear(&self.requests);
 		self.clear(&self.processed);
-	}
-
-	/// Wipe everything including contacts.
-	pub fn wipe_all(&self) {
-		self.wipe_archive();
-		self.clear(&self.contacts);
-		self.clear(&self.settings);
 	}
 }

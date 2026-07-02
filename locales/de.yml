@@ -609,6 +609,12 @@ goblin:
     repair_confirm: "Ja, jetzt reparieren"
     repair_confirm_note: "Die Reparatur scannt die Chain neu und kann einige Minuten dauern."
     restore_confirm_note: "Dies löscht lokale Daten und baut sie aus deinem Seed neu auf — das kann einige Minuten dauern."
+    nostr_key: "Nostr-Schlüssel"
+    nostr_key_desc: "Dein nsec, der geheime Schlüssel deiner Nostr-Identität. Kopiere ihn oder zeige den QR-Code, um dich bei Nostr-Apps wie magick.market anzumelden. Wer ihn hat, kontrolliert deine Identität, also halte ihn geheim."
+    reveal_nsec: "Schlüssel anzeigen"
+    copy_nsec: "nsec kopieren"
+    show_qr: "QR anzeigen"
+    hide_qr: "QR ausblenden"
   privacy:
     title: "Netzwerk-Privatsphäre"
     intro: "Goblin sendet seinen privaten Datenverkehr durch das Nym mixnet — ein Netzwerk mit fünf Sprüngen, das verbirgt, wer mit wem kommuniziert, sodass ein Relay eine Zahlung nicht zu dir zurückverfolgen kann."

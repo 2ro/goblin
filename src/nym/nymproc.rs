@@ -200,6 +200,11 @@ fn run_tunnel() {
 		// exit in the pool → no wait. Cold start only: on a later reselect the
 		// exit is long-ready, so `is_ready()` returns instantly.
 		if crate::nostr::pool::load().has_exit() {
+			// Kick the exit client's bootstrap NOW — nothing else touches it
+			// until the first relay dial (after a wallet opens), so waiting
+			// without this would just burn the head start and the grant race
+			// would happen anyway.
+			tokio::spawn(super::streamexit::prewarm());
 			let head_start = Instant::now();
 			while !super::streamexit::is_ready() && head_start.elapsed() < EXIT_HEAD_START {
 				tokio::time::sleep(Duration::from_millis(200)).await;
@@ -342,11 +347,11 @@ fn run_tunnel() {
 					*TUNNEL.write() = None;
 					tunnel.shutdown().await;
 					// Rebuild floor: never re-select faster than once per
-					// MIN_EXIT_LIFETIME. In the legacy path (and any future bug)
-					// this is the hard guarantee that a condemnation can't thrash
-					// the mixnet into a tight reselect loop.
+					// MIN_EXIT_LIFETIME. Whatever condemned the exit (or any
+					// future bug), this is the hard guarantee that a condemnation
+					// can't thrash the mixnet into a tight reselect loop.
 					let alive = published.elapsed();
-					if !legacy_watchdog() && alive < MIN_EXIT_LIFETIME {
+					if alive < MIN_EXIT_LIFETIME {
 						let floor = MIN_EXIT_LIFETIME - alive;
 						info!(
 							"[timing] nym: rebuild floor — waiting {}ms before next exit select",
@@ -440,14 +445,6 @@ pub(crate) const BOOTSTRAP_TIMEOUT: Duration = Duration::from_secs(20);
 /// tunnel more than briefly; the exit typically readies well inside it.
 const EXIT_HEAD_START: Duration = Duration::from_secs(12);
 
-/// Restore the pre-Build-98 watchdog (condemn on RELAY_GRACE of no-relay alone,
-/// no connectivity gate, no rebuild floor). Debug/measurement only — lets a cold
-/// run reproduce the old reselect loop for a BEFORE/AFTER comparison. Default
-/// OFF.
-fn legacy_watchdog() -> bool {
-	matches!(std::env::var("GOBLIN_LEGACY_WATCHDOG").as_deref(), Ok("1"))
-}
-
 /// Watchdog poll cadence. The relay-reachability check is a bare atomic load
 /// (free), so a short cadence costs nothing and never touches the network; the
 /// DNS keepalive still only fires every [`KEEPALIVE_PERIOD`], preserving the
@@ -468,7 +465,6 @@ const WATCH_TICK: Duration = Duration::from_secs(5);
 /// Returns once either signal declares the current exit dead, whereupon
 /// `run_tunnel` rebuilds on a fresh auto-selected exit.
 async fn watch_tunnel(tunnel: &smolmix::Tunnel, generation: u64) {
-	let legacy = legacy_watchdog();
 	let published = Instant::now();
 	let mut dns_fails = 0u32;
 	let mut since_dns = Duration::ZERO;
@@ -481,21 +477,8 @@ async fn watch_tunnel(tunnel: &smolmix::Tunnel, generation: u64) {
 		if relay_consumer() && !relay_live_for(generation) {
 			let lost = *relay_lost.get_or_insert_with(Instant::now);
 			let absent = lost.elapsed();
-			if legacy {
-				// Pre-Build-98: condemn on RELAY_GRACE of no-relay alone. Kept for
-				// BEFORE/AFTER measurement; this is the branch that produced the
-				// reselect loop when mix-dns made relays slow to connect.
-				if absent >= RELAY_GRACE {
-					warn!(
-						"[timing] nym: CONDEMN gen {generation} reason=no-relay-{}s (legacy watchdog); \
-						 exit lived {}s, re-selecting",
-						RELAY_GRACE.as_secs(),
-						published.elapsed().as_secs()
-					);
-					return;
-				}
-			} else if published.elapsed() >= MIN_EXIT_LIFETIME && absent >= RELAY_GRACE {
-				// Robust: past the settle floor AND relays absent for the grace.
+			if published.elapsed() >= MIN_EXIT_LIFETIME && absent >= RELAY_GRACE {
+				// Past the settle floor AND relays absent for the grace.
 				// Don't condemn on "no relay yet" alone — first prove the exit
 				// itself has NO connectivity (a genuine blackhole). If the probe
 				// SUCCEEDS the exit reaches the internet, so relays are merely slow

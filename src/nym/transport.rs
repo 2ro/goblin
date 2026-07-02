@@ -24,7 +24,6 @@
 //! payload + in-flight destination never touch the clear, and an exit failure
 //! only ever falls back — never a lockout.
 
-use std::fmt;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 use std::time::Duration;
@@ -37,20 +36,10 @@ use nostr_sdk::Url;
 use nostr_sdk::util::BoxedFuture;
 use tokio_tungstenite::tungstenite::Message as TgMessage;
 
-/// Error type for transport failures outside the websocket layer.
-#[derive(Debug)]
-struct NymTransportError(String);
-
-impl fmt::Display for NymTransportError {
-	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-		write!(f, "{}", self.0)
-	}
-}
-
-impl std::error::Error for NymTransportError {}
-
+/// A backend transport error (failures outside the websocket layer) carrying
+/// `msg` as its display text.
 fn terr(msg: impl Into<String>) -> TransportError {
-	TransportError::backend(NymTransportError(msg.into()))
+	TransportError::backend(std::io::Error::other(msg.into()))
 }
 
 /// Nostr websocket transport over the in-process Nym mixnet tunnel.

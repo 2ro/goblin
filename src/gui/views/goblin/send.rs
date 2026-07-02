@@ -680,17 +680,30 @@ impl SendFlow {
 			// seed words or slatepack contents into the search box.
 			match &result {
 				QrScanResult::Text(text) => {
-					let text = text.trim();
-					let text = text
-						.strip_prefix("nostr:")
-						.or_else(|| text.strip_prefix("NOSTR:"))
-						.unwrap_or(text);
+					// Parse as a (possibly amount-bearing) pay-URI. UNTRUSTED
+					// input: the parser is pure, fail-closed, and only ever
+					// PREFILLS — the recipient still resolves + verifies via the
+					// picker and the amount/review screens still gate the send.
+					// A bad amount/memo is dropped; a bare `nostr:<nprofile>`
+					// behaves exactly as before.
+					let pay = crate::nostr::payuri::parse(text);
 					// Drop the scanned key into the search box; the picker's
 					// debounced lookup resolves + verifies it like typed input.
-					self.search = text.to_string();
+					self.search = pay.recipient;
 					self.input_changed_at = ui.input(|i| i.time);
 					self.lookup_query.clear();
 					self.net_candidate = None;
+					// Prefill the amount only when the wallet's own parser
+					// accepted it (strictly positive). We stay on the normal
+					// picker -> amount/review flow; nothing auto-advances.
+					if let Some(amount) = pay.amount {
+						self.amount = amount;
+					}
+					// Prefill the send note from the (already sanitized) memo;
+					// it rides along into the tx message via `dispatch`.
+					if let Some(memo) = pay.memo {
+						self.note = memo;
+					}
 					let _ = wallet;
 				}
 				_ => self.error = Some(t!("goblin.send.scan_not_recipient").to_string()),

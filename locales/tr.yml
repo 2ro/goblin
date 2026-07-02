@@ -609,6 +609,12 @@ goblin:
     repair_confirm: "Evet, şimdi onar"
     repair_confirm_note: "Onarım zinciri yeniden tarar ve birkaç dakika sürebilir."
     restore_confirm_note: "Bu, yerel verileri siler ve seed'inizden yeniden oluşturur — birkaç dakika sürebilir."
+    nostr_key: "Nostr anahtarı"
+    nostr_key_desc: "nsec'iniz, Nostr kimliğinizin gizli anahtarı. magick.market gibi Nostr uygulamalarında oturum açmak için kopyalayın veya QR kodunu gösterin. Ona sahip olan herkes kimliğinizi kontrol eder, gizli tutun."
+    reveal_nsec: "Anahtarı göster"
+    copy_nsec: "nsec'i kopyala"
+    show_qr: "QR göster"
+    hide_qr: "QR gizle"
   privacy:
     title: "Ağ gizliliği"
     intro: "Goblin özel trafiğini Nym mixnet üzerinden gönderir — kimin kiminle konuştuğunu gizleyen beş atlamalı bir ağ, böylece bir relay bir ödemeyi sana bağlayamaz."

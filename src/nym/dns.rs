@@ -38,13 +38,9 @@
 //! Answers land in a TTL-respecting in-memory cache and hosts are prewarmed at
 //! startup, so a warm entry (not a fresh mixnet round trip) serves the common
 //! case. IPv4-only, like the rest of the app (GRIM audit).
-//!
-//! A legacy UDP path is retained behind `GOBLIN_DNS_UDP=1` for measuring the
-//! regression this replaced; it is never used in shipped builds.
 
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
@@ -82,12 +78,6 @@ const DOT_RESOLVERS: [DotResolver; 2] = [
 	},
 ];
 
-/// Legacy UDP resolvers (port 53) — only used when `GOBLIN_DNS_UDP=1`.
-const UDP_RESOLVERS: [SocketAddr; 2] = [
-	SocketAddr::new(IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1)), 53),
-	SocketAddr::new(IpAddr::V4(Ipv4Addr::new(9, 9, 9, 9)), 53),
-];
-
 /// A DoH resolver: the IP:443 to dial through the tunnel, its SNI/cert + Host
 /// name, and the RFC 8484 query path. DoH is the FALLBACK for an exit whose
 /// policy blocks DoT (:853) — 443 is guaranteed reachable (relays + HTTPS ride
@@ -121,8 +111,6 @@ enum DnsMode {
 	Dot,
 	/// DoH — DNS-over-HTTPS on :443 (fallback when an exit blocks :853).
 	Doh,
-	/// Legacy UDP-over-mixnet (`GOBLIN_DNS_UDP=1`, measurement only).
-	Udp,
 }
 
 /// Sticky: set once an exit is found to block DoT (:853), so we stop paying the
@@ -134,15 +122,11 @@ static PREFER_DOH: AtomicBool = AtomicBool::new(false);
 /// (a few seconds of deliberate per-hop delay), so allow more headroom than the
 /// UDP path did; a round that exceeds this is retried rather than waited out.
 const DOT_QUERY_TIMEOUT: Duration = Duration::from_secs(8);
-/// UDP per-query wait (legacy path).
-const UDP_QUERY_TIMEOUT: Duration = Duration::from_secs(4);
 
 /// Quick race-both-resolvers rounds before giving up. DoT is TCP-reliable within
 /// a round, so two rounds is plenty (the second only matters if a whole
-/// connection was dropped); the UDP path needs one more because it loses
-/// datagrams.
+/// connection was dropped).
 const DOT_ROUNDS: usize = 2;
-const UDP_ROUNDS: usize = 3;
 
 /// DoH per-query wait (TCP + TLS + one HTTP round trip over the mixnet) and its
 /// round count. Same reliability as DoT (TCP), a touch more per-request overhead
@@ -159,24 +143,6 @@ lazy_static! {
 	/// host → (addresses, expiry).
 	static ref CACHE: RwLock<HashMap<String, (Vec<Ipv4Addr>, Instant)>> =
 		RwLock::new(HashMap::new());
-
-	/// Shared rustls client config for DoT (webpki roots; ring provider installed
-	/// at startup — the Build 65/66 rule), reused for every resolver handshake.
-	static ref DOT_TLS: Arc<rustls::ClientConfig> = {
-		let mut roots = rustls::RootCertStore::empty();
-		roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
-		Arc::new(
-			rustls::ClientConfig::builder()
-				.with_root_certificates(roots)
-				.with_no_client_auth(),
-		)
-	};
-}
-
-/// Restore the pre-Build-98 UDP mix-dns path. Measurement/debug only (reproduce
-/// the lossy-UDP regression DoT replaced); default OFF.
-fn use_legacy_udp() -> bool {
-	matches!(std::env::var("GOBLIN_DNS_UDP").as_deref(), Ok("1"))
 }
 
 /// Resolve `host` to a socket address for `tcp_connect`, entirely over the
@@ -191,10 +157,6 @@ pub async fn resolve(tunnel: &Tunnel, host: &str, port: u16) -> Option<SocketAdd
 	}
 	if let Some(ip) = cached(host) {
 		return Some(SocketAddr::new(IpAddr::V4(ip), port));
-	}
-	// Legacy measurement path (UDP-over-mixnet), never in shipped builds.
-	if use_legacy_udp() {
-		return resolve_via(tunnel, host, port, DnsMode::Udp).await;
 	}
 	// If a previous lookup already learned this exit blocks DoT, go straight to
 	// DoH — still entirely inside the tunnel.
@@ -214,19 +176,17 @@ pub async fn resolve(tunnel: &Tunnel, host: &str, port: u16) -> Option<SocketAdd
 }
 
 /// Run the round loop for one in-tunnel DNS transport, writing the cache on the
-/// first valid answer. Shared by DoT / DoH / legacy-UDP.
+/// first valid answer. Shared by DoT / DoH.
 async fn resolve_via(tunnel: &Tunnel, host: &str, port: u16, mode: DnsMode) -> Option<SocketAddr> {
 	let (proto, rounds) = match mode {
 		DnsMode::Dot => ("dot-dns", DOT_ROUNDS),
 		DnsMode::Doh => ("doh-dns", DOH_ROUNDS),
-		DnsMode::Udp => ("udp-dns", UDP_ROUNDS),
 	};
 	let start = Instant::now();
 	for round in 0..rounds {
 		let answer = match mode {
 			DnsMode::Dot => race_dot(tunnel, host).await,
 			DnsMode::Doh => race_doh(tunnel, host).await,
-			DnsMode::Udp => race_udp(tunnel, host).await,
 		};
 		if let Some((resolver, ips, ttl)) = answer {
 			let ttl = ttl.clamp(TTL_FLOOR_SECS, TTL_CEILING_SECS);
@@ -295,7 +255,7 @@ async fn query_dot(
 		.map_err(|e| debug!("dot-dns: connect to {} failed: {e}", resolver.addr))
 		.ok()?;
 	let server_name = rustls::pki_types::ServerName::try_from(resolver.sni.to_string()).ok()?;
-	let mut tls = tokio_rustls::TlsConnector::from(DOT_TLS.clone())
+	let mut tls = tokio_rustls::TlsConnector::from(super::tls_config())
 		.connect(server_name, tcp)
 		.await
 		.map_err(|e| debug!("dot-dns: tls handshake with {} failed: {e}", resolver.sni))
@@ -372,7 +332,7 @@ async fn query_doh(
 		.map_err(|e| debug!("doh-dns: connect to {} failed: {e}", resolver.ip))
 		.ok()?;
 	let server_name = rustls::pki_types::ServerName::try_from(resolver.sni.to_string()).ok()?;
-	let tls = tokio_rustls::TlsConnector::from(DOT_TLS.clone())
+	let tls = tokio_rustls::TlsConnector::from(super::tls_config())
 		.connect(server_name, tcp)
 		.await
 		.map_err(|e| debug!("doh-dns: tls handshake with {} failed: {e}", resolver.sni))
@@ -406,22 +366,6 @@ async fn query_doh(
 	}
 	let body = resp.into_body().collect().await.ok()?.to_bytes();
 	parse_response(id, &body)
-}
-
-/// One legacy-UDP round (only reached with `GOBLIN_DNS_UDP=1`).
-async fn race_udp(tunnel: &Tunnel, host: &str) -> Option<(SocketAddr, Vec<Ipv4Addr>, u32)> {
-	let mut inflight = FuturesUnordered::new();
-	for resolver in UDP_RESOLVERS {
-		inflight.push(async move { (resolver, query_udp(tunnel, host, resolver).await) });
-	}
-	while let Some((resolver, answer)) = inflight.next().await {
-		if let Some((ips, ttl)) = answer
-			&& !ips.is_empty()
-		{
-			return Some((resolver, ips, ttl));
-		}
-	}
-	None
 }
 
 /// Resolve a batch of hosts concurrently to populate the cache, so the first
@@ -473,44 +417,6 @@ pub async fn probe(tunnel: &Tunnel) -> bool {
 			false
 		}
 	}
-}
-
-/// One legacy-UDP A query/response round trip over the tunnel against `resolver`.
-async fn query_udp(
-	tunnel: &Tunnel,
-	host: &str,
-	resolver: SocketAddr,
-) -> Option<(Vec<Ipv4Addr>, u32)> {
-	let udp = match tunnel.udp_socket().await {
-		Ok(s) => s,
-		Err(e) => {
-			warn!("udp-dns: udp socket failed: {e}");
-			return None;
-		}
-	};
-	let id = rand::random::<u16>();
-	let query = encode_query(id, host)?;
-	if let Err(e) = udp.send_to(&query, resolver).await {
-		warn!("udp-dns: send to {resolver} failed: {e}");
-		return None;
-	}
-	let mut buf = vec![0u8; 1500];
-	let (n, from) = match tokio::time::timeout(UDP_QUERY_TIMEOUT, udp.recv_from(&mut buf)).await {
-		Ok(Ok(r)) => r,
-		Ok(Err(e)) => {
-			warn!("udp-dns: recv from {resolver} failed: {e}");
-			return None;
-		}
-		Err(_) => {
-			debug!("udp-dns: query to {resolver} timed out (will retry)");
-			return None;
-		}
-	};
-	if from != resolver {
-		warn!("udp-dns: dropping answer from unexpected source {from}");
-		return None;
-	}
-	parse_response(id, &buf[..n])
 }
 
 /// Encode a recursive A query for `host` with transaction id `id`.

@@ -30,8 +30,7 @@
 //! timeouts (~10s measured), tipping relay connects past the exit-condemnation
 //! grace and driving a 2-3 minute reselect loop. Build 98 moves DNS to DoT
 //! (TCP+TLS through the tunnel): TCP retransmits (no packet-loss stalls) and TLS
-//! encrypts the query from the exit — reliable AND private. (`GOBLIN_DNS_UDP=1`
-//! restores the old UDP path for measuring the regression.)
+//! encrypts the query from the exit — reliable AND private.
 
 pub mod dns;
 pub mod nymproc;
@@ -255,10 +254,31 @@ async fn exit_connect(host: &str, exit: &str) -> Option<Box<dyn Stream>> {
 	}
 }
 
-/// Everything hyper needs from the tunneled stream, boxable for the plain
-/// http / https split.
-trait Stream: AsyncRead + AsyncWrite + Send + Unpin {}
+/// Everything hyper (and the TLS/websocket layers) needs from a mixnet-carried
+/// stream, boxable for the plain http / https / scoped-exit split. Shared with
+/// the scoped-exit egress ([`streamexit::BoxedStream`]).
+pub(crate) trait Stream: AsyncRead + AsyncWrite + Send + Unpin {}
 impl<T: AsyncRead + AsyncWrite + Send + Unpin> Stream for T {}
+
+lazy_static::lazy_static! {
+	/// Shared rustls client config (webpki roots; ring provider installed at
+	/// startup — the Build 65/66 rule), reused by every in-tunnel TLS handshake
+	/// (HTTPS here, DoT/DoH in [`dns`]).
+	static ref TLS_CONFIG: Arc<rustls::ClientConfig> = {
+		let mut roots = rustls::RootCertStore::empty();
+		roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+		Arc::new(
+			rustls::ClientConfig::builder()
+				.with_root_certificates(roots)
+				.with_no_client_auth(),
+		)
+	};
+}
+
+/// The shared rustls client config (cheap `Arc` bump).
+pub(crate) fn tls_config() -> Arc<rustls::ClientConfig> {
+	TLS_CONFIG.clone()
+}
 
 /// TLS-wrap a tunneled TCP stream with rustls + webpki roots (never the
 /// platform verifier — it panics on Android outside a full app context). The
@@ -268,21 +288,8 @@ async fn tls_connect<S>(host: &str, stream: S) -> Option<tokio_rustls::client::T
 where
 	S: AsyncRead + AsyncWrite + Send + Unpin,
 {
-	// Shared rustls client config (webpki roots; ring provider installed at
-	// startup — the Build 65/66 rule).
-	lazy_static::lazy_static! {
-		static ref TLS_CONFIG: Arc<rustls::ClientConfig> = {
-			let mut roots = rustls::RootCertStore::empty();
-			roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
-			Arc::new(
-				rustls::ClientConfig::builder()
-					.with_root_certificates(roots)
-					.with_no_client_auth(),
-			)
-		};
-	}
 	let server_name = rustls::pki_types::ServerName::try_from(host.to_string()).ok()?;
-	tokio_rustls::TlsConnector::from(TLS_CONFIG.clone())
+	tokio_rustls::TlsConnector::from(tls_config())
 		.connect(server_name, stream)
 		.await
 		.map_err(|e| warn!("nym http: tls handshake with {host} failed: {e}"))

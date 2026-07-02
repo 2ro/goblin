@@ -1,0 +1,21 @@
+name: Fetch nip44 crate
+description: >
+  Clone the nip44 crate (v2 + v3 encryption) from our mirror
+  (github.com/2ro/nip44, branch `v3`) into ../nip44, so the
+  `nip44 = { path = "../nip44" }` dependency resolves.
+
+runs:
+  using: composite
+  steps:
+    - name: Clone nip44
+      shell: bash
+      run: |
+        set -euo pipefail
+        DEST="$(dirname "$GITHUB_WORKSPACE")/nip44"
+        if [ -e "$DEST/Cargo.toml" ]; then
+          echo "nip44 already present at $DEST"
+          exit 0
+        fi
+        rm -rf "$DEST"
+        git clone --branch v3 --depth 1 https://github.com/2ro/nip44.git "$DEST"
+        echo "nip44 cloned from 2ro/nip44@v3 -> $DEST"

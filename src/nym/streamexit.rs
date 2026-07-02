@@ -35,16 +35,12 @@ use std::time::Duration;
 
 use log::{info, warn};
 use nym_sdk::mixnet::{MixnetClient, MixnetStream, Recipient};
-use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::Mutex;
 
-/// Everything the TLS/websocket layer needs from the egress stream.
-pub trait ExitStream: AsyncRead + AsyncWrite + Send + Unpin {}
-impl<T: AsyncRead + AsyncWrite + Send + Unpin> ExitStream for T {}
-
 /// The boxed transport stream handed to the TLS/websocket layer — the same
-/// seat the smolmix tunnel's TCP stream occupies on the fallback path.
-pub type BoxedStream = Box<dyn ExitStream>;
+/// seat the smolmix tunnel's TCP stream occupies on the fallback path
+/// (everything that layer needs is the shared [`super::Stream`] trait).
+pub(crate) type BoxedStream = Box<dyn super::Stream>;
 
 /// After the Open is SENT, wait this long before handing back a writable
 /// stream. `open_stream` returns once the Open message leaves the client, NOT
@@ -98,7 +94,7 @@ pub fn is_ready() -> bool {
 /// mixnet — a DEAD exit still hands back a stream, and its death surfaces at
 /// the caller's (timeout-bounded) TLS handshake, which doubles as the
 /// liveness probe: no ServerHello through the pipe → fall back.
-pub async fn open_stream(exit: &str, timeout: Duration) -> Result<BoxedStream, String> {
+pub(crate) async fn open_stream(exit: &str, timeout: Duration) -> Result<BoxedStream, String> {
 	let recipient: Recipient = exit
 		.trim()
 		.parse()
@@ -113,8 +109,22 @@ pub async fn open_stream(exit: &str, timeout: Duration) -> Result<BoxedStream, S
 	Ok(Box::new(stream) as BoxedStream)
 }
 
-/// Ensure the shared client is connected, then open a stream on it.
-async fn open(recipient: Recipient) -> Result<MixnetStream, String> {
+/// Bootstrap the shared client ahead of the first dial. The cold-start
+/// sequencer in [`super::nymproc`] spawns this when the pool advertises an
+/// exit: without it the client would only bootstrap on the first relay dial —
+/// which happens after a wallet opens, so the tunnel's bounded head-start wait
+/// would just expire and both clients would race for their bandwidth grants
+/// anyway. Failure is non-fatal (the first real dial retries the bootstrap).
+pub async fn prewarm() {
+	if let Err(e) = ensure_client().await {
+		warn!("nym: streamexit prewarm failed: {e}");
+	}
+}
+
+/// Ensure the shared client is connected (bootstrapping it when absent or
+/// dead) and READY reflects reality. Holds the client lock across the
+/// bootstrap so concurrent callers coalesce onto one connect.
+async fn ensure_client() -> Result<(), String> {
 	let mut guard = CLIENT.lock().await;
 	// A dead client (gateway dropped, hosting runtime gone) is discarded and
 	// rebuilt — the auto-reconnect-on-drop rule.
@@ -138,7 +148,19 @@ async fn open(recipient: Recipient) -> Result<MixnetStream, String> {
 		*guard = Some(client);
 		READY.store(true, Ordering::Relaxed);
 	}
-	let client = guard.as_mut().expect("client ensured above");
+	Ok(())
+}
+
+/// Ensure the shared client is connected, then open a stream on it.
+async fn open(recipient: Recipient) -> Result<MixnetStream, String> {
+	ensure_client().await?;
+	let mut guard = CLIENT.lock().await;
+	// Re-acquired the lock after ensure_client — a concurrent failed dial may
+	// have dropped the client in between; error into the caller's fallback
+	// rather than panic.
+	let Some(client) = guard.as_mut() else {
+		return Err("exit client lost before dial".to_string());
+	};
 	match client.open_stream(recipient, None).await {
 		Ok(stream) => Ok(stream),
 		Err(e) => {

@@ -609,6 +609,12 @@ goblin:
     repair_confirm: "是的，立即修复"
     repair_confirm_note: "修复会重新扫描链，可能需要几分钟。"
     restore_confirm_note: "这会清除本地数据并从助记词重建——可能需要几分钟。"
+    nostr_key: "Nostr 密钥"
+    nostr_key_desc: "您的 nsec，即 Nostr 身份的私钥。复制它或显示二维码，即可登录 magick.market 等 Nostr 应用。持有它的人即可控制您的身份，请妥善保管。"
+    reveal_nsec: "显示密钥"
+    copy_nsec: "复制 nsec"
+    show_qr: "显示二维码"
+    hide_qr: "隐藏二维码"
   privacy:
     title: "网络隐私"
     intro: "Goblin 通过 Nym mixnet 发送其私密流量 — 这是一个五跳网络，可隐藏通信双方的身份，使中继无法将付款关联到你。"

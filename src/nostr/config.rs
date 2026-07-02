@@ -32,7 +32,7 @@ pub enum AcceptPolicy {
 }
 
 /// Per-wallet nostr configuration.
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone, Default)]
 pub struct NostrConfig {
 	/// Whether the nostr subsystem runs for this wallet.
 	enabled: Option<bool>,
@@ -57,21 +57,6 @@ pub struct NostrConfig {
 	/// Path of the config file, not serialized.
 	#[serde(skip)]
 	path: Option<PathBuf>,
-}
-
-impl Default for NostrConfig {
-	fn default() -> Self {
-		Self {
-			enabled: None,
-			relays: None,
-			accept_from: None,
-			nip05_server: None,
-			expiry_secs: None,
-			cancel_grace_secs: None,
-			allow_incoming_requests: None,
-			path: None,
-		}
-	}
 }
 
 impl NostrConfig {

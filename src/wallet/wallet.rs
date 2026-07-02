@@ -488,6 +488,27 @@ impl Wallet {
 	/// shares nothing with it), atomically moving the registered username
 	/// (if any) to the new key via the name server. Blocking (network I/O):
 	/// call from a worker thread. Returns the new bech32 npub.
+	/// The nostr secret key (nsec, bech32) for this wallet, gated on the wallet
+	/// password. Used by Advanced → "Nostr key" so the user can copy it or show
+	/// it as a QR to log in to nostr apps (e.g. magick.market). Unlocking the
+	/// stored identity both verifies the password and yields the keys, so a
+	/// wrong password can never leak the key. The value is derived on demand and
+	/// never persisted.
+	pub fn get_nostr_nsec(&self, password: String) -> Result<String, String> {
+		let svc = self
+			.nostr_service()
+			.ok_or_else(|| "nostr identity not ready".to_string())?;
+		use nostr_sdk::ToBech32;
+		let keys = svc
+			.identity
+			.read()
+			.unlock(&password)
+			.map_err(|_| "wrong password".to_string())?;
+		keys.secret_key()
+			.to_bech32()
+			.map_err(|e| format!("nsec encode failed: {e}"))
+	}
+
 	pub fn rotate_nostr_identity(&self, password: String) -> Result<String, String> {
 		let svc = self
 			.nostr_service()

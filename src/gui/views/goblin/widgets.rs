@@ -27,67 +27,42 @@ pub fn amount_str(atomic: u64) -> String {
 	grin_core::core::amount_to_hr_string(atomic, true)
 }
 
-/// A custom-picture avatar: the texture drawn in a circle, wrapped by a thin
-/// conic-gradient ring derived deterministically from the username (the name,
-/// not the npub). The image is inset so the ring sits at the perimeter.
+/// A custom-picture avatar: the texture drawn to fill the circle, with a thin
+/// light-yellow outline hugging its edge when the identity is a claimed name.
 pub fn avatar_tex(ui: &mut Ui, tex: &egui::TextureHandle, name: &str, size: f32) -> Response {
 	let (rect, resp) = ui.allocate_exact_size(Vec2::splat(size), Sense::click());
-	let thickness = (size * 0.045).max(1.0);
-	let gap = (size * 0.07).max(2.0);
-	let img_rect = rect.shrink(thickness + gap);
-	let rounding = eframe::epaint::CornerRadius::same((img_rect.width() / 2.0) as u8);
+	let rounding = eframe::epaint::CornerRadius::same((rect.width() / 2.0) as u8);
 	egui::Image::new(tex)
 		.corner_radius(rounding)
-		.fit_to_exact_size(img_rect.size())
-		.paint_at(ui, img_rect);
-	conic_ring(
-		ui,
-		rect.center(),
-		size / 2.0 - thickness / 2.0,
-		thickness,
-		name,
-	);
+		.fit_to_exact_size(rect.size())
+		.paint_at(ui, rect);
+	if is_named(name) {
+		name_ring(ui, rect.center(), size);
+	}
 	resp
 }
 
-/// Thin conic-gradient ring at the avatar perimeter, hue path seeded by the
-/// username (see `identicon::ring_params`). Drawn as a feathered triangle mesh
-/// (~64 segments, per-vertex color) so edges stay smooth; a triangle-wave hue
-/// sweep keeps the gradient seamless where the circle closes. No new deps.
-fn conic_ring(ui: &Ui, center: egui::Pos2, r_mid: f32, thickness: f32, name: &str) {
-	use eframe::epaint::{Mesh, Shape, Vertex, WHITE_UV};
-	let (base_hue, sweep) = super::identicon::ring_params(name);
-	const SEGS: u32 = 64;
-	const FEATHER: f32 = 0.75;
-	let r_in = r_mid - thickness / 2.0;
-	let r_out = r_mid + thickness / 2.0;
-	let radii = [r_out + FEATHER, r_out, r_in, (r_in - FEATHER).max(0.0)];
-	let alphas = [0u8, 255, 255, 0];
-	let mut mesh = Mesh::default();
-	for i in 0..=SEGS {
-		let frac = i as f32 / SEGS as f32;
-		let theta = frac * std::f32::consts::TAU - std::f32::consts::FRAC_PI_2;
-		let wave = 1.0 - (2.0 * frac - 1.0).abs();
-		let hue = (base_hue + sweep * f64::from(wave)) % 360.0;
-		let (r, g, b) = super::identicon::hsl_rgb8(hue, 0.62, 0.55);
-		let dir = Vec2::new(theta.cos(), theta.sin());
-		for (radius, alpha) in radii.iter().zip(alphas) {
-			mesh.vertices.push(Vertex {
-				pos: center + dir * *radius,
-				uv: WHITE_UV,
-				color: Color32::from_rgba_unmultiplied(r, g, b, alpha),
-			});
-		}
-	}
-	for i in 0..SEGS {
-		let a = i * 4;
-		let b = a + 4;
-		for ring in 0..3 {
-			let (p0, p1, p2, p3) = (a + ring, a + ring + 1, b + ring, b + ring + 1);
-			mesh.indices.extend_from_slice(&[p0, p1, p2, p1, p3, p2]);
-		}
-	}
-	ui.painter().add(Shape::mesh(mesh));
+/// A thin light-yellow outline on the avatar's edge — the marker of a claimed
+/// name. Just an outline that touches the circle (no gap, no gradient); the
+/// yellow reads as "this identity has a name" and nothing more.
+fn name_ring(ui: &Ui, center: egui::Pos2, size: f32) {
+	let thickness = (size * 0.03).max(1.0);
+	// Goblin accent yellow, lightened toward white so the outline stays soft.
+	let c = super::theme::tokens().accent;
+	let light = Color32::from_rgb(
+		c.r().saturating_add((255 - c.r()) / 3),
+		c.g().saturating_add((255 - c.g()) / 3),
+		c.b().saturating_add((255 - c.b()) / 3),
+	);
+	// Sit the stroke just inside the perimeter so it stays fully on-canvas.
+	let radius = size / 2.0 - thickness / 2.0;
+	ui.painter()
+		.circle_stroke(center, radius, egui::Stroke::new(thickness, light));
+}
+
+/// Whether a display name is a real claimed name (not empty, not a bare npub).
+fn is_named(name: &str) -> bool {
+	!name.is_empty() && !name.starts_with("npub")
 }
 
 /// Deterministic gradient avatar (a pubkey-seeded two-tone tile with the Grin
@@ -100,23 +75,15 @@ pub fn gradient_avatar(ui: &mut Ui, id: &str, size: f32) -> Response {
 	resp
 }
 
-/// The UNCHANGED npub-seeded grinmark gradient with a thin conic ring seeded by
-/// the USERNAME simply added around its edge — the gradient stays exactly as a
-/// ring-less avatar draws it; the ring is the only thing the username adds.
+/// The UNCHANGED npub-seeded grinmark gradient orb with a thin light-yellow
+/// outline hugging its edge to mark a claimed name — the orb fills the circle
+/// exactly as a ring-less avatar draws it; the outline is all the name adds.
 pub fn gradient_avatar_ringed(ui: &mut Ui, id: &str, name: &str, size: f32) -> Response {
 	let (rect, resp) = ui.allocate_exact_size(Vec2::splat(size), Sense::click());
-	let thickness = (size * 0.045).max(1.0);
-	let gap = (size * 0.07).max(2.0);
-	// Inset the orb so the username ring sits AROUND it with a clear gap,
-	// rather than overlapping its edge.
-	paint_gradient(ui, id, rect.shrink(thickness + gap));
-	conic_ring(
-		ui,
-		rect.center(),
-		size / 2.0 - thickness / 2.0,
-		thickness,
-		name,
-	);
+	paint_gradient(ui, id, rect);
+	if is_named(name) {
+		name_ring(ui, rect.center(), size);
+	}
 	resp
 }
 

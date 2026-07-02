@@ -12,76 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Client-side avatar handling: local preprocessing of a picked picture
-//! (mirrors the server pipeline so uploads over the mixnet stay small and previews
-//! are instant — the server still re-validates everything), plus a small
-//! disk cache of fetched avatars keyed by username.
+//! Client-side avatar handling: a small disk cache of fetched avatars keyed
+//! by username.
 
-use image::codecs::png::PngEncoder;
-use image::metadata::Orientation;
-use image::{DynamicImage, ImageDecoder, ImageFormat, ImageReader, Limits};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::io::Cursor;
 use std::path::PathBuf;
-
-/// Output dimensions (square), matching the server.
-pub const SIZE: u32 = 256;
-/// Raw picked files larger than this are rejected before decoding.
-const MAX_FILE_BYTES: u64 = 10 * 1024 * 1024;
-
-/// Identify the image format from magic bytes alone (PNG/JPEG/WebP).
-fn sniff(raw: &[u8]) -> Option<ImageFormat> {
-	if raw.len() >= 8 && raw.starts_with(&[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]) {
-		return Some(ImageFormat::Png);
-	}
-	if raw.len() >= 3 && raw.starts_with(&[0xFF, 0xD8, 0xFF]) {
-		return Some(ImageFormat::Jpeg);
-	}
-	if raw.len() >= 12 && &raw[0..4] == b"RIFF" && &raw[8..12] == b"WEBP" {
-		return Some(ImageFormat::WebP);
-	}
-	None
-}
-
-/// Read a picked picture file and normalize it to the canonical 256×256
-/// PNG (EXIF orientation applied, every byte of metadata destroyed).
-pub fn process_avatar_file(path: &str) -> Result<Vec<u8>, String> {
-	let meta = std::fs::metadata(path).map_err(|_| "Couldn't read that file".to_string())?;
-	if meta.len() > MAX_FILE_BYTES {
-		return Err("That picture is too large (10 MB max)".to_string());
-	}
-	let raw = std::fs::read(path).map_err(|_| "Couldn't read that file".to_string())?;
-	process_avatar_bytes(&raw)
-}
-
-/// Normalize raw image bytes to the canonical avatar PNG.
-pub fn process_avatar_bytes(raw: &[u8]) -> Result<Vec<u8>, String> {
-	let err = || "That file doesn't look like a usable picture".to_string();
-	let format = sniff(raw).ok_or_else(err)?;
-	let mut reader = ImageReader::with_format(Cursor::new(raw), format);
-	let mut limits = Limits::default();
-	limits.max_image_width = Some(8192);
-	limits.max_image_height = Some(8192);
-	limits.max_alloc = Some(128 * 1024 * 1024);
-	reader.limits(limits);
-	let mut decoder = reader.into_decoder().map_err(|_| err())?;
-	let orientation = decoder.orientation().unwrap_or(Orientation::NoTransforms);
-	let mut img = DynamicImage::from_decoder(decoder).map_err(|_| err())?;
-	img.apply_orientation(orientation);
-	let (w, h) = (img.width(), img.height());
-	if w == 0 || h == 0 {
-		return Err(err());
-	}
-	let side = w.min(h);
-	let img = img.crop_imm((w - side) / 2, (h - side) / 2, side, side);
-	let img = img.resize_exact(SIZE, SIZE, image::imageops::FilterType::Lanczos3);
-	let rgba = img.to_rgba8();
-	let mut out = Vec::new();
-	rgba.write_with_encoder(PngEncoder::new(&mut out))
-		.map_err(|_| err())?;
-	Ok(out)
-}
 
 /// One cached profile probe.
 #[derive(Serialize, Deserialize, Clone)]
@@ -196,33 +132,6 @@ impl AvatarCache {
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use image::RgbaImage;
-
-	fn png_bytes(w: u32, h: u32) -> Vec<u8> {
-		let img = RgbaImage::from_fn(w, h, |x, y| {
-			image::Rgba([(x % 256) as u8, (y % 256) as u8, 7, 255])
-		});
-		let mut out = Vec::new();
-		image::DynamicImage::ImageRgba8(img)
-			.write_with_encoder(PngEncoder::new(&mut out))
-			.unwrap();
-		out
-	}
-
-	#[test]
-	fn processes_to_canonical_png() {
-		let out = process_avatar_bytes(&png_bytes(500, 300)).unwrap();
-		assert!(out.starts_with(&[0x89, b'P', b'N', b'G']));
-		let img = image::load_from_memory(&out).unwrap();
-		assert_eq!((img.width(), img.height()), (SIZE, SIZE));
-	}
-
-	#[test]
-	fn rejects_non_images() {
-		assert!(process_avatar_bytes(b"<svg onload=alert(1)></svg>").is_err());
-		assert!(process_avatar_bytes(b"GIF89a....").is_err());
-		assert!(process_avatar_bytes(&[]).is_err());
-	}
 
 	#[test]
 	fn cache_round_trip_and_remove() {

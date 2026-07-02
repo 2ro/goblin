@@ -60,16 +60,6 @@ fn hsl_to_rgb(h: f64, s: f64, l: f64) -> String {
 	format!("#{r:02x}{g:02x}{b:02x}")
 }
 
-/// Conic-ring hue path for a custom-image avatar, seeded by the USERNAME (not
-/// the pubkey, per the design): base hue from the first two hash bytes, sweep
-/// width (60°–180°) from the third. Deterministic, like the gradients.
-pub(super) fn ring_params(name: &str) -> (f64, f64) {
-	let hash = Sha256::digest(name.as_bytes());
-	let base = ((u16::from(hash[0]) << 8 | u16::from(hash[1])) as f64 / 65_535.0) * 360.0;
-	let sweep = 60.0 + (hash[2] as f64 / 255.0) * 120.0;
-	(base, sweep)
-}
-
 /// Normalise any caller-supplied id (npub bech32 OR raw hex) to the canonical
 /// lowercase hex pubkey used as the seed everywhere.
 pub fn to_hex_seed(id: &str) -> String {

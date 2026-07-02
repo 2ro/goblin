@@ -153,6 +153,15 @@ struct AdvancedState {
 	revealed: Option<String>,
 	/// Set when the entered password didn't decrypt the seed.
 	wrong_pass: bool,
+	/// Password typed to reveal the nostr secret key (nsec).
+	nsec_pass: String,
+	/// The revealed nsec, held only while shown (cleared on hide/back).
+	nsec_revealed: Option<String>,
+	/// Set when the entered password didn't unlock the nostr identity.
+	nsec_wrong: bool,
+	/// Whether the nsec QR is expanded (so it can be scanned to log in
+	/// elsewhere, e.g. magick.market's private-key login).
+	nsec_qr: bool,
 	/// Armed "really restore?" confirm.
 	confirm_restore: bool,
 	/// Armed "really repair?" confirm (repair takes a few minutes).
@@ -3131,6 +3140,88 @@ impl GoblinWalletView {
 										}
 										Err(_) => {
 											adv.wrong_pass = true;
+										}
+									}
+								}
+							});
+						}
+					});
+					ui.add_space(12.0);
+
+					// Nostr key (nsec). Password-gated reveal, then Copy + a QR
+					// so it can be carried into a nostr app's private-key login
+					// (e.g. magick.market) without retyping. Same gate as the
+					// recovery phrase above.
+					w::card(ui, |ui| {
+						ui.set_min_width(ui.available_width());
+						advanced_head(ui, &t!("goblin.advanced.nostr_key"), t.surface_text);
+						advanced_desc(ui, &t!("goblin.advanced.nostr_key_desc"));
+						ui.add_space(10.0);
+						if let Some(nsec) = adv.nsec_revealed.clone() {
+							w::field_well(ui, |ui| {
+								ui.label(
+									RichText::new(&nsec)
+										.font(FontId::new(14.0, fonts::medium()))
+										.color(t.surface_text),
+								);
+							});
+							ui.add_space(10.0);
+							if w::big_action_on_card(ui, &t!("goblin.advanced.copy_nsec")).clicked()
+							{
+								cb.copy_string_to_buffer(nsec.clone());
+							}
+							ui.add_space(8.0);
+							let qr_label = if adv.nsec_qr {
+								t!("goblin.advanced.hide_qr")
+							} else {
+								t!("goblin.advanced.show_qr")
+							};
+							if w::big_action_on_card(ui, &qr_label).clicked() {
+								adv.nsec_qr = !adv.nsec_qr;
+							}
+							if adv.nsec_qr {
+								ui.add_space(10.0);
+								ui.vertical_centered(|ui| {
+									w::qr_code(ui, &nsec, 220.0);
+								});
+							}
+							ui.add_space(10.0);
+							if w::big_action_on_card(ui, &t!("goblin.advanced.hide")).clicked() {
+								adv.nsec_revealed = None;
+								adv.nsec_qr = false;
+								adv.nsec_pass.clear();
+							}
+						} else {
+							w::field_well(ui, |ui| {
+								TextEdit::new(egui::Id::from("advanced_nsec_pass"))
+									.focus(false)
+									.hint_text(t!("goblin.advanced.password"))
+									.password()
+									.text_color(t.surface_text)
+									.body()
+									.ui(ui, &mut adv.nsec_pass, cb);
+							});
+							if adv.nsec_wrong {
+								ui.add_space(6.0);
+								ui.label(
+									RichText::new(t!("goblin.advanced.wrong_password"))
+										.font(FontId::new(13.0, fonts::medium()))
+										.color(t.neg),
+								);
+							}
+							ui.add_space(10.0);
+							ui.add_enabled_ui(!adv.nsec_pass.is_empty(), |ui| {
+								if w::big_action_on_card(ui, &t!("goblin.advanced.reveal_nsec"))
+									.clicked()
+								{
+									match wallet.get_nostr_nsec(adv.nsec_pass.clone()) {
+										Ok(nsec) => {
+											adv.nsec_revealed = Some(nsec);
+											adv.nsec_wrong = false;
+											adv.nsec_pass.clear();
+										}
+										Err(_) => {
+											adv.nsec_wrong = true;
 										}
 									}
 								}
