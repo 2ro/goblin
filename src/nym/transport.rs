@@ -12,12 +12,17 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! WebSocket transport for the Nostr relay pool routed through Goblin's
-//! in-process Nym SOCKS5 client, so every relay connection traverses the 5-hop
-//! Nym mixnet. We open a SOCKS5 connection to `127.0.0.1:1080`, ask the proxy
-//! to reach the relay host (`socks5h`-style: the proxy does the DNS, so the
-//! destination is never resolved on the clear), then run the TLS + websocket
-//! handshake over that tunnel. Nothing goes clearnet.
+//! WebSocket transport for the Nostr relay pool routed through the Nym
+//! mixnet, with TWO egresses picked per relay. ANCHOR: a relay whose pool
+//! entry advertises its operator's co-located scoped exit
+//! ([`crate::nostr::pool::PoolRelay::exit`]) is dialed over a MixnetStream
+//! straight to that exit ([`super::streamexit`]) — no DNS, no public IPR.
+//! FALLBACK (and every relay without an exit): Goblin's in-process smolmix
+//! tunnel — the relay host is resolved by [`super::dns`], the TCP stream is
+//! opened via `tunnel.tcp_connect`. Either way the SAME TLS (rustls, webpki
+//! roots) + websocket handshake runs over the mixnet-carried stream, so the
+//! payload + in-flight destination never touch the clear, and an exit failure
+//! only ever falls back — never a lockout.
 
 use std::fmt;
 use std::pin::Pin;
@@ -30,7 +35,6 @@ use nostr_relay_pool::transport::error::TransportError;
 use nostr_relay_pool::transport::websocket::{WebSocketSink, WebSocketStream, WebSocketTransport};
 use nostr_sdk::Url;
 use nostr_sdk::util::BoxedFuture;
-use tokio_socks::tcp::Socks5Stream;
 use tokio_tungstenite::tungstenite::Message as TgMessage;
 
 /// Error type for transport failures outside the websocket layer.
@@ -49,7 +53,7 @@ fn terr(msg: impl Into<String>) -> TransportError {
 	TransportError::backend(NymTransportError(msg.into()))
 }
 
-/// Nostr websocket transport over the local Nym SOCKS5 proxy.
+/// Nostr websocket transport over the in-process Nym mixnet tunnel.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct NymWebSocketTransport;
 
@@ -74,17 +78,60 @@ impl WebSocketTransport for NymWebSocketTransport {
 				_ => 443,
 			});
 
-			// Dial the relay host through the local Nym SOCKS5 client. The proxy
-			// resolves the host inside the mixnet, so no clearnet DNS leak.
-			let stream = tokio::time::timeout(
-				timeout,
-				Socks5Stream::connect(crate::nym::socks5_addr().as_str(), (host.as_str(), port)),
-			)
-			.await
-			.map_err(|_| terr("nym socks5 connect timeout"))?
-			.map_err(|e| terr(format!("nym socks5 connect failed: {e}")))?;
+			// MONEY-PATH ANCHOR: when the pool advertises this relay
+			// operator's co-located scoped Nym exit, dial THROUGH it — a
+			// MixnetStream straight to the exit (which pipes to its one
+			// relay), no public DNS, no public IPR, no tunnel dependency. The
+			// TLS + websocket wrap inside is byte-for-byte the tunnel path's
+			// (same `client_async_tls`, SNI = the relay host), so the exit
+			// sees only ciphertext. ANY failure — bootstrap, open, handshake,
+			// timeout — falls through to the public-IPR tunnel dial below:
+			// anchor + fallback, never pin-only.
+			if let Some(exit) = crate::nostr::pool::load().exit_for(url.as_str()) {
+				let t_exit = std::time::Instant::now();
+				match exit_connect(url, &exit, timeout).await {
+					Ok(parts) => {
+						log::info!(
+							"[timing] nym: relay {host} CONNECTED via scoped exit — \
+							 stream+tls+ws {}ms",
+							t_exit.elapsed().as_millis()
+						);
+						return Ok(parts);
+					}
+					Err(e) => log::warn!(
+						"nym: scoped exit dial for {host} failed after {}ms ({e}); \
+						 falling back to the public-IPR tunnel",
+						t_exit.elapsed().as_millis()
+					),
+				}
+			}
+
+			// The shared mixnet tunnel (lazy-started at app launch).
+			let tunnel = crate::nym::nymproc::wait_for_tunnel(timeout)
+				.await
+				.ok_or_else(|| terr("nym tunnel not ready"))?;
+
+			// Resolve the relay host (clearnet by default — see nym::dns), then
+			// dial the resolved IP THROUGH the same tunnel so the TCP, TLS and
+			// websocket all still ride the mixnet. Each stage is timed so the
+			// connect-timing harness can attribute cost per relay.
+			let t_resolve = std::time::Instant::now();
+			let addr =
+				tokio::time::timeout(timeout, crate::nym::dns::resolve(&tunnel, &host, port))
+					.await
+					.map_err(|_| terr("dns resolve timeout"))?
+					.ok_or_else(|| terr(format!("could not resolve relay host {host}")))?;
+			let resolve_ms = t_resolve.elapsed().as_millis();
+
+			let t_tcp = std::time::Instant::now();
+			let stream = tokio::time::timeout(timeout, tunnel.tcp_connect(addr))
+				.await
+				.map_err(|_| terr("nym tunnel connect timeout"))?
+				.map_err(|e| terr(format!("nym tunnel connect failed: {e}")))?;
+			let tcp_ms = t_tcp.elapsed().as_millis();
 
 			// Perform TLS (for wss) + websocket handshake over the mixnet stream.
+			let t_ws = std::time::Instant::now();
 			let (ws, _response) = tokio::time::timeout(
 				timeout,
 				tokio_tungstenite::client_async_tls(url.as_str(), stream),
@@ -92,20 +139,59 @@ impl WebSocketTransport for NymWebSocketTransport {
 			.await
 			.map_err(|_| terr("websocket handshake timeout"))?
 			.map_err(|e| terr(format!("websocket handshake failed: {e}")))?;
+			log::info!(
+				"[timing] nym: relay {host} CONNECTED — resolve {resolve_ms}ms, \
+				 tcp_connect(mixnet) {tcp_ms}ms, tls+ws(mixnet) {}ms",
+				t_ws.elapsed().as_millis()
+			);
 
-			let (tx, rx) = ws.split();
-
-			let sink: WebSocketSink = Box::new(NymSink(tx)) as WebSocketSink;
-			let stream: WebSocketStream = Box::pin(rx.filter_map(|msg| async move {
-				match msg {
-					Ok(tg) => tg_to_message(tg).map(Ok),
-					Err(e) => Some(Err(TransportError::backend(e))),
-				}
-			})) as WebSocketStream;
-
-			Ok((sink, stream))
+			Ok(split_ws(ws))
 		})
 	}
+}
+
+/// Dial `url` through the relay operator's scoped Nym exit `exit`: a
+/// MixnetStream to the exit (which pipes to its one configured relay), then
+/// the SAME hostname-validated TLS + websocket handshake as the tunnel path.
+/// The handshake doubles as the exit liveness probe — `open_stream` is
+/// fire-and-forget, so a dead exit surfaces here as a (bounded) timeout and
+/// the caller falls back.
+async fn exit_connect(
+	url: &Url,
+	exit: &str,
+	timeout: Duration,
+) -> Result<(WebSocketSink, WebSocketStream), TransportError> {
+	let stream = crate::nym::streamexit::open_stream(exit, timeout)
+		.await
+		.map_err(terr)?;
+	let (ws, _response) = tokio::time::timeout(
+		timeout,
+		tokio_tungstenite::client_async_tls(url.as_str(), stream),
+	)
+	.await
+	.map_err(|_| terr("websocket handshake timeout (exit stream)"))?
+	.map_err(|e| terr(format!("websocket handshake failed: {e}")))?;
+	Ok(split_ws(ws))
+}
+
+/// Split a websocket into the pool's boxed sink/stream halves — shared by the
+/// scoped-exit and tunnel dial paths, so everything above the byte transport
+/// is identical whichever egress carried the connection.
+fn split_ws<S>(ws: tokio_tungstenite::WebSocketStream<S>) -> (WebSocketSink, WebSocketStream)
+where
+	S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Send + Unpin + 'static,
+{
+	let (tx, rx) = ws.split();
+
+	let sink: WebSocketSink = Box::new(NymSink(tx)) as WebSocketSink;
+	let stream: WebSocketStream = Box::pin(rx.filter_map(|msg| async move {
+		match msg {
+			Ok(tg) => tg_to_message(tg).map(Ok),
+			Err(e) => Some(Err(TransportError::backend(e))),
+		}
+	})) as WebSocketStream;
+
+	(sink, stream)
 }
 
 /// Convert a tungstenite message into an async-wsocket pool message.

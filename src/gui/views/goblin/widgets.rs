@@ -27,36 +27,67 @@ pub fn amount_str(atomic: u64) -> String {
 	grin_core::core::amount_to_hr_string(atomic, true)
 }
 
-/// Draw a colored avatar puck with the contact initial.
-pub fn avatar(ui: &mut Ui, name: &str, size: f32, hue: usize) -> Response {
+/// A custom-picture avatar: the texture drawn in a circle, wrapped by a thin
+/// conic-gradient ring derived deterministically from the username (the name,
+/// not the npub). The image is inset so the ring sits at the perimeter.
+pub fn avatar_tex(ui: &mut Ui, tex: &egui::TextureHandle, name: &str, size: f32) -> Response {
 	let (rect, resp) = ui.allocate_exact_size(Vec2::splat(size), Sense::click());
-	let (bg, ink) = theme::avatar_pair(hue);
-	ui.painter().circle_filled(rect.center(), size / 2.0, bg);
-	// First letter of the name — never the @ prefix or other decoration.
-	let initial = name
-		.chars()
-		.find(|c| c.is_alphanumeric())
-		.map(|c| c.to_uppercase().to_string())
-		.unwrap_or_else(|| "?".to_string());
-	ui.painter().text(
+	let thickness = (size * 0.06).max(1.0);
+	let gap = (size * 0.03).max(1.0);
+	let img_rect = rect.shrink(thickness + gap);
+	let rounding = eframe::epaint::CornerRadius::same((img_rect.width() / 2.0) as u8);
+	egui::Image::new(tex)
+		.corner_radius(rounding)
+		.fit_to_exact_size(img_rect.size())
+		.paint_at(ui, img_rect);
+	conic_ring(
+		ui,
 		rect.center(),
-		egui::Align2::CENTER_CENTER,
-		initial,
-		FontId::new(size * 0.42, fonts::bold()),
-		ink,
+		size / 2.0 - thickness / 2.0,
+		thickness,
+		name,
 	);
 	resp
 }
 
-/// A custom-picture avatar: the texture drawn in a circle.
-pub fn avatar_tex(ui: &mut Ui, tex: &egui::TextureHandle, size: f32) -> Response {
-	let (rect, resp) = ui.allocate_exact_size(Vec2::splat(size), Sense::click());
-	let rounding = eframe::epaint::CornerRadius::same((size / 2.0) as u8);
-	egui::Image::new(tex)
-		.corner_radius(rounding)
-		.fit_to_exact_size(Vec2::splat(size))
-		.paint_at(ui, rect);
-	resp
+/// Thin conic-gradient ring at the avatar perimeter, hue path seeded by the
+/// username (see `identicon::ring_params`). Drawn as a feathered triangle mesh
+/// (~64 segments, per-vertex color) so edges stay smooth; a triangle-wave hue
+/// sweep keeps the gradient seamless where the circle closes. No new deps.
+fn conic_ring(ui: &Ui, center: egui::Pos2, r_mid: f32, thickness: f32, name: &str) {
+	use eframe::epaint::{Mesh, Shape, Vertex, WHITE_UV};
+	let (base_hue, sweep) = super::identicon::ring_params(name);
+	const SEGS: u32 = 64;
+	const FEATHER: f32 = 0.75;
+	let r_in = r_mid - thickness / 2.0;
+	let r_out = r_mid + thickness / 2.0;
+	let radii = [r_out + FEATHER, r_out, r_in, (r_in - FEATHER).max(0.0)];
+	let alphas = [0u8, 255, 255, 0];
+	let mut mesh = Mesh::default();
+	for i in 0..=SEGS {
+		let frac = i as f32 / SEGS as f32;
+		let theta = frac * std::f32::consts::TAU - std::f32::consts::FRAC_PI_2;
+		let wave = 1.0 - (2.0 * frac - 1.0).abs();
+		let hue = (base_hue + sweep * f64::from(wave)) % 360.0;
+		let (r, g, b) = super::identicon::hsl_rgb8(hue, 0.62, 0.55);
+		let dir = Vec2::new(theta.cos(), theta.sin());
+		for (radius, alpha) in radii.iter().zip(alphas) {
+			mesh.vertices.push(Vertex {
+				pos: center + dir * *radius,
+				uv: WHITE_UV,
+				color: Color32::from_rgba_unmultiplied(r, g, b, alpha),
+			});
+		}
+	}
+	for i in 0..SEGS {
+		let a = i * 4;
+		let b = a + 4;
+		for ring in 0..3 {
+			let (p0, p1, p2, p3) = (a + ring, a + ring + 1, b + ring, b + ring + 1);
+			mesh.indices.extend_from_slice(&[p0, p1, p2, p1, p3, p2]);
+		}
+	}
+	ui.painter().add(Shape::mesh(mesh));
 }
 
 /// Deterministic gradient avatar (a pubkey-seeded two-tone tile with the Grin
@@ -65,80 +96,66 @@ pub fn avatar_tex(ui: &mut Ui, tex: &egui::TextureHandle, size: f32) -> Response
 /// the same avatar (see [`super::identicon`]). Cached per-pubkey by egui.
 pub fn gradient_avatar(ui: &mut Ui, id: &str, size: f32) -> Response {
 	let (rect, resp) = ui.allocate_exact_size(Vec2::splat(size), Sense::click());
-	let hex = super::identicon::to_hex_seed(id);
-	// Rasterize at 2x for crispness; egui caches the texture by the `uri`, so the
-	// SVG is generated/rasterized once per pubkey regardless of frames or size.
-	let svg = super::identicon::gradient_avatar_svg(&hex, (size * 2.0) as u32, "");
-	let uri = format!("bytes://gobavatar-{}-{}.svg", hex, size as u32);
-	egui::Image::new(egui::ImageSource::Bytes {
-		uri: uri.into(),
-		bytes: svg.into_bytes().into(),
-	})
-	.corner_radius(CornerRadius::same((size / 2.0) as u8))
-	.fit_to_exact_size(Vec2::splat(size))
-	.paint_at(ui, rect);
+	paint_gradient(ui, id, rect);
 	resp
 }
 
-/// A named user's avatar: the same pubkey-seeded gradient background as
-/// [`gradient_avatar`], but with the person's initial painted on top (white with
-/// a faint dark shadow for legibility on any hue) instead of the Grin mark. `id`
-/// seeds the gradient; `name` supplies the letter.
-pub fn gradient_letter_avatar(ui: &mut Ui, id: &str, name: &str, size: f32) -> Response {
+/// The UNCHANGED npub-seeded grinmark gradient with a thin conic ring seeded by
+/// the USERNAME simply added around its edge — the gradient stays exactly as a
+/// ring-less avatar draws it; the ring is the only thing the username adds.
+pub fn gradient_avatar_ringed(ui: &mut Ui, id: &str, name: &str, size: f32) -> Response {
 	let (rect, resp) = ui.allocate_exact_size(Vec2::splat(size), Sense::click());
-	let hex = super::identicon::to_hex_seed(id);
-	let svg = super::identicon::gradient_bg_svg(&hex, (size * 2.0) as u32);
-	let uri = format!("bytes://gobavatarbg-{}-{}.svg", hex, size as u32);
-	egui::Image::new(egui::ImageSource::Bytes {
-		uri: uri.into(),
-		bytes: svg.into_bytes().into(),
-	})
-	.corner_radius(CornerRadius::same((size / 2.0) as u8))
-	.fit_to_exact_size(Vec2::splat(size))
-	.paint_at(ui, rect);
-	// Initial — first alphanumeric of the name, never the @ prefix.
-	let initial = name
-		.chars()
-		.find(|c| c.is_alphanumeric())
-		.map(|c| c.to_uppercase().to_string())
-		.unwrap_or_else(|| "?".to_string());
-	let font = FontId::new(size * 0.46, fonts::bold());
-	let c = rect.center();
-	ui.painter().text(
-		c + Vec2::splat(size * 0.03),
-		egui::Align2::CENTER_CENTER,
-		&initial,
-		font.clone(),
-		Color32::from_black_alpha(80),
-	);
-	ui.painter().text(
-		c,
-		egui::Align2::CENTER_CENTER,
-		&initial,
-		font,
-		Color32::from_rgb(0xFA, 0xFA, 0xF7),
+	paint_gradient(ui, id, rect);
+	let thickness = (size * 0.06).max(1.0);
+	conic_ring(
+		ui,
+		rect.center(),
+		size / 2.0 - thickness / 2.0,
+		thickness,
+		name,
 	);
 	resp
 }
 
-/// Picture avatar when a texture exists; otherwise the deterministic
-/// pubkey-seeded gradient: with the Grin mark for an anonymous key (display name
-/// is an `npub…`), or with the person's initial for a named contact/@handle. A
-/// flat lettered tile is the last resort when no pubkey is known. `id` is the
-/// npub/hex used to seed the gradient.
+/// Paint the pubkey-seeded grinmark gradient into `rect` (rasterized at 2x,
+/// cached by egui via the `uri`).
+fn paint_gradient(ui: &mut Ui, id: &str, rect: egui::Rect) {
+	let hex = super::identicon::to_hex_seed(id);
+	let px = (rect.width() * 2.0) as u32;
+	let svg = super::identicon::gradient_avatar_svg(&hex, px, "");
+	let uri = format!("bytes://gobavatar-{}-{}.svg", hex, rect.width() as u32);
+	egui::Image::new(egui::ImageSource::Bytes {
+		uri: uri.into(),
+		bytes: svg.into_bytes().into(),
+	})
+	.corner_radius(CornerRadius::same((rect.width() / 2.0) as u8))
+	.fit_to_exact_size(rect.size())
+	.paint_at(ui, rect);
+}
+
+/// Picture avatar (with the username conic ring) when a texture exists;
+/// otherwise the deterministic pubkey-seeded grinmark gradient for everyone,
+/// named or anonymous. When no pubkey is known (last resort) the name seeds the
+/// gradient instead, so the tile is still deterministic. `id` is the npub/hex
+/// used to seed the gradient.
 pub fn avatar_any(
 	ui: &mut Ui,
 	name: &str,
 	id: &str,
 	size: f32,
-	hue: usize,
 	tex: Option<&egui::TextureHandle>,
 ) -> Response {
+	// A conic ring (seeded by the username) marks a CLAIMED identity — on a
+	// custom picture or the grinmark gradient. Anonymous keys (the display name
+	// is still an `npub…`) stay ring-less.
+	let named = !name.is_empty() && !name.starts_with("npub");
 	match tex {
-		Some(t) => avatar_tex(ui, t, size),
-		None if name.starts_with("npub") && !id.is_empty() => gradient_avatar(ui, id, size),
-		None if !id.is_empty() => gradient_letter_avatar(ui, id, name, size),
-		None => avatar(ui, name, size, hue),
+		Some(t) => avatar_tex(ui, t, name, size),
+		None if named => {
+			gradient_avatar_ringed(ui, if id.is_empty() { name } else { id }, name, size)
+		}
+		None if !id.is_empty() => gradient_avatar(ui, id, size),
+		None => gradient_avatar(ui, name, size),
 	}
 }
 
@@ -309,12 +326,20 @@ pub fn big_action(ui: &mut Ui, label: &str, secondary: bool) -> Response {
 	let t = theme::tokens();
 	let desired = Vec2::new(ui.available_width(), 56.0);
 	let (rect, resp) = ui.allocate_exact_size(desired, Sense::click());
-	let (fill, ink, stroke) = if secondary {
+	let (mut fill, mut ink, mut stroke) = if secondary {
 		(Color32::TRANSPARENT, t.text, Stroke::new(1.5, t.line))
 	} else {
 		(t.accent, t.accent_ink, Stroke::NONE)
 	};
-	let visual_fill = if resp.hovered() && !secondary {
+	// Inside `add_enabled_ui(false)` the button must LOOK disabled too, so a
+	// blocked action (e.g. Review while over balance) never reads as a live CTA.
+	let enabled = ui.is_enabled();
+	if !enabled {
+		fill = fill.gamma_multiply(0.35);
+		ink = ink.gamma_multiply(0.45);
+		stroke.color = stroke.color.gamma_multiply(0.45);
+	}
+	let visual_fill = if enabled && resp.hovered() && !secondary {
 		t.accent_dark
 	} else {
 		fill
@@ -446,30 +471,6 @@ pub fn chip(ui: &mut Ui, label: &str, active: bool) -> Response {
 	resp
 }
 
-/// An outline pill chip (transparent fill, line border) per the design's
-/// amount quick-select row.
-pub fn chip_outline(ui: &mut Ui, label: &str) -> Response {
-	let t = theme::tokens();
-	let galley = ui.painter().layout_no_wrap(
-		label.to_string(),
-		FontId::new(13.0, fonts::semibold()),
-		t.text,
-	);
-	let pad = Vec2::new(14.0, 8.0);
-	let size = galley.size() + pad * 2.0;
-	let (rect, resp) = ui.allocate_exact_size(size, Sense::click());
-	ui.painter().rect(
-		rect,
-		CornerRadius::same(255),
-		Color32::TRANSPARENT,
-		Stroke::new(1.0, t.line),
-		egui::StrokeKind::Inside,
-	);
-	ui.painter()
-		.galley(rect.center() - galley.size() / 2.0, galley, t.text);
-	resp
-}
-
 /// Paint a QR code for `text` with the goblin mark centered. Always dark modules
 /// on a white plate, whatever the theme — inverted codes fail to decode in many
 /// scanners. Encoded synchronously each frame; modules are plain painter rects.
@@ -536,7 +537,17 @@ pub fn field_well(ui: &mut Ui, content: impl FnOnce(&mut Ui)) {
 }
 
 /// A balance hero block: kicker, big number + ツ, optional fiat line.
-pub fn balance_hero(ui: &mut Ui, total: u64, spendable: u64, fiat: Option<&str>, size: f32) {
+/// `updating` marks a zero balance that is only zero because funds are in
+/// flight or the first sync is still running.
+pub fn balance_hero(
+	ui: &mut Ui,
+	total: u64,
+	spendable: u64,
+	updating: bool,
+	sync_pct: u8,
+	fiat: Option<&str>,
+	size: f32,
+) {
 	let t = theme::tokens();
 	// Headline is the TOTAL the wallet holds — same number GRIM shows — so a
 	// wallet mid-confirmation doesn't look empty.
@@ -562,6 +573,25 @@ pub fn balance_hero(ui: &mut Ui, total: u64, spendable: u64, fiat: Option<&str>,
 			);
 		});
 	}
+	// A fresh sync or funds in flight leave a stark 0 that reads as "funds
+	// vanished" — say the balance is still updating, with the scan % when the
+	// node reports one (1..99), so the user sees progress without opening the
+	// wallet switcher.
+	if total == 0 && updating {
+		let label = if (1..100).contains(&sync_pct) {
+			format!("{} {sync_pct}%", t!("goblin.home.balance_updating"))
+		} else {
+			t!("goblin.home.balance_updating").to_string()
+		};
+		ui.add_space(4.0);
+		ui.vertical_centered(|ui| {
+			ui.label(
+				RichText::new(label)
+					.font(FontId::new(12.5, fonts::medium()))
+					.color(t.text_dim),
+			);
+		});
+	}
 	if let Some(fiat) = fiat {
 		ui.add_space(4.0);
 		ui.vertical_centered(|ui| {
@@ -580,10 +610,10 @@ pub fn activity_row(
 	ui: &mut Ui,
 	title: &str,
 	subtitle: &str,
-	hue: usize,
 	id: &str,
 	amount: &str,
 	incoming: bool,
+	canceled: bool,
 	system: bool,
 	tex: Option<&egui::TextureHandle>,
 ) -> Response {
@@ -614,7 +644,7 @@ pub fn activity_row(
 				t.text,
 			);
 		} else {
-			avatar_any(ui, title, id, 40.0, hue, tex);
+			avatar_any(ui, title, id, 40.0, tex);
 		}
 		ui.add_space(12.0);
 		ui.vertical(|ui| {
@@ -639,10 +669,18 @@ pub fn activity_row(
 			);
 		});
 		ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+			// A canceled tx delivered no funds: mute the amount so it never
+			// reads as a completed green credit (or a real debit).
 			ui.label(
 				RichText::new(amount)
 					.font(FontId::new(15.0, fonts::mono_semibold()))
-					.color(if incoming { t.pos } else { t.text }),
+					.color(if canceled {
+						t.text_dim
+					} else if incoming {
+						t.pos
+					} else {
+						t.text
+					}),
 			);
 		});
 	});
@@ -884,12 +922,6 @@ pub fn apply_key(amount: &mut String, key: &str) {
 	}
 }
 
-/// Paint a full-rect background fill on the current panel.
-pub fn fill_bg(ui: &Ui, color: Color32) {
-	let rect = ui.ctx().screen_rect();
-	ui.painter().rect_filled(rect, CornerRadius::ZERO, color);
-}
-
 /// Center a fixed-width column for narrow content on wide screens.
 /// Hands the child the full remaining height: wrapping in `horizontal()`
 /// would start the row a single line tall, so a `ScrollArea` inside would
@@ -980,12 +1012,4 @@ impl HoldToSend {
 		}
 		false
 	}
-}
-
-/// Shorten a long key/address for display (8…6).
-pub fn short_key(key: &str) -> String {
-	if key.len() <= 16 {
-		return key.to_string();
-	}
-	format!("{}…{}", &key[..8], &key[key.len() - 6..])
 }

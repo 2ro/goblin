@@ -330,14 +330,38 @@ impl<Platform: PlatformCallbacks> App<Platform> {
 			ui.ctx().send_viewport_cmd(ViewportCommand::StartDrag);
 		}
 
-		// Paint the title.
+		// Paint the title. Centering on the full rect runs the tail of the
+		// string under the right-side window buttons at narrow widths (the
+		// "Build NNN" digits collide with the minimize caret at 390px), so
+		// when the centered galley would reach the button cluster, center it
+		// in the free span between the theme toggle and the buttons instead,
+		// eliding if even that span is too tight.
 		let title_text = format!("Goblin ツ · Build {}", crate::BUILD);
-		painter.text(
-			title_rect.center(),
-			egui::Align2::CENTER_CENTER,
-			title_text,
-			egui::FontId::proportional(15.0),
-			Colors::title(true),
+		let title_font = egui::FontId::proportional(15.0);
+		let title_ink = Colors::title(true);
+		const BUTTONS_LEFT_INSET: f32 = 60.0; // theme toggle
+		const BUTTONS_RIGHT_INSET: f32 = 168.0; // minimize + fullscreen + close
+		let free_left = title_rect.min.x + BUTTONS_LEFT_INSET;
+		let free_right = title_rect.max.x - BUTTONS_RIGHT_INSET;
+		let mut galley = painter.layout_no_wrap(title_text.clone(), title_font.clone(), title_ink);
+		let mut center_x = title_rect.center().x;
+		if center_x + galley.size().x / 2.0 > free_right {
+			center_x = (free_left + free_right) / 2.0;
+			if galley.size().x > free_right - free_left {
+				let mut job =
+					egui::text::LayoutJob::simple_singleline(title_text, title_font, title_ink);
+				job.wrap =
+					egui::text::TextWrapping::truncate_at_width((free_right - free_left).max(0.0));
+				galley = painter.layout_job(job);
+			}
+		}
+		painter.galley(
+			egui::pos2(
+				center_x - galley.size().x / 2.0,
+				title_rect.center().y - galley.size().y / 2.0,
+			),
+			galley,
+			title_ink,
 		);
 
 		ui.scope_builder(UiBuilder::new().max_rect(title_rect), |ui| {

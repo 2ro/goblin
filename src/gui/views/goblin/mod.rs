@@ -91,8 +91,12 @@ pub struct GoblinWalletView {
 	request_amount: Option<String>,
 	/// Sub-page open inside the Settings tab.
 	settings_page: SettingsPage,
-	/// GRIM's native node-connections screen (embedded under Advanced).
-	grim_connections: crate::gui::views::network::ConnectionsContent,
+	/// Active GRIM integrated-node tab (Info/Metrics/Mining/Settings), hosted
+	/// inside Goblin chrome — GRIM's dual-panel shell is never rendered.
+	node_tab: Box<dyn crate::gui::views::network::types::NodeTab>,
+	/// Where the integrated-node page returns to (it has two entry points:
+	/// the Settings screen and the Node screen).
+	node_tab_back: SettingsPage,
 	/// Inline state for the Advanced settings page (recovery/repair/delete).
 	advanced: AdvancedState,
 	/// One-shot signal to the wallet host: deselect this wallet (return to the
@@ -119,6 +123,9 @@ pub struct GoblinWalletView {
 	cancel_msg: Option<(crate::nostr::CancelOutcome, std::time::Instant)>,
 	/// Transient "Copied" flash for the settings backup card (npub/keys).
 	copy_flash: Option<std::time::Instant>,
+	/// "Wipe payment history" tap-twice confirm: armed after the first tap,
+	/// wipes on the second (cleared once fired).
+	wipe_confirm: bool,
 }
 
 /// Sub-pages of the Settings tab.
@@ -126,8 +133,8 @@ pub struct GoblinWalletView {
 enum SettingsPage {
 	Main,
 	Node,
-	/// GRIM's native node-connections screen, embedded.
-	Connections,
+	/// GRIM's integrated-node tabs, embedded in Goblin chrome.
+	IntegratedNode,
 	Relays,
 	Nips,
 	Pairing,
@@ -194,7 +201,8 @@ impl Default for GoblinWalletView {
 			pay_shake: None,
 			request_amount: None,
 			settings_page: SettingsPage::Main,
-			grim_connections: Default::default(),
+			node_tab: Box::new(crate::gui::views::network::NetworkNode),
+			node_tab_back: SettingsPage::Main,
 			advanced: AdvancedState::default(),
 			switch_requested: false,
 			node_url_input: String::new(),
@@ -207,6 +215,7 @@ impl Default for GoblinWalletView {
 			cancel_confirm: None,
 			cancel_msg: None,
 			copy_flash: None,
+			wipe_confirm: false,
 		}
 	}
 }
@@ -349,6 +358,17 @@ impl GoblinWalletView {
 	/// resetting it. The host deselects the wallet when this returns true.
 	pub fn take_switch_request(&mut self) -> bool {
 		std::mem::take(&mut self.switch_requested)
+	}
+
+	/// Whether back navigation has anything left to consume: an overlay, a
+	/// settings sub-page, or a non-Home tab (back routes to Home). Mirrors
+	/// [`Self::on_back`], so the host never falls back to the wallet chooser.
+	pub fn can_back(&self) -> bool {
+		self.receipt.is_some()
+			|| self.profile.is_some()
+			|| self.send.is_some()
+			|| (self.tab == Tab::Me && self.settings_page != SettingsPage::Main)
+			|| self.tab != Tab::Home
 	}
 
 	/// Handle a back navigation; returns true if not consumed.
@@ -728,7 +748,7 @@ impl GoblinWalletView {
 						self.settings_page = SettingsPage::Node;
 					}
 					ui.add_space(8.0);
-					let (handle, connected, npub_hex) = wallet
+					let (handle, npub_hex) = wallet
 						.nostr_service()
 						.map(|s| {
 							let id = s.identity.read();
@@ -737,16 +757,11 @@ impl GoblinWalletView {
 								.clone()
 								.map(|n| n.split('@').next().unwrap_or("").to_string())
 								.unwrap_or_else(|| data::short_npub(&hex_of(&id.npub)));
-							(h, s.is_connected(), hex_of(&id.npub))
+							(h, hex_of(&id.npub))
 						})
 						.unwrap_or_else(|| {
-							(
-								t!("goblin.home.anonymous").to_string(),
-								false,
-								String::new(),
-							)
+							(t!("goblin.home.anonymous").to_string(), String::new())
 						});
-					let hue = data::hue_of(&npub_hex);
 					let tex = self.handle_tex(ui.ctx(), wallet, &handle);
 					// Identity chip → identity settings.
 					let id_resp = ui
@@ -754,7 +769,7 @@ impl GoblinWalletView {
 							w::card(ui, |ui| {
 								ui.set_min_width(ui.available_width());
 								ui.horizontal(|ui| {
-									w::avatar_any(ui, &handle, &npub_hex, 28.0, hue, tex.as_ref());
+									w::avatar_any(ui, &handle, &npub_hex, 28.0, tex.as_ref());
 									ui.add_space(10.0);
 									ui.vertical(|ui| {
 										// Scale the handle to its length: short @names get a
@@ -769,7 +784,9 @@ impl GoblinWalletView {
 												.color(t.surface_text),
 										);
 										ui.label(
-											RichText::new(if connected {
+											// Relay-gated: "Connected over Nym" only once a
+											// relay is live on the current tunnel generation.
+											RichText::new(if crate::nym::transport_ready() {
 												t!("goblin.home.connected_nym")
 											} else if crate::nym::is_ready() {
 												t!("goblin.home.nym_ready")
@@ -877,6 +894,15 @@ impl GoblinWalletView {
 						.truncate(),
 					);
 				});
+				// Low-opacity gear so the card reads as a tappable settings
+				// shortcut; on-surface ink keeps it theme-aware.
+				ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+					ui.label(
+						RichText::new(crate::gui::icons::GEAR)
+							.font(FontId::new(16.0, fonts::regular()))
+							.color(t.surface_text.gamma_multiply(0.35)),
+					);
+				});
 			});
 		});
 	}
@@ -902,9 +928,8 @@ impl GoblinWalletView {
 							let id = s.identity.read();
 							let hex = hex_of(&id.npub);
 							// With a verified handle show "@name"; otherwise fall back to
-							// the short npub so avatar_any draws the deterministic gradient
-							// (it keys the gradient branch off a leading "npub"), not a
-							// meaningless lettered tile.
+							// the short npub (avatar_any then draws the deterministic
+							// pubkey-seeded gradient).
 							let h = id
 								.nip05
 								.clone()
@@ -913,7 +938,6 @@ impl GoblinWalletView {
 							(h, hex)
 						})
 						.unwrap_or_else(|| ("N".to_string(), String::new()));
-					let header_hue = data::hue_of(&header_hex);
 					let header_tex = self.handle_tex(ui.ctx(), wallet, &header_handle);
 					ui.horizontal(|ui| {
 						widgets_logo(ui);
@@ -929,7 +953,6 @@ impl GoblinWalletView {
 								&header_handle,
 								&header_hex,
 								36.0,
-								header_hue,
 								header_tex.as_ref(),
 							)
 							.clicked()
@@ -968,7 +991,22 @@ impl GoblinWalletView {
 					.as_ref()
 					.map(|d| (d.info.total, d.info.amount_currently_spendable))
 					.unwrap_or((0, 0));
-				w::balance_hero(ui, total, spendable, fiat_line(&data).as_deref(), 56.0);
+				// Zero can just mean "in transit" (locked change / awaiting
+				// finalization) or a first sync still running.
+				let in_flight = data
+					.as_ref()
+					.map(|d| d.info.amount_locked + d.info.amount_awaiting_finalization)
+					.unwrap_or(0);
+				let updating = total == 0 && (in_flight > 0 || wallet.syncing());
+				w::balance_hero(
+					ui,
+					total,
+					spendable,
+					updating,
+					wallet.info_sync_progress(),
+					fiat_line(&data).as_deref(),
+					56.0,
+				);
 				ui.add_space(20.0);
 				let (send, receive) = w::send_receive(ui);
 				if send {
@@ -1009,7 +1047,7 @@ impl GoblinWalletView {
 		}
 		let texs: Vec<Option<egui::TextureHandle>> = peers
 			.iter()
-			.map(|(name, _, _)| self.handle_tex(ui.ctx(), wallet, name))
+			.map(|(name, _)| self.handle_tex(ui.ctx(), wallet, name))
 			.collect();
 		w::kicker(ui, &t!("goblin.home.recent"));
 		ui.add_space(12.0);
@@ -1018,14 +1056,14 @@ impl GoblinWalletView {
 			.auto_shrink([false, true])
 			.show(ui, |ui| {
 				ui.horizontal(|ui| {
-					for ((name, hue, npub), tex) in peers.iter().zip(texs.iter()) {
+					for ((name, npub), tex) in peers.iter().zip(texs.iter()) {
 						// Fixed-width centered cell so the name sits centered under the
 						// avatar (not left-aligned to a wider label).
 						ui.allocate_ui_with_layout(
 							Vec2::new(72.0, 78.0),
 							Layout::top_down(Align::Center),
 							|ui| {
-								let resp = w::avatar_any(ui, name, npub, 48.0, *hue, tex.as_ref());
+								let resp = w::avatar_any(ui, name, npub, 48.0, tex.as_ref());
 								ui.add_space(6.0);
 								let chars: Vec<char> = name.chars().collect();
 								let short: String = if chars.len() > 8 {
@@ -1066,7 +1104,6 @@ impl GoblinWalletView {
 				(h, hex)
 			})
 			.unwrap_or_else(|| ("N".to_string(), String::new()));
-		let header_hue = data::hue_of(&header_hex);
 		let header_tex = self.handle_tex(ui.ctx(), wallet, &header_handle);
 		ui.horizontal(|ui| {
 			// Goblin mark (left), sized to match the right-side controls.
@@ -1078,16 +1115,9 @@ impl GoblinWalletView {
 			// Right cluster: scan QR (black, no background) then the profile
 			// picture at the far right; all three controls about the same size.
 			ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-				if w::avatar_any(
-					ui,
-					&header_handle,
-					&header_hex,
-					40.0,
-					header_hue,
-					header_tex.as_ref(),
-				)
-				.on_hover_cursor(egui::CursorIcon::PointingHand)
-				.clicked()
+				if w::avatar_any(ui, &header_handle, &header_hex, 40.0, header_tex.as_ref())
+					.on_hover_cursor(egui::CursorIcon::PointingHand)
+					.clicked()
 				{
 					self.tab = Tab::Me;
 				}
@@ -1170,24 +1200,12 @@ impl GoblinWalletView {
 		};
 		ui.add_space(if tall { 32.0 } else { 16.0 } + drop);
 
-		// Numpad at narrow (mobile-shell) widths, typed input on the wide
-		// desktop layout — gate by width like the shell itself, or narrow
-		// desktop windows get neither input.
-		let typed_hint = !narrow && self.pay_amount.is_empty();
-		if narrow {
-			w::numpad(ui, &mut self.pay_amount, cb);
-		} else {
-			w::amount_typed_input(ui, &mut self.pay_amount);
-			if typed_hint {
-				ui.vertical_centered(|ui| {
-					ui.label(
-						RichText::new(t!("goblin.home.type_amount"))
-							.font(FontId::new(13.0, fonts::regular()))
-							.color(t.text_mute),
-					);
-				});
-			}
-		}
+		// The pay column is capped at 480 by `centered_column`, so the old
+		// `< 700` width gate was always narrow: the numpad always showed and
+		// the typed-input branch was dead — a physical keyboard did nothing.
+		// Show the pad and accept typed digits alongside it.
+		w::numpad(ui, &mut self.pay_amount, cb);
+		w::amount_typed_input(ui, &mut self.pay_amount);
 		ui.add_space(20.0);
 
 		// Request | Pay actions, half width each.
@@ -1237,8 +1255,7 @@ impl GoblinWalletView {
 				},
 			);
 		});
-		// Skip when the "Type an amount" hint is already showing above.
-		if !valid && !typed_hint {
+		if !valid {
 			ui.add_space(8.0);
 			ui.vertical_centered(|ui| {
 				ui.label(
@@ -1325,7 +1342,6 @@ impl GoblinWalletView {
 									&d.title,
 									d.npub.as_deref().unwrap_or(""),
 									64.0,
-									d.hue,
 									tex.as_ref(),
 								);
 								ui.add_space(10.0);
@@ -1582,10 +1598,10 @@ impl GoblinWalletView {
 		npub: &str,
 	) -> bool {
 		let t = theme::tokens();
-		let (name, hue) = wallet
+		let name = wallet
 			.nostr_service()
 			.map(|s| data::contact_title(&s.store, npub))
-			.unwrap_or_else(|| (data::short_npub(npub), 0));
+			.unwrap_or_else(|| data::short_npub(npub));
 		let contact = wallet.nostr_service().and_then(|s| s.store.contact(npub));
 		let blocked = contact.as_ref().map(|c| c.blocked).unwrap_or(false);
 		let nip05 = contact.as_ref().and_then(|c| c.nip05.clone());
@@ -1620,7 +1636,7 @@ impl GoblinWalletView {
 						.show(ui, |ui| {
 							ui.add_space(8.0);
 							ui.vertical_centered(|ui| {
-								w::avatar_any(ui, &name, npub, 72.0, hue, tex.as_ref());
+								w::avatar_any(ui, &name, npub, 72.0, tex.as_ref());
 								ui.add_space(12.0);
 								ui.label(
 									RichText::new(&name)
@@ -1655,7 +1671,14 @@ impl GoblinWalletView {
 								);
 							} else {
 								for (item, htex) in history.iter().zip(htexs.iter()) {
-									let sign = if item.incoming { "+ " } else { "− " };
+									// No +/- for canceled: nothing moved.
+									let sign = if item.canceled {
+										""
+									} else if item.incoming {
+										"+ "
+									} else {
+										"− "
+									};
 									let amount =
 										format!("{}{}{}", sign, w::amount_str(item.amount), w::TSU);
 									let status_word = if item.canceled {
@@ -1675,10 +1698,10 @@ impl GoblinWalletView {
 										ui,
 										&item.title,
 										&subtitle,
-										item.hue,
 										item.npub.as_deref().unwrap_or(""),
 										&amount,
 										item.incoming,
+										item.canceled,
 										item.system,
 										htex.as_ref(),
 									)
@@ -1732,7 +1755,8 @@ impl GoblinWalletView {
 					nip05: nip05.clone(),
 					nip05_verified_at: None,
 					relays: vec![],
-					hue: hue as u8,
+					nip44_v3: false,
+					hue: data::hue_of(npub) as u8,
 					unknown: true,
 					added_at: crate::nostr::unix_time(),
 					last_paid_at: None,
@@ -1817,8 +1841,11 @@ impl GoblinWalletView {
 					);
 				} else {
 					// Unconfirmed (< min confirmations) pinned on top as Pending.
-					let pending: Vec<&_> =
-						items.iter().filter(|i| !i.confirmed && !i.system).collect();
+					// Canceled txs are not pending — they group with history below.
+					let pending: Vec<&_> = items
+						.iter()
+						.filter(|i| !i.confirmed && !i.system && !i.canceled)
+						.collect();
 					if !pending.is_empty() {
 						w::section_header(ui, &t!("goblin.activity.pending_header"));
 						for item in pending {
@@ -1826,9 +1853,12 @@ impl GoblinWalletView {
 						}
 						ui.add_space(8.0);
 					}
-					// Confirmed, grouped by day (newest first).
+					// Confirmed (and canceled), grouped by day (newest first).
 					let mut last: Option<String> = None;
-					for item in items.iter().filter(|i| i.confirmed || i.system) {
+					for item in items
+						.iter()
+						.filter(|i| i.confirmed || i.system || i.canceled)
+					{
 						let label = Self::day_label(item.time);
 						if last.as_deref() != Some(label.as_str()) {
 							w::section_header(ui, &label);
@@ -1848,7 +1878,14 @@ impl GoblinWalletView {
 		wallet: &Wallet,
 		_cb: &dyn PlatformCallbacks,
 	) {
-		let sign = if item.incoming { "+ " } else { "− " };
+		// No +/- for canceled: nothing moved.
+		let sign = if item.canceled {
+			""
+		} else if item.incoming {
+			"+ "
+		} else {
+			"− "
+		};
 		let amount = format!("{}{}{}", sign, w::amount_str(item.amount), w::TSU);
 		let status_word = if item.canceled {
 			t!("goblin.activity.canceled").to_string()
@@ -1866,10 +1903,10 @@ impl GoblinWalletView {
 			ui,
 			&item.title,
 			&subtitle,
-			item.hue,
 			item.npub.as_deref().unwrap_or(""),
 			&amount,
 			item.incoming,
+			item.canceled,
 			item.system,
 			tex.as_ref(),
 		)
@@ -1886,14 +1923,14 @@ impl GoblinWalletView {
 		wallet: &Wallet,
 	) {
 		let t = theme::tokens();
-		let (name, hue) = wallet
+		let name = wallet
 			.nostr_service()
 			.map(|s| data::contact_title(&s.store, &req.npub))
-			.unwrap_or_else(|| (data::short_npub(&req.npub), 0));
+			.unwrap_or_else(|| data::short_npub(&req.npub));
 		let tex = self.handle_tex(ui.ctx(), wallet, &name);
 		w::card(ui, |ui| {
 			ui.horizontal(|ui| {
-				w::avatar_any(ui, &name, &req.npub, 40.0, hue, tex.as_ref());
+				w::avatar_any(ui, &name, &req.npub, 40.0, tex.as_ref());
 				ui.add_space(12.0);
 				ui.vertical(|ui| {
 					ui.label(
@@ -2003,10 +2040,10 @@ impl GoblinWalletView {
 		let Some(req) = self.approve_review.clone() else {
 			return true;
 		};
-		let (name, hue) = wallet
+		let name = wallet
 			.nostr_service()
 			.map(|s| data::contact_title(&s.store, &req.npub))
-			.unwrap_or_else(|| (data::short_npub(&req.npub), 0));
+			.unwrap_or_else(|| data::short_npub(&req.npub));
 		let tex = self.handle_tex(ui.ctx(), wallet, &name);
 		// Paying a request spends our balance, so guard against over-balance and
 		// disable the accept gesture (re-checked each frame).
@@ -2041,7 +2078,7 @@ impl GoblinWalletView {
 								ui.set_min_width(ui.available_width());
 								ui.add_space(8.0);
 								ui.vertical_centered(|ui| {
-									w::avatar_any(ui, &name, &req.npub, 40.0, hue, tex.as_ref());
+									w::avatar_any(ui, &name, &req.npub, 40.0, tex.as_ref());
 									ui.add_space(6.0);
 									ui.label(
 										RichText::new(t!("goblin.request.title", name => &name))
@@ -2081,7 +2118,7 @@ impl GoblinWalletView {
 								));
 							}
 							let fee_val = match wallet.calculated_fee(req.amount) {
-								Some(fee) => format!("{} {}", w::amount_str(fee), w::TSU),
+								Some(fee) => format!("{}{}", w::amount_str(fee), w::TSU),
 								None => {
 									ui.ctx().request_repaint_after(
 										std::time::Duration::from_millis(120),
@@ -2157,17 +2194,18 @@ impl GoblinWalletView {
 		);
 		ui.add_space(16.0);
 
-		let handle = wallet
+		// `has_name`: a claimed nip05 name exists — gates the "handle"/"username"
+		// wording, which would mislead when only the raw npub is shown.
+		let (handle, has_name) = wallet
 			.nostr_service()
 			.map(|s| {
 				let identity = s.identity.read();
-				identity
-					.nip05
-					.clone()
-					.map(|n| n.split('@').next().unwrap_or("").to_string())
-					.unwrap_or_else(|| data::short_npub(&hex_of(&identity.npub)))
+				match identity.nip05.clone() {
+					Some(n) => (n.split('@').next().unwrap_or("").to_string(), true),
+					None => (data::short_npub(&hex_of(&identity.npub)), false),
+				}
 			})
-			.unwrap_or_else(|| "—".to_string());
+			.unwrap_or_else(|| ("—".to_string(), false));
 		let npub = wallet.nostr_service().map(|s| s.npub()).unwrap_or_default();
 		let nprofile = wallet
 			.nostr_service()
@@ -2203,8 +2241,13 @@ impl GoblinWalletView {
 						}
 					}
 					None => {
+						let caption = if has_name {
+							t!("goblin.receive.share_handle")
+						} else {
+							t!("goblin.receive.share_npub")
+						};
 						ui.label(
-							RichText::new(t!("goblin.receive.share_handle"))
+							RichText::new(caption)
 								.font(FontId::new(13.0, fonts::regular()))
 								.color(t.surface_text_dim),
 						);
@@ -2263,8 +2306,13 @@ impl GoblinWalletView {
 		});
 
 		ui.add_space(16.0);
+		let privacy_note = if has_name {
+			t!("goblin.receive.privacy_note")
+		} else {
+			t!("goblin.receive.privacy_note_npub")
+		};
 		ui.label(
-			RichText::new(t!("goblin.receive.privacy_note"))
+			RichText::new(privacy_note)
 				.font(FontId::new(12.0, fonts::regular()))
 				.color(t.text_mute),
 		);
@@ -2274,7 +2322,7 @@ impl GoblinWalletView {
 		let t = theme::tokens();
 		match self.settings_page {
 			SettingsPage::Node => return self.node_settings_ui(ui, wallet, cb),
-			SettingsPage::Connections => return self.grim_connections_ui(ui, cb),
+			SettingsPage::IntegratedNode => return self.integrated_node_ui(ui, cb),
 			SettingsPage::Relays => return self.relays_ui(ui, wallet, cb),
 			SettingsPage::Nips => return self.nips_ui(ui),
 			SettingsPage::Pairing => return self.pairing_settings_ui(ui),
@@ -2322,7 +2370,6 @@ impl GoblinWalletView {
 				)
 			});
 
-		let hue = data::hue_of(&npub_hex);
 		let own_tex = bare_name
 			.as_deref()
 			.and_then(|_| self.handle_tex(ui.ctx(), wallet, &handle));
@@ -2330,9 +2377,9 @@ impl GoblinWalletView {
 		w::card(ui, |ui| {
 			ui.set_min_width(ui.available_width());
 			ui.horizontal(|ui| {
-				// Avatar is a generated identicon (gradient + initial) — Goblin has
-				// no uploaded profile pictures.
-				w::avatar_any(ui, &handle, &npub_hex, 56.0, hue, own_tex.as_ref());
+				// Custom picture when one is set; otherwise the deterministic
+				// pubkey-seeded gradient identicon.
+				w::avatar_any(ui, &handle, &npub_hex, 56.0, own_tex.as_ref());
 				ui.add_space(14.0);
 				ui.vertical(|ui| {
 					ui.horizontal(|ui| {
@@ -2351,9 +2398,15 @@ impl GoblinWalletView {
 							);
 						}
 					});
-					// Mixnet status (fast) in place of the redundant second npub line.
-					let mixnet = if crate::nym::is_ready() {
+					// Transport status in place of the redundant second npub line.
+					// "Connected over Nym" is RELAY-GATED (transport_ready): the
+					// tunnel being warm is not enough — a relay must actually carry
+					// our traffic on the current exit. Otherwise show the tunnel is
+					// up but relays are still connecting/reconnecting.
+					let mixnet = if crate::nym::transport_ready() {
 						t!("goblin.home.connected_nym")
+					} else if crate::nym::is_ready() {
+						t!("goblin.home.nym_ready")
 					} else {
 						t!("goblin.home.connecting_nym")
 					};
@@ -2373,7 +2426,7 @@ impl GoblinWalletView {
 							.font(FontId::new(12.0, fonts::regular()))
 							.color(t.surface_text_mute),
 					);
-					if !crate::nym::is_ready() || !connected {
+					if !crate::nym::transport_ready() || !connected {
 						ui.ctx()
 							.request_repaint_after(std::time::Duration::from_millis(600));
 					}
@@ -2404,6 +2457,10 @@ impl GoblinWalletView {
 				}
 				self.claim_ui(ui, wallet, cb);
 				ui.add_space(8.0);
+				// Hoisted above the identity card: the Nostr Relays row now lives
+				// inside that card (relays are a nostr concern, like the keys), but
+				// its open handler runs further down — so the flag is declared here.
+				let mut open_relays = false;
 				w::card(ui, |ui| {
 					if !npub.is_empty() {
 						if settings_row_btn(ui, &t!("goblin.settings.copy_npub"), COPY) {
@@ -2436,6 +2493,16 @@ impl GoblinWalletView {
 						) && self.import_nsec.is_none()
 						{
 							self.import_nsec = Some(ImportState::default());
+						}
+						// Nostr relays the wallet publishes/reads gift wraps on.
+						// Sits with the identity rows because relays are a nostr
+						// concern; opens the relay editor (handled below).
+						if settings_row_nav(
+							ui,
+							&t!("goblin.settings.nostr_relays"),
+							&relay_summary(wallet),
+						) {
+							open_relays = true;
 						}
 						// Federation: which name authority (server) registers and
 						// verifies names. Shows the current host on the right.
@@ -2503,16 +2570,23 @@ impl GoblinWalletView {
 				}
 
 				ui.add_space(16.0);
-				let mut open_relays = false;
 				let mut open_node = false;
+				let mut open_integrated = false;
 				let mut open_slatepack = false;
 				settings_group(ui, &t!("goblin.settings.wallet"), |ui| {
-					settings_row(ui, &t!("goblin.settings.display_unit"), "ツ (grin)");
-					if settings_row_nav(ui, &t!("goblin.settings.relays"), &relay_summary(wallet)) {
-						open_relays = true;
-					}
 					if settings_row_nav(ui, &t!("goblin.settings.node"), &node_summary(wallet)) {
 						open_node = true;
+					}
+					// GRIM's integrated-node tabs (info, metrics, mining, node
+					// settings), shown in Goblin chrome. Live sync status when
+					// the node runs, like the Node row above.
+					let node_value = if crate::node::Node::is_running() {
+						crate::node::Node::get_sync_status_text()
+					} else {
+						String::new()
+					};
+					if settings_row_nav(ui, &t!("goblin.settings.integrated_node"), &node_value) {
+						open_integrated = true;
 					}
 					// GRIM's native by-hand slatepack exchange, for when a payment
 					// can't go through a username.
@@ -2529,9 +2603,11 @@ impl GoblinWalletView {
 					self.settings_page = SettingsPage::Slatepack;
 				}
 				if open_relays {
+					// The ACTIVE set (override or per-identity advertised set),
+					// so the editor shows what is really in use.
 					self.relay_edit = wallet
 						.nostr_service()
-						.map(|s| s.config.read().relays())
+						.map(|s| s.relays())
 						.unwrap_or_default();
 					self.relay_input.clear();
 					self.settings_page = SettingsPage::Relays;
@@ -2541,24 +2617,30 @@ impl GoblinWalletView {
 					self.node_secret_input.clear();
 					self.settings_page = SettingsPage::Node;
 				}
+				if open_integrated {
+					self.node_tab = Box::new(crate::gui::views::network::NetworkNode);
+					self.node_tab_back = SettingsPage::Main;
+					self.settings_page = SettingsPage::IntegratedNode;
+				}
 
 				ui.add_space(16.0);
 				let mut open_pairing = false;
 				let mut open_privacy = false;
 				settings_group(ui, &t!("goblin.settings.privacy"), |ui| {
 					// Messages, names, price and avatars ride the mixnet; the grin
-					// node connects directly. Flagged in the privacy color so it
-					// still reads as the headline guarantee — tap for the breakdown.
-					if settings_row_nav_ink(
+					// node connects directly. Normal dim value ink: the salmon
+					// privacy color doubled as the destructive-action color on
+					// this page, making a plain navigable row read as a warning.
+					if settings_row_nav(
 						ui,
 						&t!("goblin.settings.mixnet_routing"),
 						&t!("goblin.settings.messages_lookups"),
-						theme::tokens().neg,
 					) {
 						open_privacy = true;
 					}
-					// Tap to cycle the incoming-payment accept policy.
-					if settings_row_btn(
+					// Tap to cycle the incoming-payment accept policy. Value styled
+					// like the sibling rows' values (small/dim), not like an icon.
+					if settings_row_cycle(
 						ui,
 						&t!("goblin.settings.auto_accept"),
 						&accept_policy_label(wallet),
@@ -2626,13 +2708,21 @@ impl GoblinWalletView {
 							cb.vibrate_copy();
 						}
 					}
-					if settings_row_btn(
-						ui,
-						&t!("goblin.settings.wipe_history"),
-						crate::gui::icons::X,
-					) {
-						if let Some(s) = wallet.nostr_service() {
-							s.store.wipe_archive();
+					// Destructive: danger styling + tap-twice confirm (like the
+					// receipt's "Cancel payment") before the archive is wiped.
+					let wipe_label = if self.wipe_confirm {
+						t!("goblin.settings.wipe_history_confirm")
+					} else {
+						t!("goblin.settings.wipe_history")
+					};
+					if settings_row_danger(ui, &wipe_label, crate::gui::icons::X) {
+						if self.wipe_confirm {
+							if let Some(s) = wallet.nostr_service() {
+								s.store.wipe_archive();
+							}
+							self.wipe_confirm = false;
+						} else {
+							self.wipe_confirm = true;
 						}
 					}
 				});
@@ -3084,24 +3174,66 @@ impl GoblinWalletView {
 			self.settings_page = SettingsPage::Main;
 		}
 		if open_node {
-			// Advanced → "Manage node connection" opens GRIM's native connections UI.
-			self.settings_page = SettingsPage::Connections;
+			// Advanced → "Manage node connection" opens Goblin's own Node screen
+			// (its Advanced button reaches the integrated-node tabs from there).
+			self.node_url_input.clear();
+			self.node_secret_input.clear();
+			self.settings_page = SettingsPage::Node;
 		}
 	}
 
-	/// GRIM's native node-connections screen, embedded under a Goblin back header.
-	fn grim_connections_ui(&mut self, ui: &mut egui::Ui, cb: &dyn PlatformCallbacks) {
-		use crate::gui::views::types::ContentContainer;
-		if self.sub_header(ui, &t!("goblin.node.title")) {
-			self.settings_page = SettingsPage::Advanced;
+	/// GRIM's four integrated-node tabs (Info / Metrics / Mining / Settings)
+	/// hosted under a Goblin back header and segmented control — GRIM's
+	/// dual-panel and floating-navbar chrome are never rendered. The header
+	/// title follows the active tab, like GRIM's own title panel.
+	fn integrated_node_ui(&mut self, ui: &mut egui::Ui, cb: &dyn PlatformCallbacks) {
+		use crate::gui::icons::{DATABASE, FACTORY, FADERS, GAUGE};
+		use crate::gui::views::network::types::NodeTabType;
+		use crate::gui::views::network::{
+			NetworkContent, NetworkMetrics, NetworkMining, NetworkNode, NetworkSettings,
+			disabled_node_ui, node_error_ui,
+		};
+		use crate::node::Node;
+		let title = self.node_tab.get_type().title();
+		if self.sub_header(ui, &title) {
+			self.settings_page = self.node_tab_back;
 			return;
 		}
-		ScrollArea::vertical()
-			.auto_shrink([false; 2])
-			.scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
-			.show(ui, |ui| {
-				self.grim_connections.ui(ui, cb);
-			});
+		let selected = match self.node_tab.get_type() {
+			NodeTabType::Info => 0,
+			NodeTabType::Metrics => 1,
+			NodeTabType::Mining => 2,
+			NodeTabType::Settings => 3,
+		};
+		if let Some(i) = w::segmented(ui, &[DATABASE, GAUGE, FACTORY, FADERS], selected) {
+			self.node_tab = match i {
+				0 => Box::new(NetworkNode),
+				1 => Box::new(NetworkMetrics),
+				2 => Box::new(NetworkMining::default()),
+				_ => Box::new(NetworkSettings::default()),
+			};
+		}
+		ui.add_space(12.0);
+		// Same availability gate as GRIM's NetworkContent: the Settings tab is
+		// editable with the node off; the live tabs need a running node with
+		// stats before their content can draw.
+		if self.node_tab.get_type() != NodeTabType::Settings {
+			if let Some(err) = Node::get_error() {
+				node_error_ui(ui, err);
+			} else if !Node::is_running() {
+				disabled_node_ui(ui);
+			} else if Node::get_stats().is_none() || Node::is_restarting() || Node::is_stopping() {
+				NetworkContent::loading_ui(ui, None::<String>);
+			} else {
+				self.node_tab.tab_ui(ui, cb);
+			}
+		} else {
+			self.node_tab.tab_ui(ui, cb);
+		}
+		// Keep the stats fresh while the node runs.
+		if Node::is_running() {
+			ui.ctx().request_repaint_after(Node::STATS_UPDATE_DELAY);
+		}
 	}
 
 	fn node_settings_ui(&mut self, ui: &mut egui::Ui, wallet: &Wallet, cb: &dyn PlatformCallbacks) {
@@ -3162,10 +3294,13 @@ impl GoblinWalletView {
 											.color(t.pos),
 									);
 								} else {
+									// Trash, not an X: a grey × next to the active row's
+									// green check read as a failed-status icon, not the
+									// remove action it actually is.
 									let x = ui.label(
-										RichText::new(crate::gui::icons::X)
+										RichText::new(crate::gui::icons::TRASH_SIMPLE)
 											.font(FontId::new(15.0, fonts::regular()))
-											.color(t.surface_text_mute),
+											.color(t.surface_text_dim),
 									);
 									if x.interact(Sense::click()).clicked() {
 										ConnectionsConfig::remove_ext_conn(conn.id);
@@ -3226,6 +3361,14 @@ impl GoblinWalletView {
 					ConnectionsConfig::add_ext_conn(conn);
 					self.node_url_input.clear();
 					self.node_secret_input.clear();
+				}
+				ui.add_space(10.0);
+				// Advanced: GRIM's integrated-node tabs (info, metrics, mining
+				// with stratum, node settings) inside Goblin chrome.
+				if w::big_action(ui, &t!("goblin.settings.node_advanced"), true).clicked() {
+					self.node_tab = Box::new(crate::gui::views::network::NetworkNode);
+					self.node_tab_back = SettingsPage::Node;
+					self.settings_page = SettingsPage::IntegratedNode;
 				}
 				ui.add_space(16.0);
 			});
@@ -4707,6 +4850,29 @@ fn settings_row_danger(ui: &mut egui::Ui, label: &str, icon: &str) -> bool {
 	row.response.interact(Sense::click()).clicked()
 }
 
+/// A settings row whose value cycles in place on tap (no navigation): the
+/// value is drawn in the same small/dim style as [`settings_row_nav`] so it
+/// sits consistently next to chevroned siblings, just without the chevron.
+fn settings_row_cycle(ui: &mut egui::Ui, label: &str, value: &str) -> bool {
+	let t = theme::tokens();
+	let row = ui.horizontal(|ui| {
+		ui.label(
+			RichText::new(label)
+				.font(FontId::new(15.0, fonts::medium()))
+				.color(t.surface_text),
+		);
+		ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+			ui.label(
+				RichText::new(value)
+					.font(FontId::new(13.0, fonts::regular()))
+					.color(t.surface_text_dim),
+			);
+		});
+	});
+	ui.add_space(10.0);
+	row.response.interact(Sense::click()).clicked()
+}
+
 /// A settings row that navigates somewhere: value + chevron, whole row taps.
 fn settings_row_nav(ui: &mut egui::Ui, label: &str, value: &str) -> bool {
 	let t = theme::tokens();
@@ -4727,34 +4893,6 @@ fn settings_row_nav(ui: &mut egui::Ui, label: &str, value: &str) -> bool {
 				RichText::new(value)
 					.font(FontId::new(13.0, fonts::regular()))
 					.color(t.surface_text_dim),
-			);
-		});
-	});
-	ui.add_space(10.0);
-	row.response.interact(Sense::click()).clicked()
-}
-
-/// Like [`settings_row_nav`] but the value is drawn in an explicit ink — used to
-/// flag the mixnet-routing row in the privacy color while still navigating.
-fn settings_row_nav_ink(ui: &mut egui::Ui, label: &str, value: &str, value_ink: Color32) -> bool {
-	let t = theme::tokens();
-	let row = ui.horizontal(|ui| {
-		ui.label(
-			RichText::new(label)
-				.font(FontId::new(15.0, fonts::medium()))
-				.color(t.surface_text),
-		);
-		ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-			ui.label(
-				RichText::new(crate::gui::icons::CARET_RIGHT)
-					.font(FontId::new(13.0, fonts::regular()))
-					.color(t.surface_text_mute),
-			);
-			ui.add_space(4.0);
-			ui.label(
-				RichText::new(value)
-					.font(FontId::new(13.0, fonts::regular()))
-					.color(value_ink),
 			);
 		});
 	});

@@ -76,7 +76,6 @@ enum ScanTab {
 struct Recipient {
 	name: String,
 	npub: String,
-	hue: usize,
 	/// Recipient relay hints (nprofile / NIP-05 resolution), extra delivery
 	/// targets for a recipient whose kind 10050 isn't discoverable yet.
 	relay_hints: Vec<String>,
@@ -87,7 +86,6 @@ struct Recipient {
 struct Candidate {
 	name: String,
 	npub: String,
-	hue: usize,
 	/// Known contact, resolved goblin handle, or has a published nostr
 	/// profile. Unverified = a syntactically valid key with no profile.
 	verified: bool,
@@ -180,11 +178,9 @@ impl Default for SendFlow {
 impl SendFlow {
 	/// Pre-fill a contact and skip to amount entry.
 	pub fn prefill_contact(&mut self, name: String, npub: String) {
-		let hue = data::hue_of(&npub);
 		self.recipient = Some(Recipient {
 			name,
 			npub,
-			hue,
 			relay_hints: vec![],
 		});
 		self.stage = Stage::Amount;
@@ -473,7 +469,7 @@ impl SendFlow {
 			let peers = recent_peers(wallet, 20);
 			let texs: Vec<Option<egui::TextureHandle>> = peers
 				.iter()
-				.map(|(name, _, _)| tex_for(avatars, ui.ctx(), wallet, name))
+				.map(|(name, _)| tex_for(avatars, ui.ctx(), wallet, name))
 				.collect();
 			ScrollArea::vertical()
 				.auto_shrink([false; 2])
@@ -486,14 +482,14 @@ impl SendFlow {
 								.color(t.text_dim),
 						);
 					}
-					for ((name, hue, npub), tex) in peers.into_iter().zip(texs.iter()) {
+					for ((name, npub), tex) in peers.into_iter().zip(texs.iter()) {
 						if w::activity_row(
 							ui,
 							&name,
 							&data::full_npub(&npub),
-							hue,
 							&npub,
 							"",
+							false,
 							false,
 							false,
 							tex.as_ref(),
@@ -503,7 +499,6 @@ impl SendFlow {
 							self.pick(Candidate {
 								name,
 								npub,
-								hue,
 								verified: true,
 								tag: "",
 								relay_hints: vec![],
@@ -517,10 +512,9 @@ impl SendFlow {
 		// Type-ahead results: instant local matches + the network candidate.
 		let mut cands: Vec<Candidate> = search_contacts(wallet, &query, 6)
 			.into_iter()
-			.map(|(name, hue, npub)| Candidate {
+			.map(|(name, npub)| Candidate {
 				name,
 				npub,
-				hue,
 				verified: true,
 				tag: "contact",
 				relay_hints: vec![],
@@ -555,9 +549,9 @@ impl SendFlow {
 						ui,
 						&c.name,
 						&tag,
-						c.hue,
 						&c.npub,
 						"",
+						false,
 						false,
 						false,
 						tex.as_ref(),
@@ -599,7 +593,6 @@ impl SendFlow {
 			self.recipient = Some(Recipient {
 				name: cand.name,
 				npub: cand.npub,
-				hue: cand.hue,
 				relay_hints: cand.relay_hints,
 			});
 			let preset = amount_from_hr_string(&self.amount)
@@ -826,20 +819,16 @@ impl SendFlow {
 			// Valid key → confirm it's a live identity via its kind-0 profile.
 			self.looking_up = true;
 			let service = wallet.nostr_service();
-			let known = wallet.nostr_service().and_then(|s| {
-				s.store
-					.contact(&hex)
-					.map(|c| (display_name(&c), c.hue as usize))
-			});
+			let known = wallet
+				.nostr_service()
+				.and_then(|s| s.store.contact(&hex).map(|c| display_name(&c)));
 			std::thread::spawn(move || {
-				let hue = data::hue_of(&hex);
 				let profile = service.and_then(|s| s.fetch_profile_blocking(&hex, &key_hints));
 				let res = match (known, profile) {
 					// Already a saved contact — trust it.
-					(Some((name, hue)), _) => LookupResult::Found(Candidate {
+					(Some(name), _) => LookupResult::Found(Candidate {
 						name,
 						npub: hex,
-						hue,
 						verified: true,
 						tag: "contact",
 						relay_hints: key_hints,
@@ -854,7 +843,6 @@ impl SendFlow {
 						LookupResult::Found(Candidate {
 							name,
 							npub: hex,
-							hue,
 							verified: true,
 							tag: "on nostr",
 							relay_hints: key_hints,
@@ -863,7 +851,6 @@ impl SendFlow {
 					(None, None) => LookupResult::Unverified(Candidate {
 						name: short_npub(&hex),
 						npub: hex,
-						hue,
 						verified: false,
 						tag: "",
 						relay_hints: key_hints,
@@ -893,7 +880,6 @@ impl SendFlow {
 						LookupResult::Found(Candidate {
 							name: display,
 							npub: hex.clone(),
-							hue: data::hue_of(&hex),
 							// A successful NIP-05 resolution (home OR a named foreign
 							// authority) is verified — the user typed a specific
 							// handle and the domain is shown, so no bare-key gate.
@@ -953,7 +939,6 @@ impl SendFlow {
 				&recipient.name,
 				&recipient.npub,
 				28.0,
-				recipient.hue,
 				chip_tex.as_ref(),
 			);
 			ui.add_space(8.0);
@@ -1006,13 +991,16 @@ impl SendFlow {
 		// above it means the pad stays visible and tappable, instead of being
 		// hidden behind the keyboard (the old order trapped you in the note).
 		let note_focused = ui.ctx().memory(|m| m.has_focus(note_id));
-		if !View::is_desktop() {
-			if w::numpad(ui, &mut self.amount, cb) {
-				// Tapping the pad means you're back on the amount — drop the note's
-				// focus so its keyboard goes away.
-				ui.ctx().memory_mut(|m| m.surrender_focus(note_id));
-			}
-		} else if !note_focused {
+		// The send column is capped at 480 by `centered_column`, so the old
+		// `< 700` width gate was always narrow and the typed branch dead (same
+		// fix as pay_ui, so both amount screens match): show the pad and accept
+		// typed digits alongside it.
+		if w::numpad(ui, &mut self.amount, cb) {
+			// Tapping the pad means you're back on the amount — drop the note's
+			// focus so its keyboard goes away.
+			ui.ctx().memory_mut(|m| m.surrender_focus(note_id));
+		}
+		if !note_focused {
 			// Only consume keystrokes for the amount when the note field is
 			// not focused, so typing a note doesn't also edit the amount.
 			w::amount_typed_input(ui, &mut self.amount);
@@ -1054,13 +1042,12 @@ impl SendFlow {
 		let valid = amount_from_hr_string(&self.amount)
 			.map(|a| a > 0)
 			.unwrap_or(false);
-		ui.add_enabled_ui(valid, |ui| {
-			if w::big_action(ui, &t!("goblin.send.review_btn"), false).clicked() {
-				if over {
-					cb.vibrate_error();
-				} else {
-					self.stage = Stage::Review;
-				}
+		// Greyed out while over balance, matching the red guard above; the
+		// `!over` in the click also refuses it in case the disabled state is
+		// ever bypassed.
+		ui.add_enabled_ui(valid && !over, |ui| {
+			if w::big_action(ui, &t!("goblin.send.review_btn"), false).clicked() && !over {
+				self.stage = Stage::Review;
 			}
 		});
 		false
@@ -1122,7 +1109,6 @@ impl SendFlow {
 					&recipient.name,
 					&recipient.npub,
 					40.0,
-					recipient.hue,
 					hero_tex.as_ref(),
 				);
 				ui.add_space(6.0);
@@ -1172,7 +1158,7 @@ impl SendFlow {
 				wallet.task(WalletTask::CalculateFee(amount_nano, 0));
 			}
 			let fee_val = match wallet.calculated_fee(amount_nano) {
-				Some(fee) => format!("{} {}", w::amount_str(fee), w::TSU),
+				Some(fee) => format!("{}{}", w::amount_str(fee), w::TSU),
 				None => {
 					// Result lands on a worker thread; poll until it does.
 					ui.ctx()

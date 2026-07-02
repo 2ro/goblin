@@ -21,7 +21,7 @@ use eframe::epaint::FontId;
 use egui::{Align, Layout, RichText, ScrollArea, Sense, Vec2};
 use grin_util::ZeroingString;
 
-use crate::gui::icons::ARROW_LEFT;
+use crate::gui::icons::{ARROW_LEFT, CHECK};
 use crate::gui::platform::PlatformCallbacks;
 use crate::gui::theme::{self, fonts};
 use crate::gui::views::types::{ContentContainer, ModalPosition, QrScanResult};
@@ -75,6 +75,8 @@ pub struct OnboardingContent {
 	/// step so a returning user can keep their old npub + username instead of the
 	/// freshly-generated random key.
 	import: Option<OnbImport>,
+	/// Moment the recovery phrase was copied, for the transient "Copied" check.
+	words_copied: Option<std::time::Instant>,
 }
 
 /// Onboarding identity-import state. Reuses the wallet password the user just
@@ -104,7 +106,7 @@ impl Default for OnboardingContent {
 			// Default to the Instant path (connect to a public node) so a new
 			// user is online immediately, with no chain-sync wait.
 			integrated: false,
-			ext_url: "https://api.grin.money".to_string(),
+			ext_url: "https://grincoin.org".to_string(),
 			restore: false,
 			name: "Main wallet".to_string(),
 			pass: String::new(),
@@ -115,6 +117,7 @@ impl Default for OnboardingContent {
 			wallet: None,
 			claim: ClaimState::default(),
 			import: None,
+			words_copied: None,
 		}
 	}
 }
@@ -561,9 +564,24 @@ impl OnboardingContent {
 				);
 			});
 			ui.add_space(14.0);
-		} else if w::chip(ui, &t!("goblin.onboarding.words.copy_clipboard"), false).clicked() {
-			cb.copy_string_to_buffer(self.mnemonic_setup.mnemonic.get_phrase());
-			cb.vibrate_copy();
+		} else {
+			// Transient "Copied" feedback (the Build 82/89 pattern): a silent
+			// copy of the recovery phrase reads as a dead button.
+			let copied = matches!(self.words_copied, Some(at) if at.elapsed().as_millis() < 1500);
+			if self.words_copied.is_some() {
+				ui.ctx()
+					.request_repaint_after(std::time::Duration::from_millis(200));
+			}
+			let label = if copied {
+				format!("{} {}", CHECK, t!("goblin.receive.copied"))
+			} else {
+				t!("goblin.onboarding.words.copy_clipboard").to_string()
+			};
+			if w::chip(ui, &label, false).clicked() {
+				cb.copy_string_to_buffer(self.mnemonic_setup.mnemonic.get_phrase());
+				cb.vibrate_copy();
+				self.words_copied = Some(std::time::Instant::now());
+			}
 		}
 		if !restore {
 			ui.add_space(14.0);
@@ -746,7 +764,8 @@ impl OnboardingContent {
 				// for this key; only fall back to a placeholder while the key is
 				// still being generated (npub not yet available).
 				if npub.is_empty() {
-					w::avatar(ui, "N", 44.0, 6);
+					// Key still generating: a fixed-seed gradient placeholder.
+					w::gradient_avatar(ui, "goblin", 44.0);
 				} else {
 					w::gradient_avatar(ui, &npub, 44.0);
 				}
@@ -783,7 +802,9 @@ impl OnboardingContent {
 						);
 					}
 					ui.label(
-						RichText::new(if connected {
+						// Relay-gated readiness: "connected over Nym" only once a
+						// relay is actually live, not merely when the tunnel is warm.
+						RichText::new(if crate::nym::transport_ready() {
 							t!("goblin.onboarding.identity.connected_nym")
 						} else {
 							t!("goblin.onboarding.identity.connecting_nym")

@@ -38,17 +38,16 @@ pub struct ExternalConnection {
 	pub available: Option<bool>,
 }
 
-/// Default external node URLs for main network. api.grin.money leads (verified
-/// healthy; grincoin.org's node was returning "rpc call failed"); main.us-ea.st
-/// is the Goblin-run node. The rest are independent public nodes so a single
-/// operator going down never strands the wallet.
-const DEFAULT_MAIN_URLS: [&'static str; 6] = [
-	"https://api.grin.money",
-	"https://main.us-ea.st",
+/// Default external node URLs for main network. grincoin.org leads (owner-verified:
+/// `/v2/foreign` get_tip returns cleanly). api.grin.money was REMOVED this build: it
+/// errors ("Cannot parse response") on `get_unspent_outputs` during a fresh-wallet
+/// full scan, surfacing as the "error during synchronization" screen. main.gri.mw and
+/// mainnet.grinffindor.org are the other verified-working public nodes, so a single
+/// operator going down never strands the wallet. Users can still add their own node.
+const DEFAULT_MAIN_URLS: [&'static str; 3] = [
 	"https://grincoin.org",
 	"https://main.gri.mw",
 	"https://mainnet.grinffindor.org",
-	"https://main.grin.raubritter.org",
 ];
 
 /// Default external node URLs for the test network — the testnet counterparts of

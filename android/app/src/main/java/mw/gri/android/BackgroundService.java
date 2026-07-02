@@ -23,6 +23,10 @@ public class BackgroundService extends Service {
     private boolean mStopped = false;
 
     private static final int NOTIFICATION_ID = 1;
+    // One-shot "payment received" notification, separate from the persistent
+    // sync notification above.
+    private static final int PAYMENT_NOTIFICATION_ID = 2;
+    private static final String PAYMENT_CHANNEL_ID = "PaymentReceived";
     private NotificationCompat.Builder mNotificationBuilder;
 
     private String mNotificationContentText = "";
@@ -187,6 +191,40 @@ public class BackgroundService extends Service {
             notificationManager.deleteNotificationChannel(TAG);
         }
         notificationManager.cancel(NOTIFICATION_ID);
+    }
+
+    // Show a one-shot "payment received" notification (id=2), separate from
+    // the persistent sync notification (id=1). Called from native code via
+    // MainActivity when a payment slatepack is received over nostr, possibly
+    // while the app is backgrounded. Localization of the fixed strings is a
+    // follow-up (text is composed here at Java side).
+    public static void notifyPaymentReceived(Context context, String name, String amount) {
+        NotificationManager manager = context.getSystemService(NotificationManager.class);
+        if (manager == null) {
+            return;
+        }
+        // High-importance channel so the notification pops with sound + vibration.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            NotificationChannel channel = new NotificationChannel(
+                    PAYMENT_CHANNEL_ID, "Payments", NotificationManager.IMPORTANCE_HIGH
+            );
+            manager.createNotificationChannel(channel);
+        }
+        Intent i = context.getPackageManager().getLaunchIntentForPackage(context.getPackageName());
+        PendingIntent pendingIntent = PendingIntent.getActivity(context, 0, i, PendingIntent.FLAG_IMMUTABLE);
+        NotificationCompat.Builder builder = new NotificationCompat.Builder(context, PAYMENT_CHANNEL_ID)
+                .setContentTitle("Payment received")
+                .setContentText(name + " paid " + amount + " ツ")
+                .setSmallIcon(R.drawable.ic_stat_name)
+                .setPriority(NotificationCompat.PRIORITY_HIGH)
+                .setAutoCancel(true)
+                .setDefaults(NotificationCompat.DEFAULT_ALL)
+                .setContentIntent(pendingIntent);
+        try {
+            manager.notify(PAYMENT_NOTIFICATION_ID, builder.build());
+        } catch (SecurityException e) {
+            // POST_NOTIFICATIONS not granted: skip the notification, never the payment.
+        }
     }
 
     // Start the service.

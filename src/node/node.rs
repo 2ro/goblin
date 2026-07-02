@@ -721,7 +721,15 @@ pub extern "C" fn Java_mw_gri_android_BackgroundService_getSyncStatusText(
 	_class: jni::objects::JObject,
 	_activity: jni::objects::JObject,
 ) -> jni::sys::jstring {
-	let status_text = Node::get_sync_status_text();
+	// The keep-alive notification must reflect the real connection: on the
+	// external-node default the integrated node is deliberately off, so "Node
+	// is down" is wrong — the service's actual background job is the
+	// Nostr-over-Nym payment listen.
+	let status_text = if Node::is_running() || Node::is_starting() {
+		Node::get_sync_status_text()
+	} else {
+		t!("goblin.home.listening").into()
+	};
 	let j_text = _env.new_string(status_text);
 	return j_text.unwrap().into_raw();
 }
@@ -736,7 +744,14 @@ pub extern "C" fn Java_mw_gri_android_BackgroundService_getSyncTitle(
 	_class: jni::objects::JObject,
 	_activity: jni::objects::JObject,
 ) -> jni::sys::jstring {
-	let j_text = _env.new_string(t!("network.node"));
+	// Match the status text: only title the notification "Node" when the
+	// integrated node is actually in use.
+	let title = if Node::is_running() || Node::is_starting() {
+		t!("network.node").to_string()
+	} else {
+		"Goblin".to_string()
+	};
+	let j_text = _env.new_string(title);
 	return j_text.unwrap().into_raw();
 }
 

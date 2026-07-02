@@ -97,6 +97,11 @@ pub struct Contact {
 	pub nip05_verified_at: Option<i64>,
 	/// Known DM relays (kind 10050) of the contact.
 	pub relays: Vec<String>,
+	/// The contact advertises NIP-44 v3 in the `encryption` tag of the same
+	/// kind 10050 the relays come from (NIP-17 backward-compat extension).
+	/// Absent tag = v2 only, hence the conservative default.
+	#[serde(default)]
+	pub nip44_v3: bool,
 	/// Avatar palette index.
 	pub hue: u8,
 	/// Auto-added from an incoming payment, not yet confirmed by the user.

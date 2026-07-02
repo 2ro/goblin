@@ -421,6 +421,12 @@ public class MainActivity extends GameActivity {
     // Notify native code to stop activity (e.g. node) if app was terminated from recent apps.
     public native void onTermination();
 
+    // Called from native code to show a "payment received" notification
+    // (BackgroundService id=2) when a payment arrives over nostr.
+    public void notifyPaymentReceived(String name, String amount) {
+        BackgroundService.notifyPaymentReceived(this, name, amount);
+    }
+
     // Called from native code to set text into clipboard.
     public void copyText(String data) {
         ClipboardManager clipboard = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
@@ -619,7 +625,12 @@ public class MainActivity extends GameActivity {
     // Called from native code to pick the file.
     public void pickFile() {
         Intent intent = new Intent(Intent.ACTION_GET_CONTENT);
-        intent.setType("text/*");
+        // Permissive type: custom extensions like .backup have no registered
+        // MIME type, so any narrower filter greys them out in the picker and
+        // locks users out of restoring their identity. Content is validated
+        // on the native side after selection.
+        intent.setType("*/*");
+        intent.addCategory(Intent.CATEGORY_OPENABLE);
         try {
             mFilePickResult.launch(Intent.createChooser(intent, "Pick file"));
         } catch (android.content.ActivityNotFoundException ex) {

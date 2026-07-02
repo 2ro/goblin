@@ -40,6 +40,12 @@ pub struct Android {
 impl Android {
 	/// Create new Android platform instance from provided [`AndroidApp`].
 	pub fn new(app: AndroidApp) -> Self {
+		// Keep a process-wide handle so non-GUI threads (the nostr service)
+		// can reach Java too (see `notify_payment_received`).
+		{
+			let mut w_app = ANDROID_APP.write();
+			*w_app = Some(app.clone());
+		}
 		Self {
 			android_app: app,
 			ctx: Arc::new(RwLock::new(None)),
@@ -267,6 +273,48 @@ lazy_static! {
 	static ref LAST_CAMERA_IMAGE: Arc<RwLock<Option<(Vec<u8>, u32)>>> = Arc::new(RwLock::new(None));
 	/// Picked file path.
 	static ref PICKED_FILE_PATH: Arc<RwLock<Option<String>>> = Arc::new(RwLock::new(None));
+	/// App handle for JNI calls from threads without a platform reference.
+	static ref ANDROID_APP: Arc<RwLock<Option<AndroidApp>>> = Arc::new(RwLock::new(None));
+}
+
+/// Show the one-shot "payment received" system notification (Java side
+/// `BackgroundService.notifyPaymentReceived`, id=2, separate from the
+/// persistent sync notification id=1). Called by the nostr service on
+/// slatepack receipt from a non-GUI thread, hence the stored [`AndroidApp`]
+/// handle instead of a platform reference. Fail-open: a missing handle or
+/// JNI error just skips the notification, never the payment.
+pub fn notify_payment_received(name: &str, amount: &str) {
+	let app = {
+		let r_app = ANDROID_APP.read();
+		r_app.clone()
+	};
+	let Some(app) = app else {
+		return;
+	};
+	let platform = Android {
+		android_app: app,
+		ctx: Arc::new(RwLock::new(None)),
+	};
+	let Ok(vm) = (unsafe { jni::JavaVM::from_raw(platform.android_app.vm_as_ptr() as _) }) else {
+		return;
+	};
+	let Ok(env) = vm.attach_current_thread() else {
+		return;
+	};
+	let Ok(j_name) = env.new_string(name) else {
+		return;
+	};
+	let Ok(j_amount) = env.new_string(amount) else {
+		return;
+	};
+	let _ = platform.call_java_method(
+		"notifyPaymentReceived",
+		"(Ljava/lang/String;Ljava/lang/String;)V",
+		&[
+			JValue::Object(&JObject::from(j_name)),
+			JValue::Object(&JObject::from(j_amount)),
+		],
+	);
 }
 
 /// Callback from Java code with last entered character from soft keyboard.

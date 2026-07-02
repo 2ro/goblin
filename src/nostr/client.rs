@@ -15,10 +15,11 @@
 //! Per-wallet nostr service: relay connections over the Nym mixnet,
 //! identity event publishing, the guarded ingest loop and the DM send path.
 
+use grin_core::core::amount_to_hr_string;
 use log::{error, info, warn};
 use nostr_sdk::{
 	Client, Event, EventBuilder, Filter, Keys, Kind, Metadata, PublicKey, RelayPoolNotification,
-	RelayStatus, Tag, TagKind, Timestamp, ToBech32,
+	RelayStatus, SubscriptionId, Tag, TagKind, Timestamp, ToBech32,
 };
 use parking_lot::{Mutex, RwLock};
 use std::collections::HashMap;
@@ -32,6 +33,7 @@ use crate::nostr::ingest::{IngestContext, IngestDecision, decide};
 use crate::nostr::protocol;
 use crate::nostr::relays::MAX_DM_RELAYS;
 use crate::nostr::types::*;
+use crate::nostr::wrapv3;
 use crate::nostr::{NostrConfig, NostrIdentity, NostrStore};
 use crate::nym::NymWebSocketTransport;
 use crate::wallet::Wallet;
@@ -43,6 +45,12 @@ pub struct NostrProfile {
 	pub name: Option<String>,
 	pub nip05: Option<String>,
 }
+
+/// Stable subscription id for our kind:1059 gift-wrap inbox. Reusing ONE id
+/// (rather than a fresh random id per (re)subscribe) means re-establishing the
+/// subscription after a tunnel reselect REPLACES it instead of piling up
+/// duplicate REQs on the relays.
+const GIFTWRAP_SUB: &str = "goblin-giftwrap";
 
 /// Subscription look-back window beyond the last connection time: gift wrap
 /// timestamps are randomized up to 2 days into the past (NIP-59), use 3 days.
@@ -360,8 +368,17 @@ impl NostrService {
 		});
 	}
 
-	/// Current relay list.
+	/// Current relay list: a user-set nostr.toml override wins, otherwise the
+	/// per-identity sticky advertised set (Goblin relay + pool picks), with
+	/// the built-in defaults until one has been selected.
 	pub fn relays(&self) -> Vec<String> {
+		if let Some(over) = self.config.read().relays_override() {
+			return over;
+		}
+		let sticky = self.identity.read().dm_relays.clone();
+		if !sticky.is_empty() {
+			return sticky;
+		}
 		self.config.read().relays()
 	}
 
@@ -498,32 +515,15 @@ impl NostrService {
 		let content = protocol::build_payment_content(slatepack);
 		let tags = protocol::build_rumor_tags(note);
 
-		// Resolve receiver DM relays (kind 10050) with our relays as fallback.
-		let mut urls = self.fetch_dm_relays(&client, &receiver).await;
-		for r in relay_hints {
-			if !urls.contains(r) {
-				urls.push(r.clone());
-			}
-		}
-		for r in self.relays() {
-			if !urls.contains(&r) {
-				urls.push(r);
-			}
-		}
+		let (urls, v3) = self.send_targets(&client, &receiver, relay_hints).await;
 
 		// NIP-17 delivers to the RECIPIENT's relays, which may differ from ours;
 		// dial any we don't already hold so the gift wrap actually reaches their
 		// inbox (otherwise `send_*_to` errors "relay not found" / never arrives).
 		connect_relays(&client, &urls).await;
 
-		let res = tokio::time::timeout(
-			SEND_TIMEOUT,
-			client.send_private_msg_to(urls, receiver, content, tags),
-		)
-		.await
-		.map_err(|_| "send timeout".to_string())?
-		.map_err(|e| format!("send failed: {e}"))?;
-		Ok(res.val.to_hex())
+		self.dispatch_dm(&client, urls, v3, receiver, content, tags)
+			.await
 	}
 
 	/// Dispatch a control DM that voids a pending request (a decline by the payer
@@ -544,7 +544,61 @@ impl NostrService {
 		let content = protocol::build_control_content();
 		let tags = protocol::build_control_tags(slate_id);
 
-		let mut urls = self.fetch_dm_relays(&client, &receiver).await;
+		let (urls, v3) = self.send_targets(&client, &receiver, relay_hints).await;
+
+		connect_relays(&client, &urls).await;
+
+		self.dispatch_dm(&client, urls, v3, receiver, content, tags)
+			.await
+	}
+
+	/// Dispatch one gift-wrapped DM over the negotiated encryption: when the
+	/// recipient advertises `nip44_v3` the wrap is built by [`wrapv3::wrap`],
+	/// otherwise it goes through the unchanged nostr-sdk v2 path (best mutual
+	/// wins; absent capability = v2, so v2-only peers see no change).
+	async fn dispatch_dm(
+		&self,
+		client: &Client,
+		urls: Vec<String>,
+		v3: bool,
+		receiver: PublicKey,
+		content: String,
+		tags: Vec<Tag>,
+	) -> Result<String, String> {
+		let sent = if v3 {
+			let wrap = wrapv3::wrap(&self.keys, &receiver, content, tags)?;
+			tokio::time::timeout(SEND_TIMEOUT, client.send_event_to(urls, &wrap)).await
+		} else {
+			tokio::time::timeout(
+				SEND_TIMEOUT,
+				client.send_private_msg_to(urls, receiver, content, tags),
+			)
+			.await
+		};
+		let res = sent
+			.map_err(|_| "send timeout".to_string())?
+			.map_err(|e| format!("send failed: {e}"))?;
+		Ok(res.val.to_hex())
+	}
+
+	/// Publish targets for one DM plus the negotiated NIP-44 v3 capability:
+	/// the recipient's advertised 10050 inbox (capped at 3) when they publish
+	/// one; otherwise the pragmatic fallback of nprofile relay hints plus our
+	/// own relay set (most Goblin peers share the Goblin relay). No extra
+	/// targets beyond that — wider fan-out adds metadata surface, not
+	/// deliverability. `true` means the recipient's 10050 `encryption` tag
+	/// advertises `nip44_v3`; no tag (or no 10050 at all) = v2 only.
+	async fn send_targets(
+		&self,
+		client: &Client,
+		receiver: &PublicKey,
+		relay_hints: &[String],
+	) -> (Vec<String>, bool) {
+		let (urls, v3) = self.fetch_dm_relays(client, receiver).await;
+		if !urls.is_empty() {
+			return (urls, v3);
+		}
+		let mut urls: Vec<String> = vec![];
 		for r in relay_hints {
 			if !urls.contains(r) {
 				urls.push(r.clone());
@@ -555,51 +609,63 @@ impl NostrService {
 				urls.push(r);
 			}
 		}
-
-		connect_relays(&client, &urls).await;
-
-		let res = tokio::time::timeout(
-			SEND_TIMEOUT,
-			client.send_private_msg_to(urls, receiver, content, tags),
-		)
-		.await
-		.map_err(|_| "send timeout".to_string())?
-		.map_err(|e| format!("send failed: {e}"))?;
-		Ok(res.val.to_hex())
+		(urls, v3)
 	}
 
-	/// Fetch a contact's kind 10050 DM relay list from our relays.
-	async fn fetch_dm_relays(&self, client: &Client, pk: &PublicKey) -> Vec<String> {
-		// Use cached relays first.
-		if let Some(contact) = self.store.contact(&pk.to_hex()) {
-			if !contact.relays.is_empty() {
-				return contact.relays.into_iter().take(MAX_DM_RELAYS).collect();
+	/// Fetch a contact's kind 10050 DM relay list plus their advertised
+	/// NIP-44 v3 capability (the `encryption` tag of the same event). Queries
+	/// our own relays AND the pool's discovery indexers — the recipient's
+	/// 10050 lives on their relays and the indexers, not necessarily on
+	/// anything we share. Both facts are cached on the contact together.
+	async fn fetch_dm_relays(&self, client: &Client, pk: &PublicKey) -> (Vec<String>, bool) {
+		// Use cached relays (and the capability learned with them) first.
+		if let Some(contact) = self.store.contact(&pk.to_hex())
+			&& !contact.relays.is_empty()
+		{
+			return (
+				contact.relays.into_iter().take(MAX_DM_RELAYS).collect(),
+				contact.nip44_v3,
+			);
+		}
+		let mut from = self.relays();
+		for url in crate::nostr::pool::usable_discovery_relays().await {
+			if !from.contains(&url) {
+				from.push(url);
 			}
 		}
+		connect_relays(client, &from).await;
 		let filter = Filter::new().kind(Kind::InboxRelays).author(*pk).limit(1);
 		let mut out = vec![];
-		if let Ok(events) = client.fetch_events(filter, FETCH_TIMEOUT).await {
-			if let Some(event) = events.first() {
-				for tag in event.tags.iter() {
-					let parts = tag.as_slice();
-					if parts.first().map(|s| s.as_str()) == Some("relay") {
-						if let Some(url) = parts.get(1) {
-							if out.len() < MAX_DM_RELAYS {
-								out.push(url.trim_end_matches('/').to_string());
-							}
+		let mut v3 = false;
+		if let Ok(events) = client.fetch_events_from(&from, filter, FETCH_TIMEOUT).await
+			&& let Some(event) = events.first()
+		{
+			for tag in event.tags.iter() {
+				let parts = tag.as_slice();
+				match parts.first().map(|s| s.as_str()) {
+					Some("relay") => {
+						if let Some(url) = parts.get(1)
+							&& out.len() < MAX_DM_RELAYS
+						{
+							out.push(url.trim_end_matches('/').to_string());
 						}
 					}
+					Some("encryption") => {
+						v3 = wrapv3::peer_supports_v3(parts.get(1).map(|s| s.as_str()));
+					}
+					_ => {}
 				}
 			}
 		}
-		// Cache discovered relays on the contact when present.
-		if !out.is_empty() {
-			if let Some(mut contact) = self.store.contact(&pk.to_hex()) {
-				contact.relays = out.clone();
-				self.store.save_contact(&contact);
-			}
+		// Cache discovered relays + capability on the contact when present.
+		if !out.is_empty()
+			&& let Some(mut contact) = self.store.contact(&pk.to_hex())
+		{
+			contact.relays = out.clone();
+			contact.nip44_v3 = v3;
+			self.store.save_contact(&contact);
 		}
-		out
+		(out, v3)
 	}
 
 	/// Ensure a contact entry exists for a sender (auto-added as unknown).
@@ -619,6 +685,7 @@ impl NostrService {
 				nip05: None,
 				nip05_verified_at: None,
 				relays: vec![],
+				nip44_v3: false,
 				hue,
 				unknown: true,
 				added_at: unix_time(),
@@ -733,32 +800,22 @@ async fn run_service(svc: Arc<NostrService>, wallet: Wallet) {
 	*svc.rt_handle.write() = Some(tokio::runtime::Handle::current());
 	// Mirror the configured name authority so resolution + display follow it.
 	crate::nostr::nip05::set_home_domain(&svc.config.read().home_domain());
-	let relays = svc.relays();
-	info!(
-		"nostr: starting service for {} with relays {:?}",
-		svc.npub(),
-		relays
-	);
 
 	let client = Client::builder()
 		.signer(svc.keys.clone())
 		.websocket_transport(NymWebSocketTransport)
 		.build();
-	for relay in &relays {
-		if let Err(e) = client.add_relay(relay.clone()).await {
-			warn!("nostr: add relay {relay} failed: {e}");
-		}
-	}
-	// Wait for the in-process Nym SOCKS5 proxy (:1080) before dialing relays.
-	// `warm_up()` starts it at launch, but a fast wallet-open can beat the cold
-	// mixnet bootstrap — and dialing before it's up drops every relay into
-	// nostr-sdk's backing-off reconnect, leaving the wallet on "Connecting…" long
-	// after the mixnet is actually ready. Once it's warm this returns immediately.
+	// Wait for the in-process Nym mixnet tunnel before any network work
+	// (relay dials, pool refresh, NIP-11 probes). `warm_up()` starts it at
+	// launch, but a fast wallet-open can beat the cold mixnet bootstrap — and
+	// dialing before it's up drops every relay into nostr-sdk's backing-off
+	// reconnect, leaving the wallet on "Connecting…" long after the mixnet is
+	// actually ready. Once it's warm this returns immediately.
 	for i in 0..60u32 {
-		if nym_socks_ready().await {
+		if crate::nym::is_ready() {
 			if i > 0 {
 				info!(
-					"nostr: Nym proxy ready after ~{}ms, dialing relays",
+					"nostr: Nym tunnel ready after ~{}ms, dialing relays",
 					i * 500
 				);
 			}
@@ -766,6 +823,52 @@ async fn run_service(svc: Arc<NostrService>, wallet: Wallet) {
 		}
 		tokio::time::sleep(Duration::from_millis(500)).await;
 	}
+	// We are now a relay consumer: arm nymproc's relay-reachability governance of
+	// exit health for our lifetime, so a DNS-ok-but-relay-dead exit gets
+	// condemned. Disarmed when the loop exits (see below), so plain HTTP-only
+	// usage of the tunnel never condemns an otherwise-healthy exit.
+	crate::nym::set_relay_consumer(true);
+	// Refresh the relay candidate pool cache (gist over Nym) when stale.
+	tokio::spawn(crate::nostr::pool::refresh_if_stale());
+	// Select this identity's advertised relay set if it hasn't one yet.
+	ensure_advertised_set(&svc).await;
+
+	let relays = svc.relays();
+	info!(
+		"nostr: starting service for {} with relays {:?}",
+		svc.npub(),
+		relays
+	);
+	// Prewarm mix-dns for the hosts we're about to (or will soon) hit — the
+	// relays being dialed, the NIP-05 name authority (Claim username), and the
+	// price API — so those resolutions are already cached by the time the user
+	// acts, rather than each paying a cold mixnet round trip inline. Runs off the
+	// critical path (a raced+retried resolve is cheap); the node host is NOT here
+	// — it never rides the mixnet.
+	if let Some(tunnel) = crate::nym::nymproc::tunnel() {
+		let mut hosts: Vec<String> = relays
+			.iter()
+			.filter_map(|r| nostr_sdk::Url::parse(r).ok())
+			.filter_map(|u| u.host_str().map(|h| h.to_string()))
+			.collect();
+		hosts.push(svc.config.read().home_domain());
+		hosts.push("api.coingecko.com".to_string());
+		hosts.retain(|h| !h.is_empty());
+		hosts.sort();
+		hosts.dedup();
+		tokio::spawn(async move {
+			crate::nym::dns::prewarm(&tunnel, &hosts).await;
+		});
+	}
+	for relay in &relays {
+		if let Err(e) = client.add_relay(relay.clone()).await {
+			warn!("nostr: add relay {relay} failed: {e}");
+		}
+	}
+	// The tunnel generation these relays are being dialed on. If the exit is
+	// later reselected (generation bumped by nymproc), the status loop drops
+	// these now-dead sockets and re-dials through the fresh tunnel.
+	let mut dial_gen = crate::nym::tunnel_generation();
 	let connect_started = std::time::Instant::now();
 	client.connect().await;
 	{
@@ -778,6 +881,7 @@ async fn run_service(svc: Arc<NostrService>, wallet: Wallet) {
 	{
 		let client_probe = client.clone();
 		let svc_probe = svc.clone();
+		let report_gen = dial_gen;
 		tokio::spawn(async move {
 			loop {
 				tokio::time::sleep(Duration::from_millis(250)).await;
@@ -786,6 +890,11 @@ async fn run_service(svc: Arc<NostrService>, wallet: Wallet) {
 						"nostr: first relay Connected ~{}ms after connect()",
 						connect_started.elapsed().as_millis()
 					);
+					// FAST relay-live report: closes nymproc's relay-readiness
+					// window as soon as the exit is proven to carry relay traffic,
+					// independent of the up-to-30s catch-up fetch below (a slow
+					// catch-up must not get a good exit wrongly condemned).
+					crate::nym::report_relay_live(report_gen);
 					return;
 				}
 				if svc_probe.shutdown.load(Ordering::SeqCst)
@@ -804,7 +913,10 @@ async fn run_service(svc: Arc<NostrService>, wallet: Wallet) {
 	// Publish identity events (kind 10050 DM relays; kind 0 only when named).
 	publish_identity(&svc, &client).await;
 
-	// Catch-up + live subscription for our gift wraps.
+	// Catch-up + live subscription for our gift wraps — targeted at our OWN
+	// advertised set only. A pool-wide subscription would be inherited by
+	// relays added later for sends and discovery fan-out, handing them a REQ
+	// filter that names our pubkey as a listener.
 	let since = svc
 		.store
 		.last_connected_at()
@@ -816,13 +928,26 @@ async fn run_service(svc: Arc<NostrService>, wallet: Wallet) {
 		.pubkey(svc.public_key())
 		.since(Timestamp::from_secs(since));
 
-	if let Ok(events) = client.fetch_events(filter.clone(), FETCH_TIMEOUT).await {
+	if let Ok(events) = client
+		.fetch_events_from(&relays, filter.clone(), FETCH_TIMEOUT)
+		.await
+	{
 		info!("nostr: catch-up fetched {} wraps", events.len());
 		for event in events.into_iter() {
-			handle_wrap(&svc, &wallet, &client, event).await;
+			handle_wrap(&svc, &wallet, event).await;
 		}
 	}
-	if let Err(e) = client.subscribe(filter, None).await {
+	// Stable-id subscription so a re-subscribe after a tunnel reselect replaces
+	// rather than duplicates it. Keep `filter` owned for that re-subscribe.
+	if let Err(e) = client
+		.subscribe_with_id_to(
+			&relays,
+			SubscriptionId::new(GIFTWRAP_SUB),
+			filter.clone(),
+			None,
+		)
+		.await
+	{
 		error!("nostr: subscribe failed: {e}");
 	}
 
@@ -843,8 +968,14 @@ async fn run_service(svc: Arc<NostrService>, wallet: Wallet) {
 	// Reflect the connection the moment we reach the loop instead of leaving the
 	// UI on "Connecting…" until the first heartbeat — by now catch-up has run, so
 	// a relay is typically already up.
-	svc.connected
-		.store(relays_connected(&client).await, Ordering::Relaxed);
+	let connected = relays_connected(&client).await;
+	svc.connected.store(connected, Ordering::Relaxed);
+	// Feed the relay-gated readiness signal so "Connected over Nym" reflects an
+	// actual connected+subscribed relay on THIS tunnel generation, not merely a
+	// warm tunnel — and so nymproc's relay-readiness window closes successfully.
+	if connected {
+		crate::nym::report_relay_live(dial_gen);
+	}
 
 	let mut notifications = client.notifications();
 	// Poll connection state on a SHORT, INDEPENDENT interval. This used to live in
@@ -870,7 +1001,7 @@ async fn run_service(svc: Arc<NostrService>, wallet: Wallet) {
 			notification = notifications.recv() => {
 				match notification {
 					Ok(RelayPoolNotification::Event { event, .. }) => {
-						handle_wrap(&svc, &wallet, &client, *event).await;
+						handle_wrap(&svc, &wallet, *event).await;
 					}
 					Ok(_) => {}
 					Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
@@ -880,8 +1011,28 @@ async fn run_service(svc: Arc<NostrService>, wallet: Wallet) {
 				}
 			}
 			_ = status_tick.tick() => {
-				svc.connected
-					.store(relays_connected(&client).await, Ordering::Relaxed);
+				// A tunnel reselect (new exit) bumps the generation. The current
+				// relay sockets rode the now-dead exit, so drop them and re-dial
+				// through the fresh tunnel, re-establishing the kind:1059
+				// subscription — a reselect thus transparently restores
+				// receive+send. (An individual relay bounce with the exit still
+				// healthy is left to nostr-sdk's own auto-reconnect + resubscribe.)
+				let generation = crate::nym::tunnel_generation();
+				if generation != dial_gen {
+					info!("nostr: tunnel reselected (gen {dial_gen} -> {generation}); re-dialing relays over the new exit");
+					redial_on_new_tunnel(&client, &relays, &filter).await;
+					dial_gen = generation;
+				}
+				let connected = relays_connected(&client).await;
+				svc.connected.store(connected, Ordering::Relaxed);
+				// Relay-gated readiness + exit-health feedback for THIS generation:
+				// a live relay closes/keeps-open nymproc's readiness window; all
+				// relays down for too long condemns the exit and reselects.
+				if connected {
+					crate::nym::report_relay_live(dial_gen);
+				} else {
+					crate::nym::report_relay_down(dial_gen);
+				}
 				let now = unix_time();
 				if now - last_heartbeat >= 30 {
 					last_heartbeat = now;
@@ -922,24 +1073,14 @@ async fn run_service(svc: Arc<NostrService>, wallet: Wallet) {
 		}
 	}
 
+	// No longer a relay consumer: disarm relay-reachability governance so the
+	// idle tunnel isn't condemned for "no relay" once we stop dialing.
+	crate::nym::set_relay_consumer(false);
 	{
 		let mut w_client = svc.client.write();
 		*w_client = None;
 	}
 	client.disconnect().await;
-}
-
-/// Quick, non-blocking check that the Nym SOCKS5 proxy is accepting
-/// connections on its loopback port (i.e. the mixnet is ready to carry traffic).
-async fn nym_socks_ready() -> bool {
-	matches!(
-		tokio::time::timeout(
-			Duration::from_millis(500),
-			tokio::net::TcpStream::connect(crate::nym::socks5_addr()),
-		)
-		.await,
-		Ok(Ok(_))
-	)
 }
 
 /// Add + dial every relay in `urls` so a targeted send reaches relays we don't
@@ -960,6 +1101,33 @@ async fn connect_relays(client: &Client, urls: &[String]) {
 	futures::future::join_all(dials).await;
 }
 
+/// A tunnel reselect happened: the pool's relay sockets rode the now-dead exit.
+/// Drop them and re-dial every required relay through the fresh tunnel, then
+/// re-establish the kind:1059 gift-wrap subscription (same stable id → replaces,
+/// never duplicates) so we never silently stop receiving. Bounded by
+/// nostr-sdk's own connect timeouts — no busy loop; the generation-aware re-dial
+/// is ours, the per-relay reconnect backoff is the pool's.
+async fn redial_on_new_tunnel(client: &Client, relays: &[String], filter: &Filter) {
+	// Close the stale sockets so nostr-sdk re-dials through the current tunnel
+	// (the transport grabs the freshly-selected exit on each new connect).
+	client.disconnect().await;
+	for url in relays {
+		let _ = client.add_relay(url).await;
+	}
+	client.connect().await;
+	if let Err(e) = client
+		.subscribe_with_id_to(
+			relays,
+			SubscriptionId::new(GIFTWRAP_SUB),
+			filter.clone(),
+			None,
+		)
+		.await
+	{
+		error!("nostr: re-subscribe after reselect failed: {e}");
+	}
+}
+
 /// True when at least one relay has completed its handshake.
 async fn relays_connected(client: &Client) -> bool {
 	client
@@ -969,18 +1137,73 @@ async fn relays_connected(client: &Client) -> bool {
 		.any(|r| r.status() == RelayStatus::Connected)
 }
 
-/// Publish kind 10050 DM relay list and, for named identities, kind 0 metadata.
+/// One-time advertised-set selection: the Goblin relay plus up to two pool
+/// "dm" relays, weighted-random (vetted entries 3:1), each gated by a NIP-11
+/// probe at pick time so only relays about to be used are probed. Persisted
+/// on the identity and sticky thereafter — no timer rotation, since 10050
+/// churn breaks payers' cached routing. A user relay override in nostr.toml
+/// disables selection entirely. When no pool relay passes (e.g. offline),
+/// nothing is persisted and the built-in defaults serve this session;
+/// selection retries next start.
+async fn ensure_advertised_set(svc: &Arc<NostrService>) {
+	use crate::nostr::pool;
+	use crate::nostr::relays::DEFAULT_RELAYS;
+	use rand::Rng;
+	if svc.config.read().relays_override().is_some() || !svc.identity.read().dm_relays.is_empty() {
+		return;
+	}
+	let goblin = DEFAULT_RELAYS[0];
+	let candidates = pool::load().dm_relays();
+	let order = pool::weighted_order(goblin, &candidates, |total| {
+		rand::rng().random_range(0..total.max(1))
+	});
+	let mut set = vec![goblin.to_string()];
+	for url in order.into_iter().skip(1) {
+		if set.len() >= MAX_DM_RELAYS {
+			break;
+		}
+		if pool::probe(&url).await {
+			set.push(url);
+		}
+	}
+	if set.len() < 2 {
+		warn!("nostr: no pool relay passed vetting, keeping default relays for now");
+		return;
+	}
+	info!("nostr: selected advertised relay set {:?}", set);
+	svc.identity.write().dm_relays = set;
+	svc.save_identity();
+}
+
+/// Publish the replaceable identity events — the kind 10050 DM relay list,
+/// its kind 10002 (NIP-65) mirror, and kind 0 metadata for named identities —
+/// to the advertised set, then fan the SAME events out to the pool's
+/// discovery indexers so payers who share no relay with us can still find our
+/// inbox list. The fan-out is additive and publish-only: we never subscribe
+/// on discovery relays.
 async fn publish_identity(svc: &Arc<NostrService>, client: &Client) {
-	let relays = svc.relays();
-	let dm_tags: Vec<Tag> = relays
+	let advertised: Vec<String> = svc.relays().into_iter().take(MAX_DM_RELAYS).collect();
+
+	let mut dm_tags: Vec<Tag> = advertised
 		.iter()
-		.take(MAX_DM_RELAYS)
 		.map(|r| Tag::custom(TagKind::custom("relay"), [r.clone()]))
 		.collect();
-	let builder = EventBuilder::new(Kind::InboxRelays, "").tags(dm_tags);
-	if let Err(e) = client.send_event_builder(builder).await {
-		warn!("nostr: publish 10050 failed: {e}");
-	}
+	// NIP-17 backward-compat extension: advertise our NIP-44 capabilities,
+	// space-separated best-first, so v3-aware senders pick v3 (G4).
+	dm_tags.push(Tag::custom(
+		TagKind::custom("encryption"),
+		[wrapv3::ENCRYPTION_CAPABILITY.to_string()],
+	));
+	let mut builders = vec![
+		EventBuilder::new(Kind::InboxRelays, "").tags(dm_tags),
+		// The NIP-65 list mirrors the same set, unmarked (read + write).
+		EventBuilder::relay_list(
+			advertised
+				.iter()
+				.filter_map(|r| nostr_sdk::RelayUrl::parse(r).ok())
+				.map(|u| (u, None)),
+		),
+	];
 
 	let (anonymous, nip05) = {
 		let identity = svc.identity.read();
@@ -995,12 +1218,45 @@ async fn publish_identity(svc: &Arc<NostrService>, client: &Client) {
 				.name(name)
 				.nip05(nip05)
 				.custom_field("goblin_accepts_requests", allow_requests);
-			let builder = EventBuilder::metadata(&metadata);
-			if let Err(e) = client.send_event_builder(builder).await {
-				warn!("nostr: publish kind 0 failed: {e}");
-			}
+			builders.push(EventBuilder::metadata(&metadata));
 		}
 	}
+
+	// Sign each event ONCE so the advertised set and the indexers receive the
+	// same replaceable event, and sends stay targeted (a plain send would also
+	// hit whatever recipient relays happen to be connected).
+	let mut events = vec![];
+	for builder in builders {
+		match client.sign_event_builder(builder).await {
+			Ok(event) => events.push(event),
+			Err(e) => warn!("nostr: identity event signing failed: {e}"),
+		}
+	}
+	for event in &events {
+		if let Err(e) = client.send_event_to(&advertised, event).await {
+			warn!("nostr: publish kind {} failed: {e}", event.kind);
+		}
+	}
+
+	// Discovery fan-out off the caller's path: each indexer is gated by the
+	// lazy NIP-11 probe (over Nym) before use.
+	let client = client.clone();
+	tokio::spawn(async move {
+		let targets: Vec<String> = crate::nostr::pool::usable_discovery_relays()
+			.await
+			.into_iter()
+			.filter(|u| !advertised.contains(u))
+			.collect();
+		if targets.is_empty() {
+			return;
+		}
+		connect_relays(&client, &targets).await;
+		for event in &events {
+			if let Err(e) = client.send_event_to(&targets, event).await {
+				warn!("nostr: discovery publish kind {} failed: {e}", event.kind);
+			}
+		}
+	});
 }
 
 /// A transaction in a terminal state never expires (already done or canceled).
@@ -1157,7 +1413,7 @@ fn handle_request_void(svc: &Arc<NostrService>, wallet: &Wallet, slate_id: &str,
 	}
 }
 
-async fn handle_wrap(svc: &Arc<NostrService>, wallet: &Wallet, client: &Client, event: Event) {
+async fn handle_wrap(svc: &Arc<NostrService>, wallet: &Wallet, event: Event) {
 	// 0. Only gift wraps.
 	if event.kind != Kind::GiftWrap {
 		return;
@@ -1178,8 +1434,10 @@ async fn handle_wrap(svc: &Arc<NostrService>, wallet: &Wallet, client: &Client, 
 	if !svc.allow_global_unwrap() {
 		return;
 	}
-	// 3. Unwrap (NIP-59: seal signature is verified, rumor must not be signed).
-	let unwrapped = match client.unwrap_gift_wrap(&event).await {
+	// 3. Unwrap (NIP-59: seal signature is verified, rumor must not be signed),
+	// dispatched on the NIP-44 payload version byte: 0x02 = the unchanged
+	// nostr-sdk path, 0x03 = the nip44 crate (G4); anything else errors cleanly.
+	let unwrapped = match wrapv3::unwrap(&svc.keys, &event).await {
 		Ok(u) => u,
 		Err(_) => {
 			svc.store.mark_processed(&wrap_id);
@@ -1323,6 +1581,10 @@ async fn handle_wrap(svc: &Arc<NostrService>, wallet: &Wallet, client: &Client, 
 			// Resolve the sender's @username so the receive shows their name in
 			// activity, not a bare npub.
 			svc.resolve_contact_identity(&sender_hex);
+			// A payment is arriving: un-pause on-demand node polling BEFORE the
+			// receive so confirmation tracking is never dropped — polling stays
+			// live until the tx confirms (see `maybe_pause_node_polling`).
+			wallet.resume_node_polling();
 			match wallet.nostr_receive(&slate) {
 				Ok((_, reply_text)) => {
 					// Record BEFORE dispatching the reply: crash here is
@@ -1347,6 +1609,15 @@ async fn handle_wrap(svc: &Arc<NostrService>, wallet: &Wallet, client: &Client, 
 					svc.store.mark_processed(&wrap_id);
 					svc.store.mark_processed(&rumor_id);
 					svc.store.mark_processed(&slate_marker);
+					// "Payment received" system notification (Android; no-op
+					// on desktop): payer's display name (or short npub) and
+					// the human-readable amount.
+					{
+						let name =
+							crate::gui::views::goblin::data::contact_title(&svc.store, &sender_hex);
+						let amount = amount_to_hr_string(slate.amount, true);
+						crate::notify_payment_received(&name, &amount);
+					}
 					match svc
 						.send_payment_dm(&sender_hex, &reply_text, None, &[])
 						.await
@@ -1395,6 +1666,10 @@ async fn handle_wrap(svc: &Arc<NostrService>, wallet: &Wallet, client: &Client, 
 			// @username so the completed request shows their name, not a bare npub.
 			svc.ensure_contact(&sender_hex);
 			svc.resolve_contact_identity(&sender_hex);
+			// Node work ahead (finalize + broadcast + confirm): un-pause
+			// on-demand node polling BEFORE it so confirmation tracking is
+			// never dropped.
+			wallet.resume_node_polling();
 			match wallet.nostr_finalize_post(&slate) {
 				Ok(true) => {
 					svc.store
@@ -1456,6 +1731,7 @@ mod tests {
 			nip05: Some("ada@goblin.st".to_string()),
 			nip05_verified_at: Some(1000),
 			relays: vec![],
+			nip44_v3: false,
 			hue: 0,
 			unknown: false,
 			added_at: 1,

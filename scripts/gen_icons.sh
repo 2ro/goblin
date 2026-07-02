@@ -36,6 +36,18 @@ for d in mdpi hdpi xhdpi xxhdpi xxxhdpi; do
     -gravity center -extent "${fg}x${fg}" PNG32:"$RES/mipmap-$d/ic_launcher_foreground.png"
 done
 
+# --- Android notification (status-bar) icon: white-on-transparent mascot ---
+# Android renders ic_stat_name as an alpha-only silhouette, so the RGB channels
+# are forced to pure white; ~90% of the canvas matches the old asset's padding.
+declare -A STAT_SIZES=( [mdpi]=24 [hdpi]=36 [xhdpi]=48 [xxhdpi]=72 [xxxhdpi]=96 )
+for d in mdpi hdpi xhdpi xxhdpi xxxhdpi; do
+  s=${STAT_SIZES[$d]}
+  art=$(( s * 9 / 10 ))
+  magick -background none img/goblin-logo2.svg -resize "${art}x${art}" \
+    -gravity center -extent "${s}x${s}" \
+    -channel RGB -evaluate set 100% +channel PNG32:"$RES/drawable-$d/ic_stat_name.png"
+done
+
 # --- Windows installer + file-type icon (WiX wix/Product.ico) ---
 magick "$ICON" -define icon:auto-resize=256,128,64,48,32,24,16 wix/Product.ico
 

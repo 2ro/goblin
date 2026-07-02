@@ -13,7 +13,7 @@
 // limitations under the License.
 
 //! NIP-05 username resolution/verification and goblin.st registration,
-//! all HTTP routed through the Nym mixnet (the local SOCKS5 proxy). Nothing
+//! all HTTP routed through the Nym mixnet (the in-process smolmix tunnel). Nothing
 //! here touches clearnet.
 
 use base64::Engine;
@@ -319,57 +319,6 @@ pub async fn unregister(server: &str, name: &str, keys: &Keys) -> Result<(), Str
 			.ok()
 			.and_then(|v| v.get("error").and_then(|e| e.as_str()).map(String::from))
 			.unwrap_or_else(|| "server refused the release".to_string())),
-		None => Err("network unreachable".to_string()),
-	}
-}
-
-/// Upload a processed avatar PNG for an owned name. Returns the content
-/// hash on success. NIP-98 payload hashing makes the request replay-proof.
-pub async fn upload_avatar(
-	server: &str,
-	name: &str,
-	keys: &Keys,
-	png: Vec<u8>,
-) -> Result<String, String> {
-	let server = server.trim_end_matches('/');
-	let url = format!("{}/api/v1/avatar/{}", server, urlencode(name));
-	let Some(auth) = nip98_auth(keys, &url, "POST", Some(&png)) else {
-		return Err("couldn't sign the request".to_string());
-	};
-	let headers = vec![
-		("Authorization".to_string(), auth),
-		(
-			"Content-Type".to_string(),
-			"application/octet-stream".to_string(),
-		),
-	];
-	match nym::http_request_bytes("POST", url, Some(png), headers).await {
-		Some((201, raw)) => serde_json::from_slice::<serde_json::Value>(&raw)
-			.ok()
-			.and_then(|v| v.get("avatar").and_then(|h| h.as_str()).map(String::from))
-			.ok_or_else(|| "unexpected server response".to_string()),
-		Some((429, _)) => Err("Avatar limit reached — try again tomorrow".to_string()),
-		Some((413, _)) => Err("Image too large".to_string()),
-		Some((422, _)) => Err("That file doesn't look like a usable image".to_string()),
-		Some((code, raw)) => Err(serde_json::from_slice::<serde_json::Value>(&raw)
-			.ok()
-			.and_then(|v| v.get("error").and_then(|e| e.as_str()).map(String::from))
-			.unwrap_or_else(|| format!("server error ({code})"))),
-		None => Err("network unreachable".to_string()),
-	}
-}
-
-/// Remove the avatar for an owned name.
-pub async fn delete_avatar(server: &str, name: &str, keys: &Keys) -> Result<(), String> {
-	let server = server.trim_end_matches('/');
-	let url = format!("{}/api/v1/avatar/{}", server, urlencode(name));
-	let Some(auth) = nip98_auth(keys, &url, "DELETE", None) else {
-		return Err("couldn't sign the request".to_string());
-	};
-	let headers = vec![("Authorization".to_string(), auth)];
-	match nym::http_request_bytes("DELETE", url, None, headers).await {
-		Some((200, _)) => Ok(()),
-		Some((code, _)) => Err(format!("server error ({code})")),
 		None => Err("network unreachable".to_string()),
 	}
 }

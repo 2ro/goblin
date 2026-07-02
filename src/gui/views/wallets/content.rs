@@ -406,11 +406,11 @@ impl WalletsContent {
 			}
 			return false;
 		} else if self.showing_wallet() {
-			// Go back at stack or close wallet.
+			// Go back at stack; on Home with nothing open, back is a no-op.
+			// Leaving the wallet is intentional-only (switch/lock controls),
+			// never a back fallback to the chooser.
 			if self.wallet_content.can_back() {
 				self.wallet_content.back(cb);
-			} else {
-				self.wallets.select(None);
 			}
 			return false;
 		}
@@ -549,10 +549,10 @@ impl WalletsContent {
 					});
 				} else if show_wallet && !dual_panel {
 					View::title_button_big(ui, ARROW_LEFT, |_| {
+						// Same rule as system back: never fall back to the
+						// chooser; on Home the arrow is a no-op.
 						if self.wallet_content.can_back() {
 							self.wallet_content.back(cb);
-						} else {
-							self.wallets.select(None);
 						}
 					});
 				} else if self.creating_wallet() {

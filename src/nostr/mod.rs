@@ -22,6 +22,7 @@ pub use types::*;
 pub mod config;
 pub use config::{AcceptPolicy, NostrConfig};
 
+pub mod pool;
 pub mod relays;
 
 mod store;
@@ -32,6 +33,8 @@ pub use identity::{IdentitySource, NostrIdentity};
 
 pub mod protocol;
 pub use protocol::*;
+
+pub mod wrapv3;
 
 pub mod ingest;
 pub use ingest::*;

@@ -38,7 +38,7 @@ mod http;
 pub mod logger;
 mod node;
 pub mod nostr;
-mod nym;
+pub mod nym;
 mod settings;
 mod wallet;
 
@@ -123,7 +123,7 @@ pub fn start(options: NativeOptions, app_creator: eframe::AppCreator) -> eframe:
 	if AppConfig::autostart_node() {
 		Node::start();
 	}
-	// Pre-warm the in-process Nym mixnet client so price/NIP-05/nostr are ready at
+	// Pre-warm the in-process Nym mixnet tunnel so price/NIP-05/nostr are ready at
 	// first use. All of Goblin's outbound traffic egresses through it; nothing
 	// clearnet.
 	nym::warm_up();
@@ -408,6 +408,21 @@ pub fn mark_frame() {
 pub fn app_foreground() -> bool {
 	let last = LAST_FRAME_AT.load(std::sync::atomic::Ordering::Relaxed);
 	last != 0 && now_unix_secs() - last <= FOREGROUND_STALE_SECS
+}
+
+/// Fire the platform "payment received" notification with the payer's display
+/// name and human-readable amount. Android shows a one-shot system
+/// notification (`BackgroundService.notifyPaymentReceived`, id=2, separate
+/// from the persistent sync notification); other platforms are a no-op.
+/// Crate-root so the nostr service can reach it without holding a platform
+/// reference.
+pub fn notify_payment_received(name: &str, amount: &str) {
+	#[cfg(target_os = "android")]
+	gui::platform::notify_payment_received(name, amount);
+	#[cfg(not(target_os = "android"))]
+	{
+		let _ = (name, amount);
+	}
 }
 
 lazy_static! {

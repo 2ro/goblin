@@ -31,7 +31,6 @@ pub struct ActivityItem {
 	/// Canceled/expired before completing (wallet-cancelled tx or expired meta).
 	pub canceled: bool,
 	pub system: bool,
-	pub hue: usize,
 	pub time: i64,
 	/// Counterparty npub hex, when known.
 	pub npub: Option<String>,
@@ -44,7 +43,6 @@ pub struct ActivityItem {
 pub struct ReceiptDetail {
 	pub tx_id: u32,
 	pub title: String,
-	pub hue: usize,
 	pub npub: Option<String>,
 	pub amount: u64,
 	pub incoming: bool,
@@ -79,18 +77,16 @@ pub fn receipt_detail(wallet: &Wallet, tx_id: u32) -> Option<ReceiptDetail> {
 	let meta: Option<TxNostrMeta> = slate_id
 		.as_ref()
 		.and_then(|sid| store_ref.and_then(|s| s.tx_meta(sid)));
-	let (title, hue) = if system {
-		("Mining reward".to_string(), 5)
+	let title = if system {
+		"Mining reward".to_string()
 	} else if let Some(m) = &meta {
 		store_ref
 			.map(|s| contact_title(s, &m.npub))
-			.unwrap_or_else(|| (short_npub(&m.npub), 0))
+			.unwrap_or_else(|| short_npub(&m.npub))
+	} else if incoming {
+		"Received".to_string()
 	} else {
-		let label = if incoming { "Received" } else { "Sent" };
-		(
-			label.to_string(),
-			(tx.data.id as usize) % crate::gui::theme::avatar_pairs_len(),
-		)
+		"Sent".to_string()
 	};
 	let note = meta.as_ref().and_then(|m| m.note.clone());
 	let time = tx
@@ -133,7 +129,6 @@ pub fn receipt_detail(wallet: &Wallet, tx_id: u32) -> Option<ReceiptDetail> {
 	Some(ReceiptDetail {
 		tx_id,
 		title,
-		hue,
 		npub: meta.map(|m| m.npub),
 		amount: tx.amount,
 		incoming,
@@ -184,12 +179,11 @@ fn is_canceled(tx: &WalletTx, meta: Option<&TxNostrMeta>) -> bool {
 }
 
 /// Resolve the display title for a contact npub.
-pub fn contact_title(store: &NostrStore, npub: &str) -> (String, usize) {
+pub fn contact_title(store: &NostrStore, npub: &str) -> String {
 	if let Some(contact) = store.contact(npub) {
-		(display_name(&contact), contact.hue as usize)
+		display_name(&contact)
 	} else {
-		let hue = hue_of(&npub);
-		(short_npub(npub), hue)
+		short_npub(npub)
 	}
 }
 
@@ -229,9 +223,9 @@ pub fn name_verification(contact: &Contact) -> Option<Option<String>> {
 	}
 }
 
-/// Short npub display (npub1abcd…wxyz) from a hex pubkey.
 /// Avatar hue index derived from a hex pubkey (stable per identity, spread
-/// across the full color-pair palette).
+/// across the full color-pair palette). Only fills the persisted
+/// `Contact.hue` field these days — nothing reads it for rendering anymore.
 pub fn hue_of(hex: &str) -> usize {
 	usize::from_str_radix(&hex[..2.min(hex.len())], 16).unwrap_or(0)
 		% crate::gui::theme::avatar_pairs_len()
@@ -249,16 +243,17 @@ pub fn short_handle(handle: &str) -> String {
 	format!("{head}…{tail}")
 }
 
+/// Short npub display (npub1abcd…wxyz) from a hex pubkey.
 pub fn short_npub(hex: &str) -> String {
 	use nostr_sdk::{PublicKey, ToBech32};
 	if let Ok(pk) = PublicKey::from_hex(hex) {
-		if let Ok(npub) = pk.to_bech32() {
-			// Standard truncation: "npub1" + 7 head chars … 6 tail chars.
-			if npub.len() > 18 {
-				return format!("{}…{}", &npub[..12], &npub[npub.len() - 6..]);
-			}
-			return npub;
+		// `to_bech32` for a valid key is infallible.
+		let Ok(npub) = pk.to_bech32();
+		// Standard truncation: "npub1" + 7 head chars … 6 tail chars.
+		if npub.len() > 18 {
+			return format!("{}…{}", &npub[..12], &npub[npub.len() - 6..]);
 		}
+		return npub;
 	}
 	format!("{}…", &hex[..8.min(hex.len())])
 }
@@ -300,23 +295,17 @@ fn build_item(tx: &WalletTx, store: Option<&NostrStore>) -> ActivityItem {
 		.as_ref()
 		.and_then(|sid| store.and_then(|s| s.tx_meta(sid)));
 
-	let (title, hue) = if system {
-		("Mining reward".to_string(), 5)
+	let title = if system {
+		"Mining reward".to_string()
 	} else if let Some(meta) = &meta {
 		store
 			.map(|s| contact_title(s, &meta.npub))
-			.unwrap_or_else(|| (short_npub(&meta.npub), 0))
+			.unwrap_or_else(|| short_npub(&meta.npub))
+	} else if incoming {
+		// Fall back to a generic label when there's no nostr counterparty.
+		"Received".to_string()
 	} else {
-		// Fall back to slatepack address counterparty or generic label.
-		let label = if incoming {
-			"Received".to_string()
-		} else {
-			"Sent".to_string()
-		};
-		(
-			label,
-			(tx.data.id as usize) % crate::gui::theme::avatar_pairs_len(),
-		)
+		"Sent".to_string()
 	};
 
 	let note = meta.as_ref().and_then(|m| m.note.clone());
@@ -337,14 +326,14 @@ fn build_item(tx: &WalletTx, store: Option<&NostrStore>) -> ActivityItem {
 		confirmed: tx.data.confirmed,
 		canceled,
 		system,
-		hue,
 		time,
 		npub: meta.map(|m| m.npub),
 	}
 }
 
-/// Recent unique peers for the home strip (most recent first).
-pub fn recent_peers(wallet: &Wallet, limit: usize) -> Vec<(String, usize, String)> {
+/// Recent unique peers for the home strip (most recent first), as
+/// `(display name, npub hex)`.
+pub fn recent_peers(wallet: &Wallet, limit: usize) -> Vec<(String, String)> {
 	let store = match wallet.nostr_service() {
 		Some(s) => s.store.clone(),
 		None => return vec![],
@@ -354,13 +343,14 @@ pub fn recent_peers(wallet: &Wallet, limit: usize) -> Vec<(String, usize, String
 	contacts
 		.into_iter()
 		.take(limit)
-		.map(|c| (display_name(&c), c.hue as usize, c.npub))
+		.map(|c| (display_name(&c), c.npub))
 		.collect()
 }
 
 /// Local contacts whose petname / nip05 / npub contains `query` (case-
 /// insensitive) — the instant, no-network half of the recipient search.
-pub fn search_contacts(wallet: &Wallet, query: &str, limit: usize) -> Vec<(String, usize, String)> {
+/// Returns `(display name, npub hex)` pairs.
+pub fn search_contacts(wallet: &Wallet, query: &str, limit: usize) -> Vec<(String, String)> {
 	let store = match wallet.nostr_service() {
 		Some(s) => s.store.clone(),
 		None => return vec![],
@@ -369,7 +359,7 @@ pub fn search_contacts(wallet: &Wallet, query: &str, limit: usize) -> Vec<(Strin
 	if q.is_empty() {
 		return vec![];
 	}
-	let mut hits: Vec<(String, usize, String)> = store
+	let mut hits: Vec<(String, String)> = store
 		.all_contacts()
 		.into_iter()
 		.filter(|c| {
@@ -383,7 +373,7 @@ pub fn search_contacts(wallet: &Wallet, query: &str, limit: usize) -> Vec<(Strin
 					.unwrap_or(false)
 				|| c.npub.to_lowercase().contains(&q)
 		})
-		.map(|c| (display_name(&c), c.hue as usize, c.npub))
+		.map(|c| (display_name(&c), c.npub))
 		.collect();
 	hits.truncate(limit);
 	hits

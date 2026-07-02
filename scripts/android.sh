@@ -80,12 +80,15 @@ function build_apk() {
   fi
 
   if [[ $1 == "" ]] && [ $success -eq 1 ]; then
-    # Launch application at all connected devices.
+    # Launch application at all connected devices. The installed application id
+    # (st.goblin.wallet) differs from the Java namespace (mw.gri.android), so
+    # derive it from build.gradle and launch the fully-qualified activity.
+    app_id=$(grep -m 1 -Po 'applicationId "\K[^"]*' app/build.gradle)
     for SERIAL in $(adb devices | grep -v List | cut -f 1);
       do
         adb -s "$SERIAL" install ${apk_path}
         sleep 1s
-        adb -s "$SERIAL" shell am start -n mw.gri.android/.MainActivity;
+        adb -s "$SERIAL" shell am start -n "${app_id}/mw.gri.android.MainActivity";
     done
   elif [ $success -eq 1 ]; then
     # Get version

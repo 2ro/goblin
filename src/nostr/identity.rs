@@ -12,24 +12,24 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Per-wallet nostr identity: NIP-06 derived from the wallet mnemonic by
-//! default (one seed restores money AND identity) or imported from an nsec.
+//! Per-wallet nostr identity: a random standalone nsec (or an imported one),
+//! deliberately independent of the wallet seed — the seed proves nothing about
+//! the identity and cannot resurrect it; the nsec is its own backup.
 //! Stored at rest as NIP-49 ncryptsec encrypted with the wallet password.
 
 use nostr_sdk::nips::nip44;
 use nostr_sdk::nips::nip49::{EncryptedSecretKey, KeySecurity};
-use nostr_sdk::prelude::FromMnemonic;
 use nostr_sdk::{FromBech32, Keys, SecretKey, ToBech32};
 use serde_derive::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
 
-/// Where the keys came from.
+/// Where the keys came from. The legacy NIP-06 `Derived` source is gone: a
+/// pre-Build-8 `"source":"Derived"` file no longer parses, so `load()` returns
+/// `None` and wallet init writes a fresh random identity (the wanted behavior;
+/// binding a messaging identity to the money seed was the dangerous design).
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug)]
 pub enum IdentitySource {
-	/// NIP-06 derivation from the wallet BIP-39 mnemonic (legacy: binds the
-	/// identity to the seed forever).
-	Derived,
 	/// Imported nsec.
 	Imported,
 	/// Freshly generated random key, independent of the wallet seed: the
@@ -42,8 +42,6 @@ pub enum IdentitySource {
 pub struct NostrIdentity {
 	pub ver: u8,
 	pub source: IdentitySource,
-	/// NIP-06 account index used for derivation.
-	pub derivation_account: u32,
 	/// NIP-49 encrypted secret key (bech32 ncryptsec).
 	pub ncryptsec: String,
 	/// Public key, bech32 npub (plaintext so the UI can render pre-unlock).
@@ -55,6 +53,12 @@ pub struct NostrIdentity {
 	/// Previous npubs from key rotations (newest last), for reference.
 	#[serde(default)]
 	pub prev_npubs: Vec<String>,
+	/// Advertised DM relays (kind 10050): the Goblin relay plus 1-2 pool
+	/// relays picked once for this identity and kept sticky — no timer
+	/// rotation, since 10050 churn breaks payers' cached routing. Empty until
+	/// the first service start selects them.
+	#[serde(default)]
+	pub dm_relays: Vec<String>,
 }
 
 /// NIP-49 scrypt work factor (~64 MiB, interactive-grade).
@@ -142,24 +146,6 @@ impl NostrIdentity {
 		let _ = fs::remove_file(Self::path(nostr_dir));
 	}
 
-	/// Derive keys from a BIP-39 mnemonic phrase via NIP-06.
-	pub fn derive_keys(mnemonic: &str, account: u32) -> Result<Keys, IdentityError> {
-		Keys::from_mnemonic_with_account(mnemonic, None, Some(account))
-			.map_err(|e| IdentityError::Key(format!("{e}")))
-	}
-
-	/// Create a derived identity from the wallet mnemonic, encrypting the
-	/// secret key with the wallet password.
-	pub fn create_derived(
-		mnemonic: &str,
-		password: &str,
-		account: u32,
-	) -> Result<(NostrIdentity, Keys), IdentityError> {
-		let keys = Self::derive_keys(mnemonic, account)?;
-		let identity = Self::from_keys(&keys, password, IdentitySource::Derived, account)?;
-		Ok((identity, keys))
-	}
-
 	/// Build an identity from already-unlocked keys under a (possibly
 	/// different) password — used when importing a backup that was exported
 	/// under another wallet's password.
@@ -167,15 +153,14 @@ impl NostrIdentity {
 		keys: &Keys,
 		password: &str,
 		source: IdentitySource,
-		account: u32,
 	) -> Result<NostrIdentity, IdentityError> {
-		Self::from_keys(keys, password, source, account)
+		Self::from_keys(keys, password, source)
 	}
 
 	/// Create a brand-new random identity, independent of the wallet seed.
 	pub fn create_random(password: &str) -> Result<(NostrIdentity, Keys), IdentityError> {
 		let keys = Keys::generate();
-		let identity = Self::from_keys(&keys, password, IdentitySource::Random, 0)?;
+		let identity = Self::from_keys(&keys, password, IdentitySource::Random)?;
 		Ok((identity, keys))
 	}
 
@@ -187,7 +172,7 @@ impl NostrIdentity {
 		let secret = SecretKey::parse(nsec.trim())
 			.map_err(|e| IdentityError::Key(format!("invalid nsec: {e}")))?;
 		let keys = Keys::new(secret);
-		let identity = Self::from_keys(&keys, password, IdentitySource::Imported, 0)?;
+		let identity = Self::from_keys(&keys, password, IdentitySource::Imported)?;
 		Ok((identity, keys))
 	}
 
@@ -195,7 +180,6 @@ impl NostrIdentity {
 		keys: &Keys,
 		password: &str,
 		source: IdentitySource,
-		account: u32,
 	) -> Result<NostrIdentity, IdentityError> {
 		let encrypted = EncryptedSecretKey::new(
 			keys.secret_key(),
@@ -214,12 +198,12 @@ impl NostrIdentity {
 		Ok(NostrIdentity {
 			ver: 1,
 			source,
-			derivation_account: account,
 			ncryptsec,
 			npub,
 			nip05: None,
 			anonymous: true,
 			prev_npubs: Vec::new(),
+			dm_relays: Vec::new(),
 		})
 	}
 
@@ -318,13 +302,7 @@ mod tests {
 		let json = serde_json::to_string(&a).unwrap();
 		let parsed: NostrIdentity = serde_json::from_str(&json).unwrap();
 		let keys = parsed.unlock("old-pw").unwrap();
-		let b = NostrIdentity::from_unlocked_keys(
-			&keys,
-			"new-pw",
-			parsed.source,
-			parsed.derivation_account,
-		)
-		.unwrap();
+		let b = NostrIdentity::from_unlocked_keys(&keys, "new-pw", parsed.source).unwrap();
 		assert_eq!(b.npub, a.npub);
 		assert!(b.unlock("new-pw").is_ok());
 		assert!(b.unlock("old-pw").is_err());
@@ -364,21 +342,10 @@ mod tests {
 		assert!(a.unlock("wrong").is_err());
 	}
 
-	// NIP-06 test vector: this mnemonic must derive this npub (account 0).
-	const NIP06_MNEMONIC: &str =
-		"leader monkey parrot ring guide accident before fence cannon height naive bean";
-	const NIP06_NPUB: &str = "npub1zutzeysacnf9rru6zqwmxd54mud0k44tst6l70ja5mhv8jjumytsd2x7nu";
-
-	#[test]
-	fn nip06_derivation_vector() {
-		let keys = NostrIdentity::derive_keys(NIP06_MNEMONIC, 0).unwrap();
-		assert_eq!(keys.public_key().to_bech32().unwrap(), NIP06_NPUB);
-	}
-
 	#[test]
 	fn encrypt_unlock_roundtrip() {
-		let (identity, keys) = NostrIdentity::create_derived(NIP06_MNEMONIC, "hunter2", 0).unwrap();
-		assert_eq!(identity.source, IdentitySource::Derived);
+		let (identity, keys) = NostrIdentity::create_random("hunter2").unwrap();
+		assert_eq!(identity.source, IdentitySource::Random);
 		assert!(identity.anonymous);
 		let unlocked = identity.unlock("hunter2").unwrap();
 		assert_eq!(unlocked.public_key(), keys.public_key());
@@ -401,7 +368,7 @@ mod tests {
 	fn identity_file_is_owner_only() {
 		use std::os::unix::fs::PermissionsExt;
 		let dir = std::env::temp_dir().join(format!("goblin-id-test-{}", std::process::id()));
-		let (identity, _) = NostrIdentity::create_derived(NIP06_MNEMONIC, "pw", 0).unwrap();
+		let (identity, _) = NostrIdentity::create_random("pw").unwrap();
 		identity.save(&dir).unwrap();
 		let meta = std::fs::metadata(NostrIdentity::path(&dir)).unwrap();
 		// The ncryptsec blob must never be group/world readable.
@@ -415,7 +382,7 @@ mod tests {
 
 	#[test]
 	fn reencrypt_changes_password() {
-		let (mut identity, keys) = NostrIdentity::create_derived(NIP06_MNEMONIC, "old", 0).unwrap();
+		let (mut identity, keys) = NostrIdentity::create_random("old").unwrap();
 		identity.reencrypt("old", "new").unwrap();
 		assert!(identity.unlock("old").is_err());
 		assert_eq!(

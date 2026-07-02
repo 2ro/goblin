@@ -83,6 +83,13 @@ impl WalletContentContainer for WalletContent {
 	}
 
 	fn container_ui(&mut self, ui: &mut egui::Ui, wallet: &Wallet, cb: &dyn PlatformCallbacks) {
+		// Drawing this wallet means the app is foreground with the wallet
+		// on-screen: resume on-demand node polling right away so the balance
+		// goes live (the sync thread otherwise re-checks the foreground
+		// signal only once per cycle). No-op unless polling was paused.
+		if wallet.node_polling_paused() {
+			wallet.resume_node_polling();
+		}
 		// Goblin surface is the primary UI. Show a sync screen until data is
 		// ready, then hand the whole surface to the payment-app-style view.
 		let block_nav_goblin = self.block_navigation_on_sync(wallet);
@@ -305,9 +312,11 @@ impl WalletContent {
 		}
 	}
 
-	/// Check if it's possible to go back at navigation stack.
+	/// Check if it's possible to go back at navigation stack. Delegates to the
+	/// goblin view too (overlays, settings sub-pages, non-Home tabs), so the
+	/// host never falls through to the wallet chooser on back.
 	pub fn can_back(&self) -> bool {
-		self.goblin.overlay_active() || self.account_content.can_back()
+		self.goblin.can_back() || self.account_content.can_back()
 	}
 
 	/// Take the pending "switch wallet" request from the goblin settings, so the

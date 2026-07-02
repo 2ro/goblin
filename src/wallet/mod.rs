@@ -34,3 +34,6 @@ pub use utils::WalletUtils;
 
 mod seed;
 pub mod store;
+
+#[cfg(test)]
+mod e2e;

@@ -104,10 +104,14 @@ impl NostrConfig {
 	}
 
 	pub fn relays(&self) -> Vec<String> {
-		self.relays
-			.clone()
-			.filter(|r| !r.is_empty())
+		self.relays_override()
 			.unwrap_or_else(|| DEFAULT_RELAYS.iter().map(|s| s.to_string()).collect())
+	}
+
+	/// The relay list explicitly set by the user in nostr.toml, if any. An
+	/// override disables the per-identity advertised-set selection entirely.
+	pub fn relays_override(&self) -> Option<Vec<String>> {
+		self.relays.clone().filter(|r| !r.is_empty())
 	}
 
 	pub fn set_relays(&mut self, relays: Vec<String>) {

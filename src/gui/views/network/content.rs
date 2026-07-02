@@ -349,7 +349,7 @@ impl NetworkContent {
 }
 
 /// Content to draw when node is disabled.
-fn disabled_node_ui(ui: &mut egui::Ui) {
+pub fn disabled_node_ui(ui: &mut egui::Ui) {
 	View::center_content(ui, 156.0, |ui| {
 		let text = t!("network.disabled_server", "dots" => DOTS_THREE_OUTLINE_VERTICAL);
 		ui.label(

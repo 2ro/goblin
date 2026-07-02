@@ -87,7 +87,7 @@ rkv = "0.20.0"
 usvg = "0.45.1"
 ring = "0.16.20"
 hyper = { version = "1.6.0", features = ["full"], package = "hyper" }
-hyper-util = {  version = "0.1.19", features = ["http1", "client", "client-legacy"] }
+hyper-util = {  version = "0.1.19", features = ["http1", "client", "client-legacy", "tokio"] }
 http-body-util = "0.1.3"
 bytes = "1.11.0"
 hyper-socks2 = "0.9.1"
@@ -100,29 +100,42 @@ num-bigint = "0.4.6"
 ## nostr
 nostr-sdk = { version = "0.44", features = ["nip06", "nip44", "nip49", "nip59", "nip98"] }
 nostr-relay-pool = "0.44"
+## NIP-44 v3 (+ v2) encryption for the NIP-17 backward-compat extension (G4).
+## Path dep on the local crate's `v3` working tree — the M0 deliverable, all
+## upstream test vectors green. Do NOT float this to crates.io until the crate
+## is published there.
+nip44 = { path = "../nip44" }
+## Only to construct the key types the `nip44` crate takes: nostr-sdk pins
+## secp256k1 0.29, the nip44 crate 0.31 — bridged via byte arrays in wrapv3.rs.
+secp256k1 = "0.31"
 async-wsocket = "0.13"
 tokio-tungstenite = { version = "0.26", features = ["rustls-tls-webpki-roots"] }
 regex = "1"
 base64 = "0.22"
 hex = "0.4"
-## HTTP client routed through the local Nym SOCKS5 sidecar (rustls, no native
-## TLS so it cross-compiles to Android; `socks` so every request — NIP-05,
-## price, avatars — goes over the mixnet, never clearnet).
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "socks"] }
-## SOCKS5 TCP dialer for the nostr relay WebSocket transport over the mixnet.
-tokio-socks = "0.5"
-
-## rustls is pulled by both our TLS (tungstenite/reqwest, ring) and nym-sdk
+## rustls is pulled by both our TLS (tungstenite, ring) and nym-sdk
 ## (aws-lc-rs); with two providers present rustls 0.23 can't auto-pick a default,
 ## so we install ring explicitly at startup (see lib.rs). Direct dep just to make
-## `rustls::crypto::ring::default_provider()` reachable.
+## `rustls::crypto::ring::default_provider()` reachable. NOTHING here may pull
+## rustls-platform-verifier — it panics on Android outside a full app context.
 rustls = { version = "0.23", features = ["ring"] }
+## TLS-over-tunnel for the mixnet HTTP client (webpki roots, never the platform
+## verifier — see the rustls note above).
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring"] }
+webpki-roots = "1"
 
-## Nym mixnet, linked IN-PROCESS (no sidecar subprocess, no bundled binary). We
-## run the SDK's SOCKS5 client on an internal tokio task exposing 127.0.0.1:1080,
-## the same loopback seam the transport already dials. Path dep: the local nym
-## checkout carries our Android webpki-roots patch.
+## Nym mixnet, linked IN-PROCESS (no sidecar subprocess, no bundled binary).
+## Path deps into the local nym checkout, PINNED at rev
+## f6ed17d949cc19fee0fb51db3cb65771fd510d5b: it carries the load-bearing local
+## commit "http-api-client: preconfigured webpki roots on Android". Do not
+## float the checkout past that rev without re-verifying the Android build.
 nym-sdk = { path = "../nym/sdk/rust/nym-sdk" }
+## smolmix: TCP/UDP tunnel over the mixnet with an AUTO-SELECTED IPR exit —
+## the single-network-requester SPOF is structurally gone (plan G14).
+smolmix = { path = "../nym/smolmix/core" }
+## mix-dns wire codec. Already in the dependency graph via nym-http-api-client
+## (Cargo.lock), so we reuse it instead of vendoring a DNS encode/parse.
+hickory-proto = { version = "0.26", default-features = false, features = ["std"] }
 
 ## NIP-98 payload hashing
 sha2 = "0.10.8"
@@ -184,3 +197,9 @@ base64 = "0.22"
 sha2 = "0.10"
 hex = "0.4"
 serde_yaml = "0.9"
+## G14 transport-validation harness (tests/xrelay_smoke.rs): re-expose deps that
+## already live in the main graph so the smolmix transport can be exercised and
+## its tunnel/mix-dns logs captured. No new compiles — same versions unify.
+log = "0.4.27"
+env_logger = "0.11.3"
+rustls = { version = "0.23", features = ["ring"] }

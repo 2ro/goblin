@@ -351,12 +351,6 @@ pub fn ink_for(bg: Color32) -> Color32 {
 	}
 }
 
-/// Avatar (background, ink) pair for a hue index.
-pub fn avatar_pair(hue: usize) -> (Color32, Color32) {
-	let pairs = &tokens().avatar_pairs;
-	pairs[hue % pairs.len()]
-}
-
 /// Number of avatar color pairs (hue derivation modulus).
 pub fn avatar_pairs_len() -> usize {
 	tokens().avatar_pairs.len()

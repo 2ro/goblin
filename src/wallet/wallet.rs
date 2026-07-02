@@ -53,7 +53,7 @@ use std::io::Write;
 use std::net::{SocketAddr, TcpListener, ToSocketAddrs};
 use std::path::PathBuf;
 use std::str::FromStr;
-use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU8, AtomicU64, Ordering};
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, mpsc};
 use std::thread::Thread;
@@ -85,6 +85,14 @@ pub struct Wallet {
 	sync_thread: Arc<RwLock<Option<Thread>>>,
 	/// Flag to check if wallet is syncing.
 	syncing: Arc<AtomicBool>,
+	/// On-demand node polling (Android battery): pause the heavy node sync at
+	/// sync thread while the app is backgrounded and nothing is in flight.
+	/// The relay+Nym nostr service keeps running regardless of this flag.
+	node_polling_paused: Arc<AtomicBool>,
+	/// Resume-signal counter closing the receipt-vs-pause race: bumped by
+	/// [`Wallet::resume_node_polling`]; the sync thread only pauses when no
+	/// resume arrived during the node sync it just completed.
+	node_polling_resume_seq: Arc<AtomicU64>,
 	/// Info loading progress in percents.
 	info_sync_progress: Arc<AtomicU8>,
 	/// Error on wallet loading.
@@ -161,6 +169,8 @@ impl Wallet {
 			account_time: Arc::new(Default::default()),
 			sync_thread: Arc::from(RwLock::new(None)),
 			syncing: Arc::new(AtomicBool::new(false)),
+			node_polling_paused: Arc::new(AtomicBool::new(false)),
+			node_polling_resume_seq: Arc::new(AtomicU64::new(0)),
 			info_sync_progress: Arc::from(AtomicU8::new(0)),
 			sync_error: Arc::from(AtomicBool::new(false)),
 			sync_attempts: Arc::new(AtomicU8::new(0)),
@@ -573,13 +583,8 @@ impl Wallet {
 					 backup-password field."
 						.to_string()
 				})?;
-			let mut ident = NostrIdentity::from_unlocked_keys(
-				&keys,
-				&password,
-				backup.source,
-				backup.derivation_account,
-			)
-			.map_err(|e| format!("re-encryption failed: {e}"))?;
+			let mut ident = NostrIdentity::from_unlocked_keys(&keys, &password, backup.source)
+				.map_err(|e| format!("re-encryption failed: {e}"))?;
 			ident.nip05 = backup.nip05.clone();
 			ident.anonymous = backup.anonymous;
 			ident.prev_npubs = backup.prev_npubs.clone();
@@ -595,13 +600,8 @@ impl Wallet {
 				 field"
 					.to_string()
 			})?;
-			let mut ident = NostrIdentity::from_unlocked_keys(
-				&keys,
-				&password,
-				backup.source,
-				backup.derivation_account,
-			)
-			.map_err(|e| format!("re-encryption failed: {e}"))?;
+			let mut ident = NostrIdentity::from_unlocked_keys(&keys, &password, backup.source)
+				.map_err(|e| format!("re-encryption failed: {e}"))?;
 			ident.nip05 = backup.nip05.clone();
 			ident.anonymous = backup.anonymous;
 			ident.prev_npubs = backup.prev_npubs.clone();
@@ -1151,6 +1151,25 @@ impl Wallet {
 	/// Check if wallet is syncing.
 	pub fn syncing(&self) -> bool {
 		self.syncing.load(Ordering::Relaxed)
+	}
+
+	/// Check if the heavy node polling at sync thread is paused (on-demand
+	/// node polling: Android battery optimization, never set on desktop).
+	pub fn node_polling_paused(&self) -> bool {
+		self.node_polling_paused.load(Ordering::SeqCst)
+	}
+
+	/// Resume node polling and wake the sync thread. Called when the app is
+	/// foreground again (the user expects a live balance) and when a slatepack
+	/// arrives needing node work (post/confirm). MONEY-SAFETY: bumps the
+	/// resume counter first so a pause decision computed from an older sync
+	/// snapshot can never override this signal (see
+	/// [`maybe_pause_node_polling`]).
+	pub fn resume_node_polling(&self) {
+		self.node_polling_resume_seq.fetch_add(1, Ordering::SeqCst);
+		if self.node_polling_paused.swap(false, Ordering::SeqCst) {
+			self.sync();
+		}
 	}
 
 	/// Get running Foreign API server port.
@@ -2075,8 +2094,22 @@ fn start_sync(wallet: Wallet) -> Thread {
 					}
 				}
 
-				// Sync wallet from node.
-				sync_wallet_data(&wallet, true);
+				// On-demand node polling (Android battery): while the app is
+				// backgrounded and no transaction is waiting on the node, skip
+				// the heavy node sync. The relay+Nym nostr service started
+				// above keeps running and listening for gift wraps regardless;
+				// a slatepack receipt resumes polling instantly (see
+				// `resume_node_polling`). Foreground always polls.
+				if crate::app_foreground() {
+					wallet.resume_node_polling();
+				}
+				if !wallet.node_polling_paused() {
+					let resume_seq = wallet.node_polling_resume_seq.load(Ordering::SeqCst);
+					// Sync wallet from node.
+					sync_wallet_data(&wallet, true);
+					// Pause polling when it's safe to (Android only).
+					maybe_pause_node_polling(&wallet, resume_seq);
+				}
 			}
 
 			// Stop sync if wallet was closed.
@@ -2104,6 +2137,57 @@ fn start_sync(wallet: Wallet) -> Thread {
 	})
 	.thread()
 	.clone()
+}
+
+/// Pause the heavy node polling after a completed node sync when it's safe
+/// (Android only — desktop always polls): the app is backgrounded AND the
+/// fresh sync shows nothing waiting on the node AND no resume signal
+/// (slatepack receipt / foreground) arrived while that sync ran.
+/// MONEY-SAFETY (non-negotiable): confirmation tracking is never dropped —
+/// any unconfirmed send/receive keeps the node polled until it confirms, and
+/// when in doubt (failed sync, no data, unknown txs) we keep polling.
+#[allow(unused_variables)]
+fn maybe_pause_node_polling(wallet: &Wallet, resume_seq_before: u64) {
+	#[cfg(target_os = "android")]
+	{
+		// Foreground: the user expects a live balance.
+		if crate::app_foreground() {
+			return;
+		}
+		// Only pause after a clean, settled sync from the node.
+		if wallet.sync_error() || wallet.get_sync_attempts() != 0 {
+			return;
+		}
+		let Some(data) = wallet.get_data() else {
+			return;
+		};
+		// Anything unconfirmed — a send awaiting reply/broadcast or a receive
+		// awaiting confirmation — keeps the node polled until it confirms.
+		// Unknown txs count as in flight (when in doubt, poll).
+		let in_flight = data
+			.txs
+			.as_ref()
+			.map(|txs| {
+				txs.iter().any(|tx| {
+					!tx.data.confirmed
+						&& matches!(
+							tx.data.tx_type,
+							TxLogEntryType::TxSent | TxLogEntryType::TxReceived
+						)
+				})
+			})
+			.unwrap_or(true);
+		if in_flight {
+			return;
+		}
+		wallet.node_polling_paused.store(true, Ordering::SeqCst);
+		// A slatepack receipt (or foreground) may have raced this pause while
+		// the sync above ran — its transaction may not be in the data snapshot
+		// we just inspected. The resume always wins.
+		if wallet.node_polling_resume_seq.load(Ordering::SeqCst) != resume_seq_before {
+			wallet.node_polling_paused.store(false, Ordering::SeqCst);
+		}
+	}
 }
 
 /// Map a wallet error to a short, user-facing reason for the failure screen so
@@ -2369,6 +2453,7 @@ async fn handle_task(w: &Wallet, t: WalletTask) {
 											nip05: None,
 											nip05_verified_at: None,
 											relays: relay_hints.clone(),
+											nip44_v3: false,
 											hue: crate::gui::views::goblin::data::hue_of(receiver)
 												as u8,
 											unknown: true,

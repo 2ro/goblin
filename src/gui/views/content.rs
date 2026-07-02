@@ -144,6 +144,9 @@ impl ContentContainer for Content {
 					.show();
 			} else if OperatingSystem::from_target_os() == OperatingSystem::Android
 				&& AppConfig::android_integrated_node_warning_needed()
+				// The warning is about INTEGRATED-node background sync; on the
+				// external-node default it nags about a node we do not run.
+				&& AppConfig::autostart_node()
 			{
 				Modal::new(ANDROID_INTEGRATED_NODE_WARNING_MODAL)
 					.title(t!("network.node"))

@@ -36,8 +36,8 @@ const LOGO_FRAC: f64 = 0.90;
 const LOGO_OPACITY: f64 = 0.67;
 const GRIN_NATIVE: f64 = 61.0;
 
-/// Standard HSL → RGB → `#rrggbb`. f64 throughout for cross-port byte-identity.
-fn hsl_to_rgb(h: f64, s: f64, l: f64) -> String {
+/// Standard HSL → RGB bytes. f64 throughout for cross-port byte-identity.
+pub(super) fn hsl_rgb8(h: f64, s: f64, l: f64) -> (u8, u8, u8) {
 	let c = (1.0 - (2.0 * l - 1.0).abs()) * s;
 	let hp = h / 60.0;
 	let x = c * (1.0 - ((hp % 2.0) - 1.0).abs());
@@ -51,7 +51,23 @@ fn hsl_to_rgb(h: f64, s: f64, l: f64) -> String {
 	};
 	let m = l - c / 2.0;
 	let to = |v: f64| ((v + m) * 255.0).round() as u8;
-	format!("#{:02x}{:02x}{:02x}", to(r), to(g), to(b))
+	(to(r), to(g), to(b))
+}
+
+/// Standard HSL → RGB → `#rrggbb`.
+fn hsl_to_rgb(h: f64, s: f64, l: f64) -> String {
+	let (r, g, b) = hsl_rgb8(h, s, l);
+	format!("#{r:02x}{g:02x}{b:02x}")
+}
+
+/// Conic-ring hue path for a custom-image avatar, seeded by the USERNAME (not
+/// the pubkey, per the design): base hue from the first two hash bytes, sweep
+/// width (60°–180°) from the third. Deterministic, like the gradients.
+pub(super) fn ring_params(name: &str) -> (f64, f64) {
+	let hash = Sha256::digest(name.as_bytes());
+	let base = ((u16::from(hash[0]) << 8 | u16::from(hash[1])) as f64 / 65_535.0) * 360.0;
+	let sweep = 60.0 + (hash[2] as f64 / 255.0) * 120.0;
+	(base, sweep)
 }
 
 /// Normalise any caller-supplied id (npub bech32 OR raw hex) to the canonical
@@ -77,17 +93,6 @@ fn gradient_params(hex: &str) -> (String, String, f64) {
 	let c1 = hsl_to_rgb(base, 0.62, 0.55);
 	let c2 = hsl_to_rgb(h2, 0.62, 0.42);
 	(c1, c2, angle)
-}
-
-/// The seeded two-tone gradient WITHOUT the Grin mark — a bare background tile.
-/// Used for **named** users, where the app paints the person's initial on top
-/// (see `widgets::gradient_letter_avatar`) instead of the Grin mark. Same seed →
-/// same background as the anonymous gradient avatar, so one key reads consistently.
-pub fn gradient_bg_svg(hex: &str, size: u32) -> String {
-	let (c1, c2, angle) = gradient_params(hex);
-	format!(
-		r##"<svg xmlns="http://www.w3.org/2000/svg" width="{size}" height="{size}" viewBox="0 0 {size} {size}" role="img"><defs><linearGradient id="g" gradientUnits="objectBoundingBox" gradientTransform="rotate({angle:.1},0.5,0.5)"><stop offset="0" stop-color="{c1}"/><stop offset="1" stop-color="{c2}"/></linearGradient></defs><rect width="{size}" height="{size}" fill="url(#g)"/></svg>"##
-	)
 }
 
 /// The gradient avatar as a standalone SVG document, seeded by `hex` (lowercase
