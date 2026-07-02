@@ -32,8 +32,8 @@ pub fn amount_str(atomic: u64) -> String {
 /// not the npub). The image is inset so the ring sits at the perimeter.
 pub fn avatar_tex(ui: &mut Ui, tex: &egui::TextureHandle, name: &str, size: f32) -> Response {
 	let (rect, resp) = ui.allocate_exact_size(Vec2::splat(size), Sense::click());
-	let thickness = (size * 0.06).max(1.0);
-	let gap = (size * 0.03).max(1.0);
+	let thickness = (size * 0.045).max(1.0);
+	let gap = (size * 0.07).max(2.0);
 	let img_rect = rect.shrink(thickness + gap);
 	let rounding = eframe::epaint::CornerRadius::same((img_rect.width() / 2.0) as u8);
 	egui::Image::new(tex)
@@ -105,8 +105,11 @@ pub fn gradient_avatar(ui: &mut Ui, id: &str, size: f32) -> Response {
 /// ring-less avatar draws it; the ring is the only thing the username adds.
 pub fn gradient_avatar_ringed(ui: &mut Ui, id: &str, name: &str, size: f32) -> Response {
 	let (rect, resp) = ui.allocate_exact_size(Vec2::splat(size), Sense::click());
-	paint_gradient(ui, id, rect);
-	let thickness = (size * 0.06).max(1.0);
+	let thickness = (size * 0.045).max(1.0);
+	let gap = (size * 0.07).max(2.0);
+	// Inset the orb so the username ring sits AROUND it with a clear gap,
+	// rather than overlapping its edge.
+	paint_gradient(ui, id, rect.shrink(thickness + gap));
 	conic_ring(
 		ui,
 		rect.center(),
