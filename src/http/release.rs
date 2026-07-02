@@ -75,7 +75,7 @@ impl ReleaseInfo {
 				if ARCH == ARM_ARCH {
 					None
 				} else {
-					Some(format!("goblin-{}-linux-x86_64.AppImage", self.tag_name))
+					Some(format!("goblin-{}-linux-x86_64.tar.gz", self.tag_name))
 				}
 			}
 			OperatingSystem::Mac => None,
