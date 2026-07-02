@@ -23,8 +23,12 @@
 //! re-selects, so there is no single-exit SPOF. Hostnames resolve via
 //! [`super::dns`] over DoT through the same tunnel, so nothing touches clearnet.
 //!
-//! This is the wallet's ONLY mixnet path — every relay and HTTP dial rides
-//! this tunnel.
+//! This is the FALLBACK / discovery-and-secondary-relay path. The MONEY-PATH
+//! primary relay is reached over a SCOPED MixnetStream to a Floonet operator's
+//! CO-LOCATED exit when the pool advertises one ([`crate::nostr::pool::PoolRelay::exit`]),
+//! which needs no public DNS and no public IPR — see the streamexit egress
+//! (design in ~/.claude/plans/floonet-nym-exit.md). That anchor+fallback split
+//! is the "prefer our exit, never pin-only" rule at the transport level.
 //!
 //! Should smolmix ever regress, the fallback design (SOCKS5 network requester
 //! + ordered exit failover) is specified in the plan, section G14.
@@ -186,6 +190,26 @@ fn run_tunnel() {
 		// True while a FALLBACK (auto-selected) exit carries the traffic even
 		// though an anchor is configured — makes the ANCHOR RECOVERED log honest.
 		let mut fell_back = false;
+		// COLD-START SEQUENCING (money path first): if the pool advertises a
+		// co-located scoped exit, let ITS mixnet client grab its Nym free-tier
+		// bandwidth grant before this tunnel competes for one. Two ephemeral
+		// clients bootstrapping at once serialize on the grant (~1 min); waiting a
+		// bounded head-start for the exit client means only ONE bootstraps at a
+		// time, so the money-path relay connects in seconds and this tunnel
+		// (fallback / HTTP / discovery, all non-blocking) builds right after. No
+		// exit in the pool → no wait. Cold start only: on a later reselect the
+		// exit is long-ready, so `is_ready()` returns instantly.
+		if crate::nostr::pool::load().has_exit() {
+			let head_start = Instant::now();
+			while !super::streamexit::is_ready() && head_start.elapsed() < EXIT_HEAD_START {
+				tokio::time::sleep(Duration::from_millis(200)).await;
+			}
+			info!(
+				"[timing] nym: tunnel bootstrap proceeding after {}ms exit head-start (exit ready: {})",
+				head_start.elapsed().as_millis(),
+				super::streamexit::is_ready()
+			);
+		}
 		loop {
 			let started = Instant::now();
 			attempt += 1;
@@ -402,8 +426,19 @@ const MIN_EXIT_LIFETIME: Duration = Duration::from_secs(20);
 /// re-select. A healthy gateway+IPR bootstrap completes in ~4-7s; without this
 /// cap a DEAD first pick blocked for ~74s (measured) on the Nym SDK's own
 /// "listening for connection response" timeout before we even got to reselect.
-/// A few seconds of patience, not a minute.
+/// A few seconds of patience, not a minute. Shared with the scoped-exit egress
+/// ([`super::streamexit`]) as ITS dial cap, so both mixnet bootstraps fail
+/// equally fast.
 pub(crate) const BOOTSTRAP_TIMEOUT: Duration = Duration::from_secs(20);
+
+/// Cold-start head start for the scoped-exit client: the public-IPR tunnel waits
+/// up to this long for [`super::streamexit::is_ready`] before it bootstraps, so
+/// the money-path exit client claims its Nym free-tier bandwidth grant FIRST and
+/// the two ephemeral clients don't serialize on the grant (~1 min otherwise; see
+/// the cold-start sequencer in [`run_tunnel`] and the NOTE in
+/// [`super::streamexit`]). Bounded so a missing/failed exit never holds the
+/// tunnel more than briefly; the exit typically readies well inside it.
+const EXIT_HEAD_START: Duration = Duration::from_secs(12);
 
 /// Restore the pre-Build-98 watchdog (condemn on RELAY_GRACE of no-relay alone,
 /// no connectivity gate, no rebuild floor). Debug/measurement only — lets a cold
