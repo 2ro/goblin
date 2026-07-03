@@ -27,42 +27,16 @@ pub fn amount_str(atomic: u64) -> String {
 	grin_core::core::amount_to_hr_string(atomic, true)
 }
 
-/// A custom-picture avatar: the texture drawn to fill the circle, with a thin
-/// light-yellow outline hugging its edge when the identity is a claimed name.
-pub fn avatar_tex(ui: &mut Ui, tex: &egui::TextureHandle, name: &str, size: f32) -> Response {
+/// A custom-picture avatar: the texture drawn to fill the circle. Names never
+/// affect the avatar — claimed and anonymous identities render identically.
+pub fn avatar_tex(ui: &mut Ui, tex: &egui::TextureHandle, _name: &str, size: f32) -> Response {
 	let (rect, resp) = ui.allocate_exact_size(Vec2::splat(size), Sense::click());
 	let rounding = eframe::epaint::CornerRadius::same((rect.width() / 2.0) as u8);
 	egui::Image::new(tex)
 		.corner_radius(rounding)
 		.fit_to_exact_size(rect.size())
 		.paint_at(ui, rect);
-	if is_named(name) {
-		name_ring(ui, rect.center(), size);
-	}
 	resp
-}
-
-/// A thin light-yellow outline on the avatar's edge — the marker of a claimed
-/// name. Just an outline that touches the circle (no gap, no gradient); the
-/// yellow reads as "this identity has a name" and nothing more.
-fn name_ring(ui: &Ui, center: egui::Pos2, size: f32) {
-	let thickness = (size * 0.03).max(1.0);
-	// Goblin accent yellow, lightened toward white so the outline stays soft.
-	let c = super::theme::tokens().accent;
-	let light = Color32::from_rgb(
-		c.r().saturating_add((255 - c.r()) / 3),
-		c.g().saturating_add((255 - c.g()) / 3),
-		c.b().saturating_add((255 - c.b()) / 3),
-	);
-	// Sit the stroke just inside the perimeter so it stays fully on-canvas.
-	let radius = size / 2.0 - thickness / 2.0;
-	ui.painter()
-		.circle_stroke(center, radius, egui::Stroke::new(thickness, light));
-}
-
-/// Whether a display name is a real claimed name (not empty, not a bare npub).
-fn is_named(name: &str) -> bool {
-	!name.is_empty() && !name.starts_with("npub")
 }
 
 /// Deterministic gradient avatar (a pubkey-seeded two-tone tile with the Grin
@@ -72,18 +46,6 @@ fn is_named(name: &str) -> bool {
 pub fn gradient_avatar(ui: &mut Ui, id: &str, size: f32) -> Response {
 	let (rect, resp) = ui.allocate_exact_size(Vec2::splat(size), Sense::click());
 	paint_gradient(ui, id, rect);
-	resp
-}
-
-/// The UNCHANGED npub-seeded grinmark gradient orb with a thin light-yellow
-/// outline hugging its edge to mark a claimed name — the orb fills the circle
-/// exactly as a ring-less avatar draws it; the outline is all the name adds.
-pub fn gradient_avatar_ringed(ui: &mut Ui, id: &str, name: &str, size: f32) -> Response {
-	let (rect, resp) = ui.allocate_exact_size(Vec2::splat(size), Sense::click());
-	paint_gradient(ui, id, rect);
-	if is_named(name) {
-		name_ring(ui, rect.center(), size);
-	}
 	resp
 }
 
@@ -103,11 +65,11 @@ fn paint_gradient(ui: &mut Ui, id: &str, rect: egui::Rect) {
 	.paint_at(ui, rect);
 }
 
-/// Picture avatar (with the username conic ring) when a texture exists;
-/// otherwise the deterministic pubkey-seeded grinmark gradient for everyone,
-/// named or anonymous. When no pubkey is known (last resort) the name seeds the
-/// gradient instead, so the tile is still deterministic. `id` is the npub/hex
-/// used to seed the gradient.
+/// Picture avatar when a texture exists; otherwise the deterministic
+/// pubkey-seeded grinmark gradient for everyone, named or anonymous — names
+/// never affect the avatar. When no pubkey is known (last resort) the name
+/// seeds the gradient instead, so the tile is still deterministic. `id` is
+/// the npub/hex used to seed the gradient.
 pub fn avatar_any(
 	ui: &mut Ui,
 	name: &str,
@@ -115,15 +77,8 @@ pub fn avatar_any(
 	size: f32,
 	tex: Option<&egui::TextureHandle>,
 ) -> Response {
-	// A conic ring (seeded by the username) marks a CLAIMED identity — on a
-	// custom picture or the grinmark gradient. Anonymous keys (the display name
-	// is still an `npub…`) stay ring-less.
-	let named = !name.is_empty() && !name.starts_with("npub");
 	match tex {
 		Some(t) => avatar_tex(ui, t, name, size),
-		None if named => {
-			gradient_avatar_ringed(ui, if id.is_empty() { name } else { id }, name, size)
-		}
 		None if !id.is_empty() => gradient_avatar(ui, id, size),
 		None => gradient_avatar(ui, name, size),
 	}

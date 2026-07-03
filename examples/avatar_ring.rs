@@ -1,6 +1,6 @@
-//! G1 sizing-checkpoint harness: renders the REAL `avatar_tex` (custom-image
-//! avatar + username conic ring) and `gradient_avatar` across every size the
-//! app uses, so the ring thickness/inset can be dialed in by eye.
+//! Avatar sizing-checkpoint harness: renders the REAL `avatar_tex` (custom
+//! image, no ring) and `gradient_avatar` across every size the app uses.
+//! Names never affect the avatar — this just checks sizing by eye.
 //! Run: `cargo run --example avatar_ring` (screenshots taken externally).
 
 use eframe::egui;
@@ -14,7 +14,7 @@ struct App {
 }
 
 /// A synthetic "profile photo": diagonal two-tone blend with a light disc, so
-/// the ring is judged against something photo-like rather than a flat fill.
+/// sizing is judged against something photo-like rather than a flat fill.
 fn photo(ctx: &egui::Context, name: &str, a: [u8; 3], b: [u8; 3]) -> egui::TextureHandle {
 	const N: usize = 128;
 	let mut px = Vec::with_capacity(N * N);
@@ -60,9 +60,7 @@ impl eframe::App for App {
 			.frame(egui::Frame::default().fill(egui::Color32::from_rgb(0xFA, 0xFA, 0xF7)))
 			.show(ctx, |ui| {
 				ui.add_space(10.0);
-				ui.heading(
-					"G1 avatar ring — sizing sheet (thickness = max(1, size*0.06), gap = max(1, size*0.03))",
-				);
+				ui.heading("avatar sizing sheet (no ring — names never affect the avatar)");
 				ui.add_space(12.0);
 				for (i, name) in NAMES.iter().enumerate() {
 					ui.horizontal(|ui| {
@@ -76,7 +74,7 @@ impl eframe::App for App {
 					ui.add_space(14.0);
 				}
 				ui.separator();
-				ui.label("anonymous npub (grinmark gradient, ring-less):");
+				ui.label("anonymous npub (grinmark gradient):");
 				ui.add_space(8.0);
 				ui.horizontal(|ui| {
 					ui.add_space(12.0);
@@ -86,20 +84,6 @@ impl eframe::App for App {
 						w::gradient_avatar(ui, &format!("{i}deadbeef{i}"), *size);
 					}
 				});
-				ui.add_space(14.0);
-				ui.label("named account (SAME gradient, unchanged) + username ring:");
-				ui.add_space(8.0);
-				for name in NAMES {
-					ui.horizontal(|ui| {
-						ui.add_space(12.0);
-						ui.label(format!("{name:>7}"));
-						for size in SIZES {
-							ui.add_space(14.0);
-							w::gradient_avatar_ringed(ui, "deadbeefcafe", name, size);
-						}
-					});
-					ui.add_space(6.0);
-				}
 				ui.add_space(10.0);
 				ui.horizontal(|ui| {
 					ui.add_space(12.0);
