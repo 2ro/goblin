@@ -33,10 +33,13 @@
 //! Should smolmix ever regress, the fallback design (SOCKS5 network requester
 //! + ordered exit failover) is specified in the plan, section G14.
 //!
-//! Cover traffic: `TunnelBuilder` has no knob today, so the first cut accepts
-//! smolmix defaults (cover traffic ON). The G13 low-power posture needs an
-//! upstream nym-sdk patch exposing `IpMixStream::from_client` so a tuned
-//! `MixnetClient` (loop-cover config) can back the tunnel; revisit then.
+//! Cover traffic: the public READ tunnel is now backed by a tuned
+//! `MixnetClient` (built in [`build_tunnel`] via `IpMixStream::from_client`) on
+//! the balanced "high default traffic volume" preset — ~250 real msgs/s, ~10 ms
+//! per-hop delay, loop cover traffic effectively off. Per-hop mix delays are
+//! KEPT (no `set_no_per_hop_delays`), so timing obfuscation stays on; only cover
+//! traffic is reduced, for the G13 low-power posture. The MONEY-PATH scoped exit
+//! ([`super::streamexit`]) is a SEPARATE client and keeps full SDK defaults.
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::thread;
@@ -651,11 +654,43 @@ fn parse_anchor(raw: &str) -> Option<Recipient> {
 /// back to `None` (see [`ExitSelector`]) or the single-exit SPOF — and a
 /// single party seeing all exit traffic — comes back.
 async fn build_tunnel(pin: Option<Recipient>) -> Result<Tunnel, smolmix::SmolmixError> {
-	let mut builder = Tunnel::builder();
-	if let Some(recipient) = pin {
-		builder = builder.ipr_address(recipient);
-	}
-	builder.build().await
+	use nym_sdk::DebugConfig;
+	use nym_sdk::ipr_wrapper::IpMixStream;
+	use nym_sdk::mixnet::MixnetClientBuilder;
+
+	// READ-TUNNEL ANONYMITY TUNING — PUBLIC PATH ONLY. This tunes the mixnet
+	// client that backs the public read tunnel (relay/NIP-11/price/DoT); the
+	// MONEY-PATH scoped exit (`streamexit.rs`) is a SEPARATE MixnetClient and is
+	// deliberately left on full SDK defaults, untouched.
+	//
+	// The "balanced" preset (mirrors `Config::set_high_default_traffic_volume`
+	// upstream): ~10 ms average per-hop delay, ~250 real msgs/s send rate, and
+	// loop cover traffic effectively disabled. Per-hop delays are KEPT ON (we do
+	// NOT call `set_no_per_hop_delays`) so mix-layer timing obfuscation still
+	// applies to this public read tunnel — the tradeoff here is reduced *cover*
+	// traffic, not reduced mixing.
+	let mut cfg = DebugConfig::default();
+	cfg.traffic.average_packet_delay = Duration::from_millis(10);
+	cfg.cover_traffic.loop_cover_traffic_average_delay = Duration::from_millis(2_000_000);
+	cfg.traffic.message_sending_average_delay = Duration::from_millis(4);
+
+	// Mirror the mainnet env setup the SDK's own constructors run before connect.
+	nym_sdk::setup_env(None::<&std::path::Path>);
+	let client = MixnetClientBuilder::new_ephemeral()
+		.debug_config(cfg)
+		.build()?
+		.connect_to_mixnet()
+		.await?;
+
+	// Pinned anchor when provided, else the auto-selected best public IPR — the
+	// same discovery the untuned `IpMixStream::new` path used, so anchor/fallback
+	// selection in `run_tunnel` is unchanged.
+	let ipr = match pin {
+		Some(recipient) => recipient,
+		None => IpMixStream::best_ipr().await?,
+	};
+	let stream = IpMixStream::from_client(client, ipr).await?;
+	Tunnel::from_stream(stream).await
 }
 
 #[cfg(test)]

@@ -37,8 +37,9 @@ pub mod nymproc;
 pub mod streamexit;
 pub mod transport;
 
-use std::sync::Arc;
-use std::time::Duration;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 use http_body_util::{BodyExt, Full};
@@ -123,78 +124,83 @@ fn redacted(url: &url::Url) -> String {
 	url.host_str().unwrap_or("<no-host>").to_string()
 }
 
-/// A single HTTP/1.1 exchange over the tunnel. Returns the status, the
-/// collected body and, for 3xx responses, the `Location` target.
-async fn request_once(
-	tunnel: &smolmix::Tunnel,
+/// How long a pooled keep-alive connection may sit idle before we discard it
+/// rather than reuse a possibly half-dead handle (hyper's `is_closed()` catches
+/// cleanly-closed ones; this bounds the silent-death window).
+const POOL_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// Pool key: a live HTTP/1.1 keep-alive connection is reusable only for the same
+/// host, port and scheme.
+#[derive(Clone, PartialEq, Eq, Hash)]
+struct ConnKey {
+	host: String,
+	port: u16,
+	https: bool,
+}
+
+/// A pooled hyper request handle. The body type matches [`request_once`]'s.
+type HttpSender = hyper::client::conn::http1::SendRequest<Full<Bytes>>;
+
+struct Pooled {
+	sender: HttpSender,
+	idle_since: Instant,
+}
+
+lazy_static::lazy_static! {
+	/// Idle keep-alive connections, keyed by (host, port, https). A sender is
+	/// REMOVED while in use and reinserted when the exchange finishes, so the map
+	/// only ever holds idle handles and the lock is never held across an await.
+	static ref CONN_POOL: Mutex<HashMap<ConnKey, Pooled>> = Mutex::new(HashMap::new());
+}
+
+/// Take a live, non-idle-expired pooled sender for `key`, if one exists. A
+/// closed or stale handle is dropped (tearing down its connection) and `None`
+/// returned so the caller builds a fresh one.
+fn take_pooled(key: &ConnKey) -> Option<HttpSender> {
+	let mut pool = CONN_POOL.lock().ok()?;
+	let pooled = pool.remove(key)?;
+	if pooled.sender.is_closed() || pooled.idle_since.elapsed() >= POOL_IDLE_TIMEOUT {
+		return None;
+	}
+	Some(pooled.sender)
+}
+
+/// Return a still-live sender to the pool for the next request to reuse.
+fn store_pooled(key: ConnKey, sender: HttpSender) {
+	if sender.is_closed() {
+		return;
+	}
+	if let Ok(mut pool) = CONN_POOL.lock() {
+		pool.insert(
+			key,
+			Pooled {
+				sender,
+				idle_since: Instant::now(),
+			},
+		);
+	}
+}
+
+/// Send one request/response exchange on `sender`. On success returns the parsed
+/// `(status, body, location)` AND the sender (drained and ready for the next
+/// request, so the caller can pool it). `None` if the connection failed.
+async fn exchange(
+	mut sender: HttpSender,
 	method: &str,
 	url: &url::Url,
 	body: Option<Vec<u8>>,
 	headers: &[(String, String)],
-) -> Option<(u16, Vec<u8>, Option<String>)> {
-	let host = url.host_str()?.to_string();
-	let https = url.scheme() == "https";
-	let port = url.port().unwrap_or(if https { 443 } else { 80 });
-
-	// TUNNEL-FIRST for HTTP. NIP-11/HTTP is PUBLIC data (relay docs, price, name
-	// authority) and both egresses are mixnet-private, so in steady state we ride
-	// the already-warm tunnel — opening a fresh MixnetStream + settle to a scoped
-	// exit PER request was pure latency here. Only when the tunnel isn't up yet
-	// (`!is_ready()`) do we fall to a host's co-located scoped exit to avoid a cold
-	// wait; failure there just falls through to the tunnel path below. transport.rs
-	// (relay websockets) stays exit-first and is untouched — this is the HTTP path
-	// only.
-	let exit_io = if https && !nymproc::is_ready() {
-		match crate::nostr::pool::load().exit_for_host(&host) {
-			Some(exit) => exit_connect(&host, &exit).await,
-			None => None,
-		}
-	} else {
-		None
-	};
-
-	let io: Box<dyn Stream> = match exit_io {
-		Some(io) => io,
-		None => {
-			// Resolve the host over the tunnel (DoT — see dns), then dial that
-			// IP through the same tunnel so nothing (lookup or body) touches
-			// the clear.
-			let addr = dns::resolve(tunnel, &host, port).await?;
-			let tcp = match tunnel.tcp_connect(addr).await {
-				Ok(s) => s,
-				Err(e) => {
-					warn!("nym http: connect to {host} failed: {e}");
-					return None;
-				}
-			};
-			if https {
-				match tls_connect(&host, tcp).await {
-					Some(tls) => Box::new(tls),
-					None => return None,
-				}
-			} else {
-				Box::new(tcp)
-			}
-		}
-	};
-
-	let (mut sender, conn) = hyper::client::conn::http1::handshake(TokioIo::new(io))
-		.await
-		.map_err(|e| warn!("nym http: handshake with {host} failed: {e}"))
-		.ok()?;
-	// Drive the connection until the exchange finishes; it ends itself once
-	// the response (and body) is done or the sender is dropped.
-	tokio::spawn(async move {
-		let _ = conn.await;
-	});
-
+	host: &str,
+	https: bool,
+	port: u16,
+) -> Option<((u16, Vec<u8>, Option<String>), HttpSender)> {
 	let m = hyper::Method::from_bytes(method.as_bytes()).ok()?;
 	let path = match url.query() {
 		Some(q) => format!("{}?{q}", url.path()),
 		None => url.path().to_string(),
 	};
 	let host_header = if (https && port == 443) || (!https && port == 80) {
-		host.clone()
+		host.to_string()
 	} else {
 		format!("{host}:{port}")
 	};
@@ -225,7 +231,112 @@ async fn request_once(
 		None
 	};
 	let bytes = resp.into_body().collect().await.ok()?.to_bytes().to_vec();
-	Some((status, bytes, location))
+	Some(((status, bytes, location), sender))
+}
+
+/// A single HTTP/1.1 exchange over the tunnel. Returns the status, the
+/// collected body and, for 3xx responses, the `Location` target.
+async fn request_once(
+	tunnel: &smolmix::Tunnel,
+	method: &str,
+	url: &url::Url,
+	body: Option<Vec<u8>>,
+	headers: &[(String, String)],
+) -> Option<(u16, Vec<u8>, Option<String>)> {
+	let host = url.host_str()?.to_string();
+	let https = url.scheme() == "https";
+	let port = url.port().unwrap_or(if https { 443 } else { 80 });
+	let key = ConnKey {
+		host: host.clone(),
+		port,
+		https,
+	};
+
+	// KEEP-ALIVE FAST PATH: reuse a pooled connection for this (host, port,
+	// https) when one is live, skipping a fresh mixnet TCP + TLS + HTTP handshake.
+	// This is what makes the many small reads (price, contact-name resolution)
+	// fast. Only steady-state tunnel connections are pooled (see below); the
+	// cold-start scoped-exit fallback is one-shot.
+	if let Some(sender) = take_pooled(&key) {
+		if let Some((resp, sender)) = exchange(
+			sender,
+			method,
+			url,
+			body.clone(),
+			headers,
+			&host,
+			https,
+			port,
+		)
+		.await
+		{
+			store_pooled(key, sender);
+			return Some(resp);
+		}
+		// Pooled connection died mid-exchange: fall through and build a fresh one.
+	}
+
+	// TUNNEL-FIRST for HTTP. NIP-11/HTTP is PUBLIC data (relay docs, price, name
+	// authority) and both egresses are mixnet-private, so in steady state we ride
+	// the already-warm tunnel — opening a fresh MixnetStream + settle to a scoped
+	// exit PER request was pure latency here. Only when the tunnel isn't up yet
+	// (`!is_ready()`) do we fall to a host's co-located scoped exit to avoid a cold
+	// wait; failure there just falls through to the tunnel path below. transport.rs
+	// (relay websockets) stays exit-first and is untouched — this is the HTTP path
+	// only.
+	let exit_io = if https && !nymproc::is_ready() {
+		match crate::nostr::pool::load().exit_for_host(&host) {
+			Some(exit) => exit_connect(&host, &exit).await,
+			None => None,
+		}
+	} else {
+		None
+	};
+	// The one-shot scoped-exit fallback is NOT pooled — it's a cold-start bridge
+	// while the tunnel comes up. Only tunnel-borne connections go in the pool.
+	let poolable = exit_io.is_none();
+
+	let io: Box<dyn Stream> = match exit_io {
+		Some(io) => io,
+		None => {
+			// Resolve the host over the tunnel (DoT — see dns), then dial that
+			// IP through the same tunnel so nothing (lookup or body) touches
+			// the clear.
+			let addr = dns::resolve(tunnel, &host, port).await?;
+			let tcp = match tunnel.tcp_connect(addr).await {
+				Ok(s) => s,
+				Err(e) => {
+					warn!("nym http: connect to {host} failed: {e}");
+					return None;
+				}
+			};
+			if https {
+				match tls_connect(&host, tcp).await {
+					Some(tls) => Box::new(tls),
+					None => return None,
+				}
+			} else {
+				Box::new(tcp)
+			}
+		}
+	};
+
+	let (sender, conn) = hyper::client::conn::http1::handshake(TokioIo::new(io))
+		.await
+		.map_err(|e| warn!("nym http: handshake with {host} failed: {e}"))
+		.ok()?;
+	// Drive the connection in the background. It stays alive for keep-alive reuse
+	// as long as the pooled sender is held; it ends once the sender is dropped
+	// (evicted from the pool) or the peer closes the connection.
+	tokio::spawn(async move {
+		let _ = conn.await;
+	});
+
+	let (resp, sender) = exchange(sender, method, url, body, headers, &host, https, port).await?;
+	if poolable {
+		store_pooled(key, sender);
+	}
+	Some(resp)
 }
 
 /// Try the scoped-exit egress for an HTTPS `host`: a MixnetStream to the

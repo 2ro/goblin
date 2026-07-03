@@ -39,7 +39,7 @@
 //! startup, so a warm entry (not a fresh mixnet round trip) serves the common
 //! case. IPv4-only, like the rest of the app (GRIM audit).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
@@ -139,10 +139,28 @@ const DOH_ROUNDS: usize = 2;
 const TTL_FLOOR_SECS: u32 = 60;
 const TTL_CEILING_SECS: u32 = 3600;
 
+/// TTL floor for KNOWN/stable hosts (relays, the name authority, the price API,
+/// the DoT/DoH resolvers) — the ones we prewarm. Their addresses change rarely,
+/// so we keep them cached at least 15 min (up to the 60-min ceiling) instead of
+/// re-resolving every minute. Combined with serve-stale (below) this means a
+/// dial to one of these NEVER blocks on a fresh mixnet DoT round trip.
+const KNOWN_TTL_FLOOR_SECS: u32 = 900;
+
 lazy_static! {
 	/// host → (addresses, expiry).
 	static ref CACHE: RwLock<HashMap<String, (Vec<Ipv4Addr>, Instant)>> =
 		RwLock::new(HashMap::new());
+	/// Hosts we treat as known/stable (populated by [`prewarm`]). Known hosts get
+	/// the longer [`KNOWN_TTL_FLOOR_SECS`] floor AND serve-stale-while-revalidate.
+	static ref KNOWN: RwLock<HashSet<String>> = RwLock::new(HashSet::new());
+	/// Hosts with a background revalidation in flight — single-flight guard so a
+	/// burst of dials to a stale known host spawns exactly one refresh.
+	static ref REFRESHING: RwLock<HashSet<String>> = RwLock::new(HashSet::new());
+}
+
+/// Whether `host` is a known/stable host (has been prewarmed at least once).
+fn is_known(host: &str) -> bool {
+	KNOWN.read().contains(host)
 }
 
 /// Resolve `host` to a socket address for `tcp_connect`, entirely over the
@@ -155,9 +173,25 @@ pub async fn resolve(tunnel: &Tunnel, host: &str, port: u16) -> Option<SocketAdd
 	if let Ok(ip) = host.parse::<IpAddr>() {
 		return Some(SocketAddr::new(ip, port));
 	}
-	if let Some(ip) = cached(host) {
-		return Some(SocketAddr::new(IpAddr::V4(ip), port));
+	match cache_hit(host) {
+		// Fresh entry: serve it, no network at all.
+		Some(CacheHit::Fresh(ip)) => return Some(SocketAddr::new(IpAddr::V4(ip), port)),
+		// SERVE-STALE-WHILE-REVALIDATE for known/stable hosts: hand back the
+		// last-known address immediately (so the dial never blocks on a cold DoT
+		// round trip) and refresh it in the background. Unknown hosts fall
+		// through to a blocking resolve, preserving correctness.
+		Some(CacheHit::Stale(ip)) if is_known(host) => {
+			spawn_revalidate(tunnel, host);
+			return Some(SocketAddr::new(IpAddr::V4(ip), port));
+		}
+		_ => {}
 	}
+	resolve_cold(tunnel, host, port).await
+}
+
+/// The blocking DoT-then-DoH resolve, run when there is no usable cache entry.
+/// Writes the cache on success.
+async fn resolve_cold(tunnel: &Tunnel, host: &str, port: u16) -> Option<SocketAddr> {
 	// If a previous lookup already learned this exit blocks DoT, go straight to
 	// DoH — still entirely inside the tunnel.
 	if PREFER_DOH.load(Ordering::Acquire) {
@@ -175,6 +209,22 @@ pub async fn resolve(tunnel: &Tunnel, host: &str, port: u16) -> Option<SocketAdd
 	resolve_via(tunnel, host, port, DnsMode::Doh).await
 }
 
+/// Kick off a background refresh of a stale known host through the current
+/// tunnel, at most one in flight per host.
+fn spawn_revalidate(tunnel: &Tunnel, host: &str) {
+	let host = host.to_string();
+	// Single-flight: skip if a refresh for this host is already running.
+	if !REFRESHING.write().insert(host.clone()) {
+		return;
+	}
+	let tunnel = tunnel.clone();
+	tokio::spawn(async move {
+		// Port is irrelevant here — only the host-keyed cache is refreshed.
+		let _ = resolve_cold(&tunnel, &host, 0).await;
+		REFRESHING.write().remove(&host);
+	});
+}
+
 /// Run the round loop for one in-tunnel DNS transport, writing the cache on the
 /// first valid answer. Shared by DoT / DoH.
 async fn resolve_via(tunnel: &Tunnel, host: &str, port: u16, mode: DnsMode) -> Option<SocketAddr> {
@@ -189,7 +239,14 @@ async fn resolve_via(tunnel: &Tunnel, host: &str, port: u16, mode: DnsMode) -> O
 			DnsMode::Doh => race_doh(tunnel, host).await,
 		};
 		if let Some((resolver, ips, ttl)) = answer {
-			let ttl = ttl.clamp(TTL_FLOOR_SECS, TTL_CEILING_SECS);
+			// Known/stable hosts get the longer floor so they stay cached 15-60
+			// min; everything else keeps the tight 60s..1h window.
+			let floor = if is_known(host) {
+				KNOWN_TTL_FLOOR_SECS
+			} else {
+				TTL_FLOOR_SECS
+			};
+			let ttl = ttl.clamp(floor, TTL_CEILING_SECS);
 			debug!(
 				"{proto}: resolved {host} -> {} in {}ms (via {resolver}, round {}/{rounds}, \
 				 ttl {ttl}s, {} record(s))",
@@ -373,6 +430,13 @@ async fn query_doh(
 /// instead of paying the mixnet DoT round trip inline. Best-effort; the port is
 /// irrelevant here (only the host-keyed cache is filled) so a placeholder is used.
 pub async fn prewarm(tunnel: &Tunnel, hosts: &[String]) {
+	// Mark these as known/stable so they get the long TTL floor and serve-stale.
+	{
+		let mut known = KNOWN.write();
+		for host in hosts {
+			known.insert(host.clone());
+		}
+	}
 	let mut inflight = FuturesUnordered::new();
 	for host in hosts {
 		inflight.push(resolve(tunnel, host, 0));
@@ -380,15 +444,24 @@ pub async fn prewarm(tunnel: &Tunnel, hosts: &[String]) {
 	while inflight.next().await.is_some() {}
 }
 
-/// A cached, unexpired address for `host`.
-fn cached(host: &str) -> Option<Ipv4Addr> {
+/// A cache lookup outcome for `host`: fresh (within TTL) or stale (expired but
+/// still remembered, usable via serve-stale for known hosts).
+enum CacheHit {
+	Fresh(Ipv4Addr),
+	Stale(Ipv4Addr),
+}
+
+/// Look up `host` in the cache, distinguishing fresh from stale entries. Returns
+/// `None` only when the host has never been resolved.
+fn cache_hit(host: &str) -> Option<CacheHit> {
 	let cache = CACHE.read();
 	let (ips, expiry) = cache.get(host)?;
-	if Instant::now() < *expiry {
-		ips.first().copied()
+	let ip = ips.first().copied()?;
+	Some(if Instant::now() < *expiry {
+		CacheHit::Fresh(ip)
 	} else {
-		None
-	}
+		CacheHit::Stale(ip)
+	})
 }
 
 /// Address the liveness probe dials THROUGH the tunnel: Cloudflare's anycast

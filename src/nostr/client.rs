@@ -867,22 +867,45 @@ async fn run_service(svc: Arc<NostrService>, wallet: Wallet) {
 	// Prewarm mix-dns for the hosts we're about to (or will soon) hit — the
 	// relays being dialed, the NIP-05 name authority (Claim username), and the
 	// price API — so those resolutions are already cached by the time the user
-	// acts, rather than each paying a cold mixnet round trip inline. Runs off the
-	// critical path (a raced+retried resolve is cheap); the node host is NOT here
-	// — it never rides the mixnet.
-	if let Some(tunnel) = crate::nym::nymproc::tunnel() {
+	// acts, rather than each paying a cold mixnet round trip inline. The node host
+	// is NOT here — it never rides the mixnet.
+	//
+	// Unlike before this no longer silently SKIPS when the tunnel isn't up yet
+	// (the cold-start case that used to leave the first relay dial to a cold DoT
+	// round trip): it WAITS for the tunnel, prewarms, then keeps the entries hot
+	// by re-prewarming on a cadence below the DNS cache TTL floor, so known/stable
+	// hosts are refreshed in the background before they can expire.
+	{
 		let mut hosts: Vec<String> = relays
 			.iter()
 			.filter_map(|r| nostr_sdk::Url::parse(r).ok())
 			.filter_map(|u| u.host_str().map(|h| h.to_string()))
 			.collect();
+		// The name authority, both from this service's config and the process-wide
+		// configured home domain (they're normally the same; dedup below folds it).
 		hosts.push(svc.config.read().home_domain());
+		hosts.push(crate::nostr::nip05::home_domain());
 		hosts.push("api.coingecko.com".to_string());
 		hosts.retain(|h| !h.is_empty());
 		hosts.sort();
 		hosts.dedup();
 		tokio::spawn(async move {
+			// Wait out the cold start rather than skipping the prewarm entirely.
+			let Some(tunnel) = crate::nym::nymproc::wait_for_tunnel(Duration::from_secs(60)).await
+			else {
+				return;
+			};
 			crate::nym::dns::prewarm(&tunnel, &hosts).await;
+			// Keep the entries warm: re-prewarm every 45s (below the 60s TTL
+			// floor) so a stable host never expires out of the cache between
+			// uses. Picks up the current tunnel each cycle, so it survives exit
+			// reselects.
+			loop {
+				tokio::time::sleep(Duration::from_secs(45)).await;
+				if let Some(t) = crate::nym::nymproc::tunnel() {
+					crate::nym::dns::prewarm(&t, &hosts).await;
+				}
+			}
 		});
 	}
 	for relay in &relays {
