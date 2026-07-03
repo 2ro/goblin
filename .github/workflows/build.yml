@@ -17,6 +17,8 @@ jobs:
           submodules: recursive
       # nym-sdk is a path dep on ../nym; materialize it before building.
       - uses: ./.github/actions/fetch-nym
+      # nip44 is a path dep on ../nip44; materialize it before building.
+      - uses: ./.github/actions/fetch-nip44
       - name: Release build
         run: cargo build --release
 
@@ -28,6 +30,7 @@ jobs:
         with:
           submodules: recursive
       - uses: ./.github/actions/fetch-nym
+      - uses: ./.github/actions/fetch-nip44
       - name: Release build
         run: cargo build --release
 
@@ -39,5 +42,6 @@ jobs:
         with:
           submodules: recursive
       - uses: ./.github/actions/fetch-nym
+      - uses: ./.github/actions/fetch-nip44
       - name: Release build
         run: cargo build --release
