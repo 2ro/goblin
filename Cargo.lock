@@ -7480,6 +7480,8 @@ checksum = "650eef8c711430f1a879fdd01d4745a7deea475becfb90269c06775983bbf086"
 [[package]]
 name = "nip44"
 version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "13b65fa17d19c3eb6b7b4a908eea19a18ded30f1d95a80a08234f1f80ffe1cb9"
 dependencies = [
  "base64 0.22.1",
  "chacha20 0.9.1",

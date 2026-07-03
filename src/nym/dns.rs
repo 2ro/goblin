@@ -474,30 +474,77 @@ const PROBE_ADDRS: [SocketAddr; 2] = [
 	SocketAddr::new(IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1)), 443),
 	SocketAddr::new(IpAddr::V4(Ipv4Addr::new(9, 9, 9, 9)), 443),
 ];
-/// Per-target connect wait; a mixnet TCP handshake is a few seconds.
+/// Per-target connect wait for the PATIENT probe of an ESTABLISHED tunnel
+/// (watchdog keepalive + condemnation). A mixnet TCP handshake is a few seconds,
+/// and an exit already in service must NEVER be thrown away over a momentary load
+/// spike, so this stays deliberately generous at 8s — the pre-existing budget.
+/// (The just-built-tunnel GATE uses the tighter [`FRESH_PROBE_TIMEOUT`]; the two
+/// budgets are asymmetric on purpose — see [`probe_fresh`].)
 const PROBE_TIMEOUT: Duration = Duration::from_secs(8);
-/// Probe rounds before a tunnel is declared dead. A single lost mixnet packet
-/// mid-handshake should not condemn a whole tunnel, so an all-miss round is
-/// retried once (mirrors the DoT/DoH round loop). Only a tunnel that reaches
-/// NEITHER stable target across BOTH rounds is DEAD — this is what stops a
+/// Probe rounds before an ESTABLISHED tunnel is declared dead. A single lost
+/// mixnet packet mid-handshake should not condemn a whole tunnel, so an all-miss
+/// round is retried once (mirrors the DoT/DoH round loop). Only a tunnel that
+/// reaches NEITHER stable target across BOTH rounds is DEAD — this is what stops a
 /// healthy-but-unlucky tunnel from being thrown away and reselected forever.
 const PROBE_ROUNDS: usize = 2;
 
-/// End-to-end exit-liveness probe: try to open a TCP connection THROUGH the tunnel
-/// to any of a few stable public addresses (raced, retried a round) and drop the
-/// winner immediately. Because TCP over the mixnet RETRANSMITS, a single lost
-/// datagram does not spuriously fail a healthy exit; racing several targets over
-/// two rounds additionally absorbs a momentarily slow single path — together they
-/// stop the false-DEAD reselect churn the old single-target probe caused. Proves
-/// the full path (mixnet → IPR exit → internet) and keeps the gateway/IPR session
-/// from idling out. Used by the fresh-tunnel gate and the watchdog keepalive.
+/// Per-target connect wait for the FAST GATE of a FRESH, just-built tunnel (before
+/// it is published). Tighter than the established [`PROBE_TIMEOUT`] because a
+/// healthy fresh probe connects FAST: across 15 cold-start trials the SUCCESSFUL
+/// exit probe completed in 465–1197ms (median 774ms), so 5s is >4x the measured
+/// worst case — ample headroom to never false-condemn a slow-but-healthy fresh
+/// exit (the build130 single-shot regression we must not reintroduce). The point
+/// of the asymmetry: a genuinely DEAD fresh exit (accepts the IPR handshake but
+/// delivers nothing) is now condemned in ~10s instead of the ~32s the doubled
+/// patient probe cost on this path, which dominated the cold-start latency tail.
+const FRESH_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
+/// Probe rounds for the fresh-tunnel gate. SAME 2-round retry as the established
+/// path: a single lost mixnet datagram mid-handshake still gets a second chance
+/// before the tunnel is condemned — the transient-loss protection the original
+/// trigger-happy single-shot probe lacked. Worst-case fresh-gate budget is
+/// therefore FRESH_PROBE_ROUNDS × FRESH_PROBE_TIMEOUT = 10s (vs the old ~32s).
+const FRESH_PROBE_ROUNDS: usize = 2;
+
+/// PATIENT end-to-end liveness probe of an ESTABLISHED tunnel, on the generous
+/// [`PROBE_TIMEOUT`]/[`PROBE_ROUNDS`] budget (worst case ~16s). Used by the
+/// watchdog keepalive and the condemnation exit-DNS check — an exit already in
+/// service must never be false-condemned over a momentary hiccup. The FRESH,
+/// just-built-tunnel gate uses [`probe_fresh`] instead (a tighter budget). See
+/// [`probe_with_budget`] for the shared mechanics.
 pub async fn probe(tunnel: &Tunnel) -> bool {
-	for round in 0..PROBE_ROUNDS {
+	probe_with_budget(tunnel, PROBE_TIMEOUT, PROBE_ROUNDS).await
+}
+
+/// FAST end-to-end liveness GATE for a FRESH, just-built tunnel, run BEFORE it is
+/// published, on the tighter [`FRESH_PROBE_TIMEOUT`]/[`FRESH_PROBE_ROUNDS`] budget
+/// (worst case ~10s vs the ~32s the doubled patient probe cost on this path). A
+/// fresh exit that accepts the IPR handshake yet delivers nothing (a DEAD EXIT) is
+/// condemned quickly instead of dominating the cold-start tail — WITHOUT
+/// reintroducing the false-condemn of a healthy exit (build130): the 5s per-target
+/// timeout is >4x the measured worst-case healthy fresh probe (1197ms) and the
+/// 2-round retry still absorbs a single lost datagram. See [`probe_with_budget`].
+pub async fn probe_fresh(tunnel: &Tunnel) -> bool {
+	probe_with_budget(tunnel, FRESH_PROBE_TIMEOUT, FRESH_PROBE_ROUNDS).await
+}
+
+/// Shared raced-targets liveness probe on an explicit per-target `timeout` /
+/// `rounds` budget: try to open a TCP connection THROUGH the tunnel to any of a few
+/// stable public addresses (raced, retried a round) and drop the winner
+/// immediately. Because TCP over the mixnet RETRANSMITS, a single lost datagram
+/// does not spuriously fail a healthy exit; racing several targets over multiple
+/// rounds additionally absorbs a momentarily slow single path — together they stop
+/// the false-DEAD reselect churn the old single-target probe caused. Proves the
+/// full path (mixnet → IPR exit → internet) and keeps the gateway/IPR session from
+/// idling out. Callers pick the budget: [`probe`] (patient, established tunnels)
+/// vs [`probe_fresh`] (fast, fresh-tunnel gate) — the racing + multi-round
+/// structure is identical, only the timeout/rounds differ.
+async fn probe_with_budget(tunnel: &Tunnel, timeout: Duration, rounds: usize) -> bool {
+	for round in 0..rounds {
 		let mut inflight = FuturesUnordered::new();
 		for addr in PROBE_ADDRS {
 			inflight.push(async move {
 				matches!(
-					tokio::time::timeout(PROBE_TIMEOUT, tunnel.tcp_connect(addr)).await,
+					tokio::time::timeout(timeout, tunnel.tcp_connect(addr)).await,
 					Ok(Ok(_))
 				)
 			});
@@ -508,11 +555,11 @@ pub async fn probe(tunnel: &Tunnel) -> bool {
 			}
 		}
 		debug!(
-			"probe: no stable target reachable through tunnel (round {}/{PROBE_ROUNDS})",
+			"probe: no stable target reachable through tunnel (round {}/{rounds})",
 			round + 1
 		);
 	}
-	debug!("probe: tunnel failed liveness — reached no stable target in {PROBE_ROUNDS} rounds");
+	debug!("probe: tunnel failed liveness — reached no stable target in {rounds} rounds");
 	false
 }
 

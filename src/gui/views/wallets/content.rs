@@ -847,7 +847,7 @@ impl WalletsContent {
 					let ver_text = if let Some(size) = update.size.as_ref() {
 						format!("{} {} ({} MB)", BOOKMARKS, update.version, size)
 					} else {
-						format!("{} {} > {}", BOOKMARKS, crate::VERSION, update.version)
+						format!("{} build{} > {}", BOOKMARKS, crate::BUILD, update.version)
 					};
 					View::ellipsize_text(ui, ver_text, 15.0, Colors::text(false));
 					ui.add_space(1.0);

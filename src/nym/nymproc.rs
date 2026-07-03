@@ -45,7 +45,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use log::{error, info, warn};
+use log::{debug, error, info, warn};
 use parking_lot::RwLock;
 use smolmix::{Recipient, Tunnel};
 
@@ -332,11 +332,18 @@ fn run_tunnel() {
 					// publishing such a tunnel would blackhole every consumer
 					// until the watchdog caught it minutes later. Re-select
 					// immediately instead. (This is a CHEAP early signal; relay
-					// reachability below is the authoritative one.)
-					if !probe_fresh(&tunnel).await {
+					// reachability below is the authoritative one.) Uses the FAST
+					// fresh-gate budget (~10s worst case) — NOT the patient
+					// established-tunnel probe (~32s doubled here before) — so a
+					// dead fresh exit no longer dominates the cold-start tail; see
+					// `dns::probe_fresh`.
+					let probe_started = Instant::now();
+					let alive = super::dns::probe_fresh(&tunnel).await;
+					let probe_ms = probe_started.elapsed().as_millis();
+					if !alive {
 						warn!(
-							"[timing] nym: DEAD EXIT — fresh {} tunnel failed liveness probe after {}ms \
-							 (attempt {attempt}); {}",
+							"[timing] nym: DEAD EXIT — fresh {} tunnel failed liveness probe in {probe_ms}ms \
+							 ({}ms total incl. build; attempt {attempt}); {}",
 							choice.label(),
 							started.elapsed().as_millis(),
 							match choice {
@@ -501,18 +508,6 @@ fn run_tunnel() {
 			}
 		}
 	});
-}
-
-/// Two attempts of the (TCP, retransmitting) liveness probe before rejecting a
-/// fresh tunnel — one transient hiccup while the exit settles must not condemn
-/// an otherwise healthy exit.
-async fn probe_fresh(tunnel: &smolmix::Tunnel) -> bool {
-	for _ in 0..2 {
-		if super::dns::probe(tunnel).await {
-			return true;
-		}
-	}
-	false
 }
 
 /// Exit-liveness keepalive period and the consecutive probe failures that
@@ -840,14 +835,30 @@ async fn build_tunnel(
 	cfg.traffic.message_sending_average_delay = Duration::from_millis(4);
 
 	// Mirror the mainnet env setup the SDK's own constructors run before connect.
+	// Done ONCE here (not per-raced-client): `setup_env` writes process-wide env
+	// vars and must not be raced across the two connect tasks on the cold path.
 	nym_sdk::setup_env(None::<&std::path::Path>);
-	let mut builder = MixnetClientBuilder::new_ephemeral().debug_config(cfg);
-	// Warm-connect: ask for last run's entry gateway. With ephemeral storage this
-	// is a Specified gateway selection with no persisted keys.
-	if let Some(gw) = entry_gateway {
-		builder = builder.request_gateway(gw);
-	}
-	let client = builder.build()?.connect_to_mixnet().await?;
+
+	// GATEWAY CONNECT. Two shapes, both on the identical anonymity `cfg` (`Copy`):
+	//  * WARM hint (`entry_gateway.is_some()`): reconnect to the KNOWN-good first
+	//    hop — a Specified gateway, ephemeral storage, no persisted keys. NO race:
+	//    we want that specific gateway.
+	//  * COLD / auto (`entry_gateway.is_none()`): the first hop is a RANDOM draw and
+	//    a dead draw blocks `connect_to_mixnet()` until `run_tunnel`'s 10s cap, with
+	//    consecutive dead draws stacking into a multi-second tail. Race TWO ephemeral
+	//    gateway connects and take the first up (see `connect_gateway_racing`). Only
+	//    the gateway handshake is doubled — the exit/IPR below is still built ONCE.
+	let client = match entry_gateway {
+		Some(gw) => {
+			MixnetClientBuilder::new_ephemeral()
+				.debug_config(cfg)
+				.request_gateway(gw)
+				.build()?
+				.connect_to_mixnet()
+				.await?
+		}
+		None => connect_gateway_racing(cfg).await?,
+	};
 
 	// Capture the ENTRY GATEWAY actually used, from the client's own nym-address,
 	// BEFORE `from_client` consumes the client.
@@ -863,6 +874,105 @@ async fn build_tunnel(
 	let stream = IpMixStream::from_client(client, ipr).await?;
 	let tunnel = Tunnel::from_stream(stream).await?;
 	Ok((tunnel, entry_gw, ipr))
+}
+
+/// Cold/auto gateway connect with a BOUNDED latency tail — the fix for the Nym
+/// cold-start "gateway lottery". Used ONLY on the auto path (no warm hint), where
+/// the entry gateway is a RANDOM draw: a dead draw blocks `connect_to_mixnet()`
+/// until `run_tunnel`'s 10s cap and consecutive dead draws stack into the tail.
+///
+/// Race EXACTLY TWO ephemeral `MixnetClient`s — IDENTICAL anonymity `cfg`,
+/// ephemeral keys, nothing persisted — through the gateway handshake and return
+/// the FIRST that connects. Only the gateway handshake is doubled; the caller
+/// builds the exit/IPR ONCE on the winner. Two (not more) bounds the Nym
+/// free-tier bandwidth burst.
+///
+/// The loser is REAPED so a CONNECTED client is never leaked: it is aborted (a
+/// still-pending connect just drops its half-built client) and, in a DETACHED task
+/// so the winner returns immediately, `disconnect()`ed IFF it had already
+/// connected. If BOTH draws fail, the error is returned so `run_tunnel`'s loop
+/// re-selects — the same contract as the single build.
+async fn connect_gateway_racing(
+	cfg: nym_sdk::DebugConfig,
+) -> Result<nym_sdk::mixnet::MixnetClient, smolmix::SmolmixError> {
+	use nym_sdk::mixnet::{MixnetClient, MixnetClientBuilder};
+
+	async fn connect_one(cfg: nym_sdk::DebugConfig) -> Result<MixnetClient, smolmix::SmolmixError> {
+		Ok(MixnetClientBuilder::new_ephemeral()
+			.debug_config(cfg)
+			.build()?
+			.connect_to_mixnet()
+			.await?)
+	}
+
+	// Spawn both so the loser can be aborted cleanly. `cfg` is `Copy`, so each task
+	// gets the identical anonymity config.
+	let race_started = Instant::now();
+	let mut a = tokio::spawn(connect_one(cfg));
+	let mut b = tokio::spawn(connect_one(cfg));
+	debug!("[timing] nym: gateway race START — 2 ephemeral draws, first up wins");
+
+	// Whichever finishes first; keep `other` to reap (on a win) or fall back to (if
+	// the first draw errored). `winner` tags WHICH draw finished first.
+	let (first, other, winner) = tokio::select! {
+		r = &mut a => (r, b, 'A'),
+		r = &mut b => (r, a, 'B'),
+	};
+	// A JoinError (task panic) folds into an error so `other` still gets its turn.
+	let first = first.unwrap_or_else(|e| {
+		Err(smolmix::SmolmixError::Io(std::io::Error::new(
+			std::io::ErrorKind::Other,
+			format!("nym gateway connect task failed: {e}"),
+		)))
+	});
+
+	match first {
+		// First to finish connected — it WINS. Reap the loser off the hot path.
+		Ok(client) => {
+			info!(
+				"[timing] nym: gateway race WON by draw {winner} in {}ms; reaping loser off the hot path",
+				race_started.elapsed().as_millis()
+			);
+			other.abort();
+			tokio::spawn(async move {
+				// If the loser connected before the abort landed, disconnect it so
+				// no live gateway session leaks; a pending connect was just dropped.
+				match other.await {
+					Ok(Ok(loser)) => {
+						debug!(
+							"[timing] nym: gateway race loser had connected before abort — \
+							 disconnecting so no gateway session leaks"
+						);
+						loser.disconnect().await;
+					}
+					_ => debug!(
+						"[timing] nym: gateway race loser still pending at reap — dropped \
+						 (no session to close)"
+					),
+				}
+			});
+			Ok(client)
+		}
+		// First draw failed — a lone client has no dead-draw tail, so just await the
+		// survivor; if it fails too, surface an error and `run_tunnel` re-selects.
+		Err(first_err) => match other.await {
+			Ok(Ok(client)) => {
+				info!(
+					"[timing] nym: gateway race — draw {winner} errored, survivor connected in {}ms",
+					race_started.elapsed().as_millis()
+				);
+				Ok(client)
+			}
+			Ok(Err(second_err)) => {
+				warn!(
+					"[timing] nym: both raced gateway connects failed \
+					 ({first_err}; {second_err}); run_tunnel will re-select"
+				);
+				Err(second_err)
+			}
+			Err(_join) => Err(first_err),
+		},
+	}
 }
 
 #[cfg(test)]

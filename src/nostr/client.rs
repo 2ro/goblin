@@ -938,6 +938,22 @@ async fn run_service(svc: Arc<NostrService>, wallet: Wallet) {
 						"nostr: first relay Connected ~{}ms after connect()",
 						connect_started.elapsed().as_millis()
 					);
+					// Flip the UI "Connected" flag on the REAL relay-up signal
+					// (~2-4s over the exit) instead of gating it behind
+					// publish_identity + the up-to-30s catch-up fetch below: those are
+					// receive-side housekeeping and keep running in the background,
+					// while the relay is already usable the moment it reaches
+					// Connected. Without this, one relay slow to EOSE pinned the
+					// indicator on "Connecting relays…" for ~30s even though the
+					// connection was live in ~2-4s.
+					//
+					// Accepted tradeoff: between here and the 2s status loop taking
+					// over, a relay DROP wouldn't flip the flag back for up to ~30s
+					// (until the post-catch-up re-check re-syncs it to reality) — the
+					// same-order staleness as the old pessimistic gap, just optimistic
+					// instead. The transport watchdog (nymproc) still tracks real exit
+					// health independently of this UI flag.
+					svc_probe.connected.store(true, Ordering::Relaxed);
 					// FAST relay-live report: closes nymproc's relay-readiness
 					// window as soon as the exit is proven to carry relay traffic,
 					// independent of the up-to-30s catch-up fetch below (a slow
@@ -1281,8 +1297,15 @@ async fn publish_identity(svc: &Arc<NostrService>, client: &Client) {
 		}
 	}
 	for event in &events {
-		if let Err(e) = client.send_event_to(&advertised, event).await {
-			warn!("nostr: publish kind {} failed: {e}", event.kind);
+		// Time-box each publish (mirrors dispatch_dm's SEND_TIMEOUT): this loop is
+		// awaited before the catch-up fetch and the kind:1059 subscription below, so
+		// an untimed send to a stalled relay would delay real incoming-message
+		// delivery. On timeout, warn and move on to the next event — never abort the
+		// identity sequence.
+		match tokio::time::timeout(SEND_TIMEOUT, client.send_event_to(&advertised, event)).await {
+			Ok(Ok(_)) => {}
+			Ok(Err(e)) => warn!("nostr: publish kind {} failed: {e}", event.kind),
+			Err(_) => warn!("nostr: publish kind {} timed out", event.kind),
 		}
 	}
 

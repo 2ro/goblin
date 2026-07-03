@@ -49,11 +49,12 @@ fetch_zig() {
 }
 
 fetch_appimage() {
-	[ -x "${TC}/appimagetool" ] && [ -e "${TC}/runtime-x86_64" ] && { echo "appimagetool ${AT_VER}: present"; return; }
-	echo "appimage: fetching appimagetool ${AT_VER} + type2 runtime…"
+	[ -x "${TC}/appimagetool" ] && [ -e "${TC}/runtime-x86_64" ] && [ -e "${TC}/runtime-aarch64" ] && { echo "appimagetool ${AT_VER}: present"; return; }
+	echo "appimage: fetching appimagetool ${AT_VER} + type2 runtimes (x86_64 + aarch64)…"
 	dl "${DEV}/appimagetool/releases/download/${AT_VER}/appimagetool-x86_64.AppImage" "${TC}/appimagetool"
 	dl "${DEV}/appimage-type2-runtime/releases/download/${RT_TAG}/runtime-x86_64" "${TC}/runtime-x86_64"
-	chmod +x "${TC}/appimagetool" "${TC}/runtime-x86_64"
+	dl "${DEV}/appimage-type2-runtime/releases/download/${RT_TAG}/runtime-aarch64" "${TC}/runtime-aarch64"
+	chmod +x "${TC}/appimagetool" "${TC}/runtime-x86_64" "${TC}/runtime-aarch64"
 }
 
 # Assemble a minimal Android SDK (build-tools + platform + platform-tools) from

@@ -101,10 +101,10 @@ num-bigint = "0.4.6"
 nostr-sdk = { version = "0.44", features = ["nip06", "nip44", "nip49", "nip59", "nip98"] }
 nostr-relay-pool = "0.44"
 ## NIP-44 v3 (+ v2) encryption for the NIP-17 backward-compat extension (G4).
-## Path dep on the local crate's `v3` working tree — the M0 deliverable, all
-## upstream test vectors green. Do NOT float this to crates.io until the crate
-## is published there.
-nip44 = { path = "../nip44" }
+## Now published to crates.io as v0.3.0 (the M0 deliverable, all upstream test
+## vectors green) — no local sibling checkout required. secp256k1 0.31, bridged
+## to nostr-sdk's 0.29 in wrapv3.rs (see the secp256k1 note below).
+nip44 = "0.3.0"
 ## Only to construct the key types the `nip44` crate takes: nostr-sdk pins
 ## secp256k1 0.29, the nip44 crate 0.31 — bridged via byte arrays in wrapv3.rs.
 secp256k1 = "0.31"
