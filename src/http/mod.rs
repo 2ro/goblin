@@ -18,5 +18,5 @@ pub use client::*;
 mod release;
 pub use release::*;
 
-mod price;
+pub(crate) mod price;
 pub use price::grin_rate;

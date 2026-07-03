@@ -48,8 +48,8 @@ use log::{debug, warn};
 use tokio::io::{AsyncRead, AsyncWrite};
 
 pub use nymproc::{
-	is_ready, report_relay_down, report_relay_live, set_relay_consumer, transport_ready,
-	tunnel_generation, warm_up,
+	condemn_exit, is_ready, report_relay_down, report_relay_live, set_relay_consumer,
+	transport_ready, tunnel_generation, warm_up,
 };
 pub use transport::NymWebSocketTransport;
 

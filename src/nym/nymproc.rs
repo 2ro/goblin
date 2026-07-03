@@ -49,6 +49,8 @@ use log::{error, info, warn};
 use parking_lot::RwLock;
 use smolmix::{Recipient, Tunnel};
 
+use crate::AppConfig;
+
 /// The shared process-lifetime tunnel, set once the mixnet bootstrap finishes.
 static TUNNEL: RwLock<Option<Tunnel>> = RwLock::new(None);
 
@@ -85,6 +87,19 @@ static STARTED: AtomicBool = AtomicBool::new(false);
 /// Guards the one-shot scoped-exit prewarm so it fires exactly once — after the
 /// FIRST tunnel is published — and never again on a later reselect.
 static PREWARMED: AtomicBool = AtomicBool::new(false);
+
+/// Guards the one-shot eager price fetch / end-to-end exit probe so it fires
+/// exactly once — after the FIRST tunnel is published — and never again on a
+/// later reselect.
+static PRICE_KICKED: AtomicBool = AtomicBool::new(false);
+
+/// The highest tunnel generation for which an external caller (the eager price
+/// probe) has requested condemnation. The watchdog compares it against the
+/// generation it is watching each tick, so a dead exit whose cheap probes still
+/// pass but which blackholes real HTTP can be abandoned in seconds. `fetch_max`
+/// so a stale request can never move it backwards. Never triggers a reselect on
+/// a NEWER generation than the one requested.
+static CONDEMN_REQUEST_GEN: AtomicU64 = AtomicU64::new(0);
 
 /// Pre-warm the mixnet tunnel in the background so relays / NIP-05 / price are
 /// ready by first use. Idempotent — later calls (including the lazy-init path
@@ -132,6 +147,19 @@ pub fn report_relay_live(generation: u64) {
 /// stale "down" can't wipe a fresh report from a newer exit.
 pub fn report_relay_down(generation: u64) {
 	let _ = RELAY_LIVE_GEN.compare_exchange(generation, 0, Ordering::AcqRel, Ordering::Acquire);
+}
+
+/// External condemnation request for `generation`: the end-to-end eager probe
+/// found the exit up (cheap probes pass) yet blackholing real HTTP. The watchdog
+/// picks this up on its next tick and re-selects a fresh exit. Bounded by design:
+/// it only ever condemns the generation it targets, never a newer one, and the
+/// probe that calls it is one-shot per tunnel generation.
+pub fn condemn_exit(generation: u64) {
+	if generation == 0 {
+		return;
+	}
+	CONDEMN_REQUEST_GEN.fetch_max(generation, Ordering::AcqRel);
+	warn!("[timing] nym: eager probe requested condemnation of exit gen {generation}");
 }
 
 /// Bracket a nostr consumer's lifetime: the running `NostrService` sets this
@@ -197,6 +225,22 @@ fn run_tunnel() {
 		// True while a FALLBACK (auto-selected) exit carries the traffic even
 		// though an anchor is configured — makes the ANCHOR RECOVERED log honest.
 		let mut fell_back = false;
+		// WARM-CONNECT CACHES (biggest cold-connect win). The last-known-good ENTRY
+		// GATEWAY (item 1) is applied to EVERY build so a warm reconnect skips
+		// re-picking a random — and possibly dead — first hop; a build timeout/error
+		// while it was in use drops it for the rest of THIS process (disk untouched,
+		// since a blip must not throw away a good hint). The last-known-good IPR
+		// (item 2) is tried once per process as a pin, ordered Anchor -> Cached ->
+		// Auto by the selector.
+		let mut cached_gw = AppConfig::nym_entry_gateway();
+		let mut cached_ipr = AppConfig::nym_last_ipr().and_then(|s| parse_anchor(&s));
+		// Don't double up: if the cached IPR is the configured anchor, the anchor
+		// slot already covers it.
+		if let (Some(c), Some(a)) = (cached_ipr, anchor_recipient()) {
+			if c == a {
+				cached_ipr = None;
+			}
+		}
 		// COLD-START SEQUENCING (reads-first): the TUNNEL bootstraps first and takes
 		// its Nym free-tier bandwidth grant, so interactive reads get the tunnel
 		// ~2-3s sooner. The scoped money-path exit is prewarmed AFTER the first
@@ -211,13 +255,21 @@ fn run_tunnel() {
 			// attempt in the cycle. Env re-read each attempt so the timing
 			// harness / a debug session can flip it without a restart.
 			let anchor = anchor_recipient();
-			let choice = selector.next_choice(anchor.is_some());
+			let choice = selector.next_choice(anchor.is_some(), cached_ipr.is_some());
 			let pin = match choice {
 				ExitChoice::Anchor => {
 					info!(
 						"[timing] nym: ANCHOR attempt — trying our preferred IPR exit first (attempt {attempt})"
 					);
 					anchor
+				}
+				ExitChoice::Cached => {
+					info!(
+						"[timing] nym: CACHED attempt — trying last-known-good IPR exit (attempt {attempt})"
+					);
+					// One-shot for this process: take it so a failure falls through
+					// to Auto and the slot never re-arms (unlike the anchor).
+					cached_ipr.take()
 				}
 				ExitChoice::Auto => None,
 			};
@@ -229,30 +281,48 @@ fn run_tunnel() {
 			// own long "connection response" timeout (~74s measured) before we can
 			// reselect. Abandoning the future drops the half-built tunnel.
 			let build_cap = tunnel_build_timeout();
-			let build = match tokio::time::timeout(build_cap, build_tunnel(pin)).await {
+			let entry_gw = cached_gw.clone();
+			let used_cached_gw = entry_gw.is_some();
+			let build = match tokio::time::timeout(build_cap, build_tunnel(pin, entry_gw)).await {
 				Ok(result) => result,
 				Err(_) => {
-					if choice == ExitChoice::Anchor {
-						// A dead anchor must not delay connectivity: fall back
-						// to auto-select IMMEDIATELY (no backoff), same cycle.
-						warn!(
-							"[timing] nym: ANCHOR DEAD — anchor build exceeded {}s (attempt {attempt}); \
-							 FALLBACK to auto-select now",
-							build_cap.as_secs()
-						);
-						continue;
+					// A cached entry gateway that timed out is not reused for the rest
+					// of this process (disk kept — it may be a transient blip).
+					if used_cached_gw {
+						cached_gw = None;
 					}
-					warn!(
-						"[timing] nym: DEAD GATEWAY — build_tunnel exceeded {}s (attempt {attempt}); \
-						 re-selecting immediately",
-						build_cap.as_secs()
-					);
-					delay = Duration::from_secs(5);
+					match choice {
+						ExitChoice::Anchor => {
+							// A dead anchor must not delay connectivity: fall back
+							// to auto-select IMMEDIATELY (no backoff), same cycle.
+							warn!(
+								"[timing] nym: ANCHOR DEAD — anchor build exceeded {}s (attempt {attempt}); \
+								 FALLBACK to auto-select now",
+								build_cap.as_secs()
+							);
+						}
+						ExitChoice::Cached => {
+							warn!(
+								"[timing] nym: CACHED IPR build exceeded {}s (attempt {attempt}); \
+								 clearing the cached exit and auto-selecting now",
+								build_cap.as_secs()
+							);
+							AppConfig::set_nym_last_ipr(None);
+						}
+						ExitChoice::Auto => {
+							warn!(
+								"[timing] nym: DEAD GATEWAY — build_tunnel exceeded {}s (attempt {attempt}); \
+								 re-selecting immediately",
+								build_cap.as_secs()
+							);
+							delay = Duration::from_secs(5);
+						}
+					}
 					continue;
 				}
 			};
 			match build {
-				Ok(tunnel) => {
+				Ok((tunnel, used_gw, used_ipr)) => {
 					let build_ms = started.elapsed().as_millis();
 					info!(
 						"[timing] nym: tunnel BUILT in {build_ms}ms (attempt {attempt}); probing exit liveness"
@@ -269,15 +339,22 @@ fn run_tunnel() {
 							 (attempt {attempt}); {}",
 							choice.label(),
 							started.elapsed().as_millis(),
-							if choice == ExitChoice::Anchor {
-								"FALLBACK to auto-select now"
-							} else {
-								"re-selecting immediately"
+							match choice {
+								ExitChoice::Anchor => "FALLBACK to auto-select now",
+								ExitChoice::Cached =>
+									"clearing the cached exit and auto-selecting now",
+								ExitChoice::Auto => "re-selecting immediately",
 							}
 						);
 						tunnel.shutdown().await;
-						if choice == ExitChoice::Auto {
-							delay = (delay * 2).min(Duration::from_secs(60));
+						match choice {
+							// A cached exit that fails its probe is stale: drop the
+							// disk hint so we don't keep re-trying a dead IPR.
+							ExitChoice::Cached => AppConfig::set_nym_last_ipr(None),
+							ExitChoice::Auto => {
+								delay = (delay * 2).min(Duration::from_secs(60));
+							}
+							ExitChoice::Anchor => {}
 						}
 						continue;
 					}
@@ -306,6 +383,17 @@ fn run_tunnel() {
 							}
 							fell_back = false;
 						}
+						// A cached exit only wins after the anchor slot was tried this
+						// cycle, so with an anchor configured this is still a FALLBACK —
+						// retry the anchor on the next reselect.
+						ExitChoice::Cached if anchor.is_some() => {
+							fell_back = true;
+							info!(
+								"[timing] nym: running on cached FALLBACK exit (gen {generation}); \
+								 anchor will be retried on the next reselect"
+							);
+						}
+						ExitChoice::Cached => {}
 						ExitChoice::Auto if anchor.is_some() => {
 							fell_back = true;
 							info!(
@@ -314,6 +402,18 @@ fn run_tunnel() {
 							);
 						}
 						ExitChoice::Auto => {}
+					}
+					// Persist the warm-connect caches for the next cold start: the ENTRY
+					// GATEWAY (item 1) and the winning IPR (item 2), each only when
+					// changed so a steady exit doesn't rewrite app.toml on every reselect.
+					if AppConfig::nym_entry_gateway().as_deref() != Some(used_gw.as_str()) {
+						info!("[timing] nym: caching entry gateway {used_gw} for warm reconnect");
+						AppConfig::set_nym_entry_gateway(Some(used_gw.clone()));
+					}
+					cached_gw = Some(used_gw);
+					let ipr_str = used_ipr.to_string();
+					if AppConfig::nym_last_ipr().as_deref() != Some(ipr_str.as_str()) {
+						AppConfig::set_nym_last_ipr(Some(ipr_str));
 					}
 					*TUNNEL.write() = Some(tunnel.clone());
 					MIXNET_READY.store(true, Ordering::Relaxed);
@@ -326,6 +426,13 @@ fn run_tunnel() {
 						&& !PREWARMED.swap(true, Ordering::SeqCst)
 					{
 						tokio::spawn(super::streamexit::prewarm());
+					}
+					// Eager price fetch the moment the tunnel is ready (item 3) — it
+					// also serves as the end-to-end exit probe (item 5): if every
+					// attempt fails while the tunnel still reads ready, the exit is
+					// blackholing HTTP and gets condemned. One-shot, like the prewarm.
+					if !PRICE_KICKED.swap(true, Ordering::SeqCst) {
+						std::thread::spawn(crate::http::price::eager_refresh);
 					}
 					delay = Duration::from_secs(5);
 					// Hold the exit warm and govern its health. The watchdog weighs TWO
@@ -360,21 +467,36 @@ fn run_tunnel() {
 					}
 				}
 				Err(e) => {
-					if choice == ExitChoice::Anchor {
-						// Anchor unreachable (not bonded yet / condemned by the
-						// network / bad address): fall back to auto-select
-						// IMMEDIATELY — no backoff, connectivity first.
-						warn!(
-							"[timing] nym: ANCHOR failed to build: {e}; FALLBACK to auto-select now"
-						);
-						continue;
+					// A cached entry gateway that errored is not reused for the rest
+					// of this process (disk kept — it may be a transient blip).
+					if used_cached_gw {
+						cached_gw = None;
 					}
-					error!(
-						"nym: mixnet tunnel failed to start: {e}; retrying in {}s",
-						delay.as_secs()
-					);
-					tokio::time::sleep(delay).await;
-					delay = (delay * 2).min(Duration::from_secs(60));
+					match choice {
+						ExitChoice::Anchor => {
+							// Anchor unreachable (not bonded yet / condemned by the
+							// network / bad address): fall back to auto-select
+							// IMMEDIATELY — no backoff, connectivity first.
+							warn!(
+								"[timing] nym: ANCHOR failed to build: {e}; FALLBACK to auto-select now"
+							);
+						}
+						ExitChoice::Cached => {
+							warn!(
+								"[timing] nym: CACHED IPR failed to build: {e}; \
+								 clearing the cached exit and auto-selecting now"
+							);
+							AppConfig::set_nym_last_ipr(None);
+						}
+						ExitChoice::Auto => {
+							error!(
+								"nym: mixnet tunnel failed to start: {e}; retrying in {}s",
+								delay.as_secs()
+							);
+							tokio::time::sleep(delay).await;
+							delay = (delay * 2).min(Duration::from_secs(60));
+						}
+					}
 				}
 			}
 		}
@@ -480,6 +602,19 @@ async fn watch_tunnel(tunnel: &smolmix::Tunnel, generation: u64) {
 	let mut relay_lost: Option<Instant> = None;
 	loop {
 		tokio::time::sleep(WATCH_TICK).await;
+		// (0) External condemnation request — the eager end-to-end probe found this
+		// exit up (cheap probes pass) yet blackholing real HTTP. Honor it only for
+		// THIS generation (never a newer one): abandon the exit now so a fresh one
+		// is selected in seconds instead of the minutes a blackhole would otherwise
+		// cost. The MIN_EXIT_LIFETIME rebuild floor still bounds the reselect rate.
+		if CONDEMN_REQUEST_GEN.load(Ordering::Acquire) >= generation {
+			warn!(
+				"[timing] nym: CONDEMN gen {generation} reason=eager-probe-blackhole; \
+				 exit lived {}s, re-selecting",
+				published.elapsed().as_secs()
+			);
+			return;
+		}
 		// (1) Relay reachability — authoritative, but ONLY when a nostr consumer
 		// actually wants relays on this exit. No consumer → the DNS keepalive
 		// below is the sole health signal, exactly as before this hardening.
@@ -550,6 +685,9 @@ enum ExitChoice {
 	/// own co-located exit is the separate scoped-MixnetStream egress; this
 	/// selector governs only the public-IPR fallback layer.)
 	Anchor,
+	/// The last-known-good IPR from a previous run, tried once per process after
+	/// the anchor and before pure auto-select — a warm-connect hint, not a pin.
+	Cached,
 	/// A public exit auto-selected from the network pool — the FALLBACK.
 	Auto,
 }
@@ -559,6 +697,7 @@ impl ExitChoice {
 	fn label(self) -> &'static str {
 		match self {
 			ExitChoice::Anchor => "ANCHOR",
+			ExitChoice::Cached => "cached",
 			ExitChoice::Auto => "auto-selected",
 		}
 	}
@@ -584,27 +723,38 @@ impl ExitChoice {
 struct ExitSelector {
 	/// Whether the anchor has been tried in the current select cycle.
 	anchor_tried: bool,
+	/// Whether the cached last-known-good IPR has been tried. Unlike the anchor
+	/// this is ONCE PER PROCESS — a warm-connect hint spends itself and never
+	/// re-arms, so it can't keep re-pinning a possibly-stale exit on every cycle.
+	cached_tried: bool,
 }
 
 impl ExitSelector {
 	const fn new() -> Self {
 		Self {
 			anchor_tried: false,
+			cached_tried: false,
 		}
 	}
 
-	/// The exit to target for the next build attempt.
-	fn next_choice(&mut self, anchor_available: bool) -> ExitChoice {
+	/// The exit to target for the next build attempt. Order per cycle:
+	/// anchor (if configured, once per cycle) → cached (if available, once per
+	/// process) → auto-select.
+	fn next_choice(&mut self, anchor_available: bool, cached_available: bool) -> ExitChoice {
 		if anchor_available && !self.anchor_tried {
 			self.anchor_tried = true;
 			ExitChoice::Anchor
+		} else if cached_available && !self.cached_tried {
+			self.cached_tried = true;
+			ExitChoice::Cached
 		} else {
 			ExitChoice::Auto
 		}
 	}
 
 	/// A tunnel was published: the select cycle is over. Re-arms the anchor for
-	/// the next cycle.
+	/// the next cycle. The cached slot is NOT re-armed — it is a one-shot
+	/// warm-connect hint (see [`cached_tried`](Self::cached_tried)).
 	fn tunnel_published(&mut self) {
 		self.anchor_tried = false;
 	}
@@ -647,13 +797,28 @@ fn parse_anchor(raw: &str) -> Option<Recipient> {
 }
 
 /// Build the tunnel — pinned to the anchor's IPR when `pin` is set, otherwise
-/// with an auto-selected exit. Ephemeral in-memory keys (a fresh mixnet
-/// identity per run — no sqlite, no persisted gateway).
+/// with an auto-selected exit. When `entry_gateway` is set, the client REQUESTS
+/// that specific first-hop gateway (a warm-connect hint) instead of a random one.
+///
+/// Keys stay EPHEMERAL — a fresh mixnet identity per run, no sqlite, nothing
+/// persisted about the client itself. The ONLY thing that persists across runs is
+/// the gateway CHOICE (and the exit IPR), remembered by [`run_tunnel`] so a warm
+/// reconnect skips re-picking a possibly-dead first hop; the requested gateway
+/// resolves to `GatewaySelectionSpecification::Specified` while storage stays
+/// ephemeral, so no gateway keys are written to disk.
+///
+/// Returns the built tunnel PLUS the ENTRY GATEWAY it actually used (base58) and
+/// the EXIT IPR recipient it rode — both captured so `run_tunnel` can persist the
+/// last-known-good pair. The gateway is read from the client's own nym-address
+/// BEFORE [`IpMixStream::from_client`] consumes the client.
 ///
 /// NEVER make the anchor the ONLY exit: `pin` must always be allowed to fall
 /// back to `None` (see [`ExitSelector`]) or the single-exit SPOF — and a
 /// single party seeing all exit traffic — comes back.
-async fn build_tunnel(pin: Option<Recipient>) -> Result<Tunnel, smolmix::SmolmixError> {
+async fn build_tunnel(
+	pin: Option<Recipient>,
+	entry_gateway: Option<String>,
+) -> Result<(Tunnel, String, Recipient), smolmix::SmolmixError> {
 	use nym_sdk::DebugConfig;
 	use nym_sdk::ipr_wrapper::IpMixStream;
 	use nym_sdk::mixnet::MixnetClientBuilder;
@@ -676,21 +841,28 @@ async fn build_tunnel(pin: Option<Recipient>) -> Result<Tunnel, smolmix::Smolmix
 
 	// Mirror the mainnet env setup the SDK's own constructors run before connect.
 	nym_sdk::setup_env(None::<&std::path::Path>);
-	let client = MixnetClientBuilder::new_ephemeral()
-		.debug_config(cfg)
-		.build()?
-		.connect_to_mixnet()
-		.await?;
+	let mut builder = MixnetClientBuilder::new_ephemeral().debug_config(cfg);
+	// Warm-connect: ask for last run's entry gateway. With ephemeral storage this
+	// is a Specified gateway selection with no persisted keys.
+	if let Some(gw) = entry_gateway {
+		builder = builder.request_gateway(gw);
+	}
+	let client = builder.build()?.connect_to_mixnet().await?;
 
-	// Pinned anchor when provided, else the auto-selected best public IPR — the
-	// same discovery the untuned `IpMixStream::new` path used, so anchor/fallback
-	// selection in `run_tunnel` is unchanged.
+	// Capture the ENTRY GATEWAY actually used, from the client's own nym-address,
+	// BEFORE `from_client` consumes the client.
+	let entry_gw = client.nym_address().gateway().to_base58_string();
+
+	// Pinned anchor/cached exit when provided, else the auto-selected best public
+	// IPR — the same discovery the untuned `IpMixStream::new` path used, so
+	// anchor/fallback selection in `run_tunnel` is unchanged.
 	let ipr = match pin {
 		Some(recipient) => recipient,
 		None => IpMixStream::best_ipr().await?,
 	};
 	let stream = IpMixStream::from_client(client, ipr).await?;
-	Tunnel::from_stream(stream).await
+	let tunnel = Tunnel::from_stream(stream).await?;
+	Ok((tunnel, entry_gw, ipr))
 }
 
 #[cfg(test)]
@@ -701,50 +873,82 @@ mod tests {
 	fn no_anchor_is_pure_auto_select() {
 		let mut s = ExitSelector::new();
 		for _ in 0..5 {
-			assert_eq!(s.next_choice(false), ExitChoice::Auto);
+			assert_eq!(s.next_choice(false, false), ExitChoice::Auto);
 		}
 		// Publishing changes nothing without an anchor.
 		s.tunnel_published();
-		assert_eq!(s.next_choice(false), ExitChoice::Auto);
+		assert_eq!(s.next_choice(false, false), ExitChoice::Auto);
 	}
 
 	#[test]
 	fn anchor_first_then_auto_within_a_cycle() {
 		let mut s = ExitSelector::new();
-		assert_eq!(s.next_choice(true), ExitChoice::Anchor);
+		assert_eq!(s.next_choice(true, false), ExitChoice::Anchor);
 		// Anchor failed — every further attempt in the cycle falls back.
-		assert_eq!(s.next_choice(true), ExitChoice::Auto);
-		assert_eq!(s.next_choice(true), ExitChoice::Auto);
+		assert_eq!(s.next_choice(true, false), ExitChoice::Auto);
+		assert_eq!(s.next_choice(true, false), ExitChoice::Auto);
 	}
 
 	#[test]
 	fn anchor_retried_on_the_next_cycle_after_a_fallback() {
 		let mut s = ExitSelector::new();
 		// Cycle 1: anchor fails, a fallback exit gets published.
-		assert_eq!(s.next_choice(true), ExitChoice::Anchor);
-		assert_eq!(s.next_choice(true), ExitChoice::Auto);
+		assert_eq!(s.next_choice(true, false), ExitChoice::Anchor);
+		assert_eq!(s.next_choice(true, false), ExitChoice::Auto);
 		s.tunnel_published();
 		// Cycle 2 (the reselect after the fallback): anchor first again.
-		assert_eq!(s.next_choice(true), ExitChoice::Anchor);
+		assert_eq!(s.next_choice(true, false), ExitChoice::Anchor);
 	}
 
 	#[test]
 	fn anchor_publish_also_rearms_the_anchor() {
 		let mut s = ExitSelector::new();
-		assert_eq!(s.next_choice(true), ExitChoice::Anchor);
+		assert_eq!(s.next_choice(true, false), ExitChoice::Anchor);
 		s.tunnel_published(); // the anchor itself came up
 		// Condemned later → next cycle prefers the anchor again.
-		assert_eq!(s.next_choice(true), ExitChoice::Anchor);
+		assert_eq!(s.next_choice(true, false), ExitChoice::Anchor);
 	}
 
 	#[test]
 	fn anchor_appearing_mid_cycle_is_tried() {
 		let mut s = ExitSelector::new();
 		// No anchor yet (env unset / invalid): auto, without burning the try.
-		assert_eq!(s.next_choice(false), ExitChoice::Auto);
+		assert_eq!(s.next_choice(false, false), ExitChoice::Auto);
 		// Anchor becomes available (env fixed mid-run): tried on the next attempt.
-		assert_eq!(s.next_choice(true), ExitChoice::Anchor);
-		assert_eq!(s.next_choice(true), ExitChoice::Auto);
+		assert_eq!(s.next_choice(true, false), ExitChoice::Anchor);
+		assert_eq!(s.next_choice(true, false), ExitChoice::Auto);
+	}
+
+	#[test]
+	fn cached_after_anchor_then_auto_within_a_cycle() {
+		let mut s = ExitSelector::new();
+		// Order per cycle: anchor → cached → auto.
+		assert_eq!(s.next_choice(true, true), ExitChoice::Anchor);
+		assert_eq!(s.next_choice(true, true), ExitChoice::Cached);
+		assert_eq!(s.next_choice(true, true), ExitChoice::Auto);
+		assert_eq!(s.next_choice(true, true), ExitChoice::Auto);
+	}
+
+	#[test]
+	fn cached_tried_before_auto_when_no_anchor() {
+		let mut s = ExitSelector::new();
+		// No anchor, but a cached hint exists: cached first, then auto.
+		assert_eq!(s.next_choice(false, true), ExitChoice::Cached);
+		assert_eq!(s.next_choice(false, true), ExitChoice::Auto);
+	}
+
+	#[test]
+	fn cached_is_one_shot_across_the_whole_process() {
+		let mut s = ExitSelector::new();
+		// Spend the cached hint in cycle 1.
+		assert_eq!(s.next_choice(false, true), ExitChoice::Cached);
+		assert_eq!(s.next_choice(false, true), ExitChoice::Auto);
+		s.tunnel_published();
+		// Cycle 2: the cached slot never re-arms, even if still "available".
+		assert_eq!(s.next_choice(false, true), ExitChoice::Auto);
+		// And with an anchor present the anchor is still retried each cycle.
+		assert_eq!(s.next_choice(true, true), ExitChoice::Anchor);
+		assert_eq!(s.next_choice(true, true), ExitChoice::Auto);
 	}
 
 	#[test]

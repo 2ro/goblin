@@ -93,6 +93,23 @@ pub struct AppConfig {
 	check_updates: Option<bool>,
 	/// Application update information.
 	app_update: Option<AppUpdate>,
+
+	/// Last-known-good Nym ENTRY gateway (base58 identity). Only the gateway
+	/// CHOICE is remembered — the mixnet keys stay ephemeral — so a warm reconnect
+	/// can skip re-picking a (possibly dead) random first hop.
+	nym_entry_gateway: Option<String>,
+	/// Last-known-good Nym IPR exit recipient (the `<id>.<enc>@<gw>` string), so a
+	/// warm reconnect can try the exit that worked last time before auto-selecting.
+	nym_last_ipr: Option<String>,
+
+	/// Last successfully fetched GRIN rate, so the amount preview can paint an
+	/// instant (stale-marked) fiat value on cold start instead of a blank until the
+	/// first mixnet fetch lands.
+	last_rate: Option<f64>,
+	/// The `vs_currency` the cached [`last_rate`] was priced against.
+	last_rate_vs: Option<String>,
+	/// Unix-seconds timestamp the cached [`last_rate`] was fetched at.
+	last_rate_at: Option<i64>,
 }
 
 /// What the amount preview is paired to: nothing, a fiat currency, or bitcoin.
@@ -204,6 +221,11 @@ impl Default for AppConfig {
 			// update check — payments, relays and identity still stay mixnet-only.
 			check_updates: Some(true),
 			app_update: None,
+			nym_entry_gateway: None,
+			nym_last_ipr: None,
+			last_rate: None,
+			last_rate_vs: None,
+			last_rate_at: None,
 		}
 	}
 }
@@ -484,6 +506,55 @@ impl AppConfig {
 	pub fn set_last_wallet_id(id: Option<i64>) {
 		let mut w_config = Settings::app_config_to_update();
 		w_config.last_wallet_id = id;
+		w_config.save();
+	}
+
+	/// Get the last-known-good Nym ENTRY gateway (base58 identity), if any.
+	pub fn nym_entry_gateway() -> Option<String> {
+		let r_config = Settings::app_config_to_read();
+		r_config.nym_entry_gateway.clone()
+	}
+
+	/// Save (or clear) the last-known-good Nym ENTRY gateway.
+	pub fn set_nym_entry_gateway(gw: Option<String>) {
+		let mut w_config = Settings::app_config_to_update();
+		w_config.nym_entry_gateway = gw;
+		w_config.save();
+	}
+
+	/// Get the last-known-good Nym IPR exit recipient string, if any.
+	pub fn nym_last_ipr() -> Option<String> {
+		let r_config = Settings::app_config_to_read();
+		r_config.nym_last_ipr.clone()
+	}
+
+	/// Save (or clear) the last-known-good Nym IPR exit recipient string.
+	pub fn set_nym_last_ipr(ipr: Option<String>) {
+		let mut w_config = Settings::app_config_to_update();
+		w_config.nym_last_ipr = ipr;
+		w_config.save();
+	}
+
+	/// Get the cached GRIN rate as `(vs_currency, rate, fetched_at)`, if one was
+	/// ever persisted. Callers decide whether it is fresh enough to use.
+	pub fn last_rate() -> Option<(String, f64, i64)> {
+		let r_config = Settings::app_config_to_read();
+		match (
+			r_config.last_rate_vs.clone(),
+			r_config.last_rate,
+			r_config.last_rate_at,
+		) {
+			(Some(vs), Some(rate), Some(at)) => Some((vs, rate, at)),
+			_ => None,
+		}
+	}
+
+	/// Persist the most recent GRIN rate for `vs`, fetched at `at` (unix secs).
+	pub fn set_last_rate(vs: &str, rate: f64, at: i64) {
+		let mut w_config = Settings::app_config_to_update();
+		w_config.last_rate_vs = Some(vs.to_string());
+		w_config.last_rate = Some(rate);
+		w_config.last_rate_at = Some(at);
 		w_config.save();
 	}
 

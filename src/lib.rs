@@ -117,16 +117,20 @@ pub fn start(options: NativeOptions, app_creator: eframe::AppCreator) -> eframe:
 	// would panic on the first TLS handshake. nym uses its own explicit provider,
 	// so this only steers our relay/HTTP TLS. Idempotent (Err if already set).
 	let _ = rustls::crypto::ring::default_provider().install_default();
+	// Pre-warm the in-process Nym mixnet tunnel FIRST, before i18n/node setup, so
+	// the mixnet bootstrap (the long pole on cold start) overlaps everything else
+	// and price/NIP-05/nostr are ready at first use. All of Goblin's outbound
+	// traffic egresses through it; nothing clearnet.
+	nym::warm_up();
+	// Seed the price cache from disk so the amount preview can paint an instant
+	// (stale-marked) fiat value while the first live fetch is still in flight.
+	crate::http::price::seed_from_disk();
 	// Setup translations.
 	setup_i18n();
 	// Start integrated node if needed.
 	if AppConfig::autostart_node() {
 		Node::start();
 	}
-	// Pre-warm the in-process Nym mixnet tunnel so price/NIP-05/nostr are ready at
-	// first use. All of Goblin's outbound traffic egresses through it; nothing
-	// clearnet.
-	nym::warm_up();
 	// Launch graphical interface.
 	eframe::run_native("Goblin", options, app_creator)
 }
