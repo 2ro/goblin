@@ -317,6 +317,47 @@ pub fn notify_payment_received(name: &str, amount: &str) {
 	);
 }
 
+/// Show the one-shot "payment requested" system notification (Java side
+/// `BackgroundService.notifyPaymentRequested`, id=3, separate from both the
+/// persistent sync notification id=1 and the received-payment one id=2). Called
+/// by the nostr service when a payment request (Invoice1) is ingested from a
+/// non-GUI thread, hence the stored [`AndroidApp`] handle instead of a platform
+/// reference. Fail-open: a missing handle or JNI error just skips the
+/// notification, never the request. Mirrors [`notify_payment_received`].
+pub fn notify_payment_requested(name: &str, amount: &str) {
+	let app = {
+		let r_app = ANDROID_APP.read();
+		r_app.clone()
+	};
+	let Some(app) = app else {
+		return;
+	};
+	let platform = Android {
+		android_app: app,
+		ctx: Arc::new(RwLock::new(None)),
+	};
+	let Ok(vm) = (unsafe { jni::JavaVM::from_raw(platform.android_app.vm_as_ptr() as _) }) else {
+		return;
+	};
+	let Ok(env) = vm.attach_current_thread() else {
+		return;
+	};
+	let Ok(j_name) = env.new_string(name) else {
+		return;
+	};
+	let Ok(j_amount) = env.new_string(amount) else {
+		return;
+	};
+	let _ = platform.call_java_method(
+		"notifyPaymentRequested",
+		"(Ljava/lang/String;Ljava/lang/String;)V",
+		&[
+			JValue::Object(&JObject::from(j_name)),
+			JValue::Object(&JObject::from(j_amount)),
+		],
+	);
+}
+
 /// Callback from Java code with last entered character from soft keyboard.
 #[allow(non_snake_case)]
 #[unsafe(no_mangle)]

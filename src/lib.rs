@@ -425,6 +425,22 @@ pub fn notify_payment_received(name: &str, amount: &str) {
 	}
 }
 
+/// Fire the platform "payment requested" notification with the requester's
+/// display name and human-readable amount, for an incoming payment request
+/// (someone asking us to pay them). Android shows a one-shot system
+/// notification (`BackgroundService.notifyPaymentRequested`, id=3, separate from
+/// both the persistent sync notification id=1 and the received-payment one
+/// id=2); other platforms are a no-op. Crate-root so the nostr service can reach
+/// it without holding a platform reference. Mirrors [`notify_payment_received`].
+pub fn notify_payment_requested(name: &str, amount: &str) {
+	#[cfg(target_os = "android")]
+	gui::platform::notify_payment_requested(name, amount);
+	#[cfg(not(target_os = "android"))]
+	{
+		let _ = (name, amount);
+	}
+}
+
 lazy_static! {
 	/// Data provided from deeplink or opened file.
 	pub static ref INCOMING_DATA: Arc<RwLock<Option<String>>> = Arc::new(RwLock::new(None));

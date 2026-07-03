@@ -427,6 +427,12 @@ public class MainActivity extends GameActivity {
         BackgroundService.notifyPaymentReceived(this, name, amount);
     }
 
+    // Called from native code to show a "payment requested" notification
+    // (BackgroundService id=3) when a payment request arrives over nostr.
+    public void notifyPaymentRequested(String name, String amount) {
+        BackgroundService.notifyPaymentRequested(this, name, amount);
+    }
+
     // Called from native code to set text into clipboard.
     public void copyText(String data) {
         ClipboardManager clipboard = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);

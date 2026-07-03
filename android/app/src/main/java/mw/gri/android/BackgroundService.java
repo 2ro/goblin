@@ -27,6 +27,10 @@ public class BackgroundService extends Service {
     // sync notification above.
     private static final int PAYMENT_NOTIFICATION_ID = 2;
     private static final String PAYMENT_CHANNEL_ID = "PaymentReceived";
+    // One-shot "payment requested" notification (someone asking us to pay them),
+    // separate from both the sync (id=1) and received-payment (id=2) notifications.
+    private static final int REQUEST_NOTIFICATION_ID = 3;
+    private static final String REQUEST_CHANNEL_ID = "PaymentRequested";
     private NotificationCompat.Builder mNotificationBuilder;
 
     private String mNotificationContentText = "";
@@ -225,6 +229,40 @@ public class BackgroundService extends Service {
             manager.notify(PAYMENT_NOTIFICATION_ID, builder.build());
         } catch (SecurityException e) {
             // POST_NOTIFICATIONS not granted: skip the notification, never the payment.
+        }
+    }
+
+    // Show a one-shot "payment requested" notification (id=3), separate from both
+    // the persistent sync notification (id=1) and the received-payment one (id=2).
+    // Called from native code via MainActivity when a payment request (Invoice1)
+    // arrives over nostr, possibly while the app is backgrounded. Mirrors
+    // notifyPaymentReceived; strings are composed here Java-side.
+    public static void notifyPaymentRequested(Context context, String name, String amount) {
+        NotificationManager manager = context.getSystemService(NotificationManager.class);
+        if (manager == null) {
+            return;
+        }
+        // High-importance channel so the notification pops with sound + vibration.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            NotificationChannel channel = new NotificationChannel(
+                    REQUEST_CHANNEL_ID, "Payment requests", NotificationManager.IMPORTANCE_HIGH
+            );
+            manager.createNotificationChannel(channel);
+        }
+        Intent i = context.getPackageManager().getLaunchIntentForPackage(context.getPackageName());
+        PendingIntent pendingIntent = PendingIntent.getActivity(context, 0, i, PendingIntent.FLAG_IMMUTABLE);
+        NotificationCompat.Builder builder = new NotificationCompat.Builder(context, REQUEST_CHANNEL_ID)
+                .setContentTitle("Payment requested")
+                .setContentText(name + " requested " + amount + " ツ")
+                .setSmallIcon(R.drawable.ic_stat_name)
+                .setPriority(NotificationCompat.PRIORITY_HIGH)
+                .setAutoCancel(true)
+                .setDefaults(NotificationCompat.DEFAULT_ALL)
+                .setContentIntent(pendingIntent);
+        try {
+            manager.notify(REQUEST_NOTIFICATION_ID, builder.build());
+        } catch (SecurityException e) {
+            // POST_NOTIFICATIONS not granted: skip the notification, never the request.
         }
     }
 

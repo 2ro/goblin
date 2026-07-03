@@ -1707,6 +1707,19 @@ async fn handle_wrap(svc: &Arc<NostrService>, wallet: &Wallet, event: Event) {
 			svc.store.mark_processed(&wrap_id);
 			svc.store.mark_processed(&rumor_id);
 			svc.store.mark_processed(&slate_marker);
+			// "Payment requested" system notification (Android; no-op on
+			// desktop): only for a genuine incoming request (Invoice1 →
+			// SurfaceRequest, someone asking us to pay them), not a payment
+			// pending approval (SurfaceIncoming). Fires exactly once — this
+			// branch is reached only for a not-yet-seen slate (slate-level
+			// dedupe above + decide() drops already-known slates), mirroring the
+			// received-payment notification's dedup. Requester's display name
+			// (or short npub) and the human-readable amount, with the ツ mark.
+			if decision == IngestDecision::SurfaceRequest {
+				let name = crate::gui::views::goblin::data::contact_title(&svc.store, &sender_hex);
+				let amount = amount_to_hr_string(slate.amount, true);
+				crate::notify_payment_requested(&name, &amount);
+			}
 		}
 		IngestDecision::FinalizePost => {
 			// The payer's reply is our first contact with their key on this side of
