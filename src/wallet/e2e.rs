@@ -12,16 +12,17 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! LIVE two-wallet end-to-end payment over the Floonet path — CROSS-RELAY and
-//! CROSS-NODE. Two real Goblin wallets restored from mainnet mnemonics (seeds
-//! via env, NEVER a file) run on DIFFERENT relays (A on `wss://relay.goblin.st`,
-//! B on `wss://nrelay.us-ea.st`, each pinned via its own `nostr.toml`) and
-//! DIFFERENT Grin nodes (A on grincoin.org, B on main.gri.mw). One sends a real
-//! gift-wrapped Grin payment to the other, asynchronously through the relays.
-//! Proves the whole money path a phone would use, plus the outbox model: the
-//! sender publishes the wrap to the RECIPIENT's advertised (kind 10050) relay,
-//! not its own, and settlement posts through two independent nodes.
-//! mixnet -> exit -> cross-relay gift wrap -> S2 -> finalize -> post.
+//! LIVE two-wallet end-to-end payment over the Floonet path — over the shared
+//! exit-backed primary relay, CROSS-NODE. Two real Goblin wallets restored from
+//! mainnet mnemonics (seeds via env, NEVER a file) both run on the shipped
+//! default relay (`wss://relay.floonet.dev`, each pinned via its own
+//! `nostr.toml`) but on DIFFERENT Grin nodes (A on grincoin.org, B on
+//! main.gri.mw). One sends a real gift-wrapped Grin payment to the other,
+//! asynchronously through the relay. Proves the whole money path a phone would
+//! use, plus the outbox model: the sender publishes the wrap to the RECIPIENT's
+//! advertised (kind 10050) relay, and settlement posts through two independent
+//! nodes.
+//! mixnet -> exit -> gift wrap -> S2 -> finalize -> post.
 //!
 //! Ignored by default (real mainnet funds + a full recovery scan). Run:
 //!   GOBLIN_E2E_SEED_A="word ..." GOBLIN_E2E_SEED_B="word ..." \

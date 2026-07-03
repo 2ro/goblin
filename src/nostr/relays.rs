@@ -14,9 +14,9 @@
 
 //! Default relay set and relay list helpers.
 
-/// Default DM relays: the Goblin relay plus large public relays for redundancy.
+/// Default DM relays: the Floonet relay plus large public relays for redundancy.
 pub const DEFAULT_RELAYS: &[&str] = &[
-	"wss://relay.goblin.st",
+	"wss://relay.floonet.dev",
 	"wss://relay.damus.io",
 	"wss://nos.lol",
 ];

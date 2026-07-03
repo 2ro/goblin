@@ -348,4 +348,38 @@ mod tests {
 		assert_eq!(out.amount, None);
 		assert_eq!(out.memo, None);
 	}
+
+	// --- magick.market interop contract -------------------------------------
+	// These guard the magick.market <-> Goblin pay-URI contract: a checkout QR
+	// from magick MUST parse here to the exact recipient / amount / memo. magick
+	// emits this canonical format from `buildGoblinPayUri` in src/lib/grin.ts,
+	// converting its internal integer nanogrin to a decimal-GRIN `amount` string
+	// and carrying the opaque `MM-<hex>` invoice number as the `memo`.
+
+	#[test]
+	fn magick_market_checkout_uri_round_trips() {
+		// 1_500_000_000 nanogrin == "1.5" GRIN (magick's formatGrin() output);
+		// memo is the opaque invoice number that bridges payment <-> order.
+		let invoice = "MM-1A2B3C4D5E6F7A8B9C0D1E2F";
+		let uri = format!("nostr:{NPROFILE}?amount=1.5&memo={invoice}");
+		let out = parse(&uri);
+		assert_eq!(out.recipient, NPROFILE);
+		assert_eq!(out.amount.as_deref(), Some("1.5"));
+		assert_eq!(out.memo.as_deref(), Some(invoice));
+	}
+
+	#[test]
+	fn magick_market_amount_precision_range() {
+		// Whole GRIN and the smallest Grin unit (1 nanogrin == 0.000000001 GRIN),
+		// the two ends of the decimal-GRIN strings magick can emit.
+		let whole = parse(&format!("nostr:{NPROFILE}?amount=1&memo=MM-ABC123"));
+		assert_eq!(whole.amount.as_deref(), Some("1"));
+		assert_eq!(whole.memo.as_deref(), Some("MM-ABC123"));
+
+		let smallest = parse(&format!(
+			"nostr:{NPROFILE}?amount=0.000000001&memo=MM-ABC123"
+		));
+		assert_eq!(smallest.amount.as_deref(), Some("0.000000001"));
+		assert_eq!(smallest.memo.as_deref(), Some("MM-ABC123"));
+	}
 }

@@ -67,7 +67,6 @@ const PINNED_POOL: &str = r#"{
   "min_message_length": 131072,
   "relays": [
     { "url": "wss://relay.floonet.dev", "roles": ["dm", "discovery"], "vetted": "2026-07-02", "exit": "EqbUPt7aYkar2CTmjBVnyWaKzb2WT8NdojUGXU4mrfNG.AF5YCD8hgEUqByamrPqZz72h7GE599LbqQrhaew9bBip@HfyUPUv4z8uMQoZYuZGMWf6oe2vaKBVPrfgHk6WvwFPe" },
-    { "url": "wss://relay.goblin.st",    "roles": ["dm", "discovery"], "vetted": "2026-07-01", "exit": "4XPnpmFdieZBY1BM2jU9Qn915v5RGz58ywpgQhuFKBao.8NMrW1i4VaPhY6qhV7supid7P1YcWJ9mGZBKjGEuqN9U@B8bX5x5yKa7oQMCNioLS9seYwNCio3U9jYPxgCZoKjk5" },
     { "url": "wss://relay.primal.net",   "roles": ["dm"],              "vetted": "2026-07-01" },
     { "url": "wss://relay.damus.io",     "roles": ["dm"],              "vetted": "2026-07-01" },
     { "url": "wss://nos.lol",            "roles": ["dm"],              "vetted": "2026-07-01" },
@@ -381,16 +380,15 @@ mod tests {
 		let pool = RelayPool::parse(PINNED_POOL).expect("pinned pool must parse");
 		assert_eq!(pool.version, 1);
 		assert_eq!(pool.min_message_length, MIN_MESSAGE_LENGTH);
-		assert_eq!(pool.relays.len(), 13);
+		assert_eq!(pool.relays.len(), 12);
 		let dm = pool.dm_relays();
-		assert_eq!(dm.len(), 11);
+		assert_eq!(dm.len(), 10);
 		assert!(dm.iter().any(|r| r.url == "wss://relay.floonet.dev"));
-		assert!(dm.iter().any(|r| r.url == "wss://relay.goblin.st"));
 		assert!(dm.iter().all(|r| r.vetted.is_some()));
 		let disc = pool.discovery_relays();
-		// relay.floonet.dev + relay.goblin.st carry both roles; the two indexers
+		// relay.floonet.dev carries both roles; the two indexers
 		// are discovery-only.
-		assert_eq!(disc.len(), 4);
+		assert_eq!(disc.len(), 3);
 		assert!(disc.contains(&"wss://purplepag.es".to_string()));
 		assert!(disc.contains(&"wss://indexer.coracle.social".to_string()));
 	}
@@ -398,11 +396,11 @@ mod tests {
 	#[test]
 	fn exit_field_is_optional_and_looked_up_by_url() {
 		// The pinned pool advertises the money-path relay's co-located scoped
-		// exit (the .8 floonet-mixexit) so it bootstraps OFFLINE, before any
+		// exit (the .AF floonet-mixexit) so it bootstraps OFFLINE, before any
 		// network; every other relay is exit-less (reached over the tunnel).
 		let pinned = RelayPool::parse(PINNED_POOL).unwrap();
 		assert!(pinned.has_exit());
-		assert!(pinned.exit_for("wss://relay.goblin.st").is_some());
+		assert!(pinned.exit_for("wss://relay.floonet.dev").is_some());
 		assert!(pinned.exit_for("wss://nos.lol").is_none());
 
 		// A pool that DOES advertise an exit for one relay.
