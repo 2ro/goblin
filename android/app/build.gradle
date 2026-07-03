@@ -11,8 +11,15 @@ android {
         applicationId "st.goblin.wallet"
         minSdk 24
         targetSdk 36
-        versionCode 5
-        versionName "0.3.6"
+        // Version tracks Goblin's build number (GOBLIN_BUILD) so the Android
+        // package identity moves forward with every release instead of freezing.
+        // Same env the Rust side stamps into crate::BUILD; the in-app updater
+        // compares build numbers, and this keeps versionCode (Android's
+        // upgrade/downgrade integer) in lockstep. Bare local gradle → fallback.
+        // ponytail: fallback keeps a keyless ./gradlew working; CI/release sets the env
+        def goblinBuild = (System.getenv("GOBLIN_BUILD") ?: "").trim()
+        versionCode goblinBuild.isEmpty() ? 5 : goblinBuild.toInteger()
+        versionName goblinBuild.isEmpty() ? "0.3.6" : goblinBuild
     }
 
     lint {

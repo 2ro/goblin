@@ -464,32 +464,56 @@ fn cache_hit(host: &str) -> Option<CacheHit> {
 	})
 }
 
-/// Address the liveness probe dials THROUGH the tunnel: Cloudflare's anycast
-/// resolver on 443. Any reachable public IP works; 443 is chosen because it is
-/// never firewalled by an exit policy (relays + HTTPS already ride it).
-const PROBE_ADDR: SocketAddr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1)), 443);
-/// The probe must complete within this; a mixnet TCP handshake is a few seconds.
+/// Stable public addresses the liveness probe RACES through the tunnel: a tunnel
+/// is alive if it can reach ANY of them. Racing (not one fixed target) is why a
+/// momentarily slow path to a single resolver no longer false-declares a healthy
+/// exit DEAD — the same reason the DoT/DoH resolvers above are raced, not tried in
+/// series. Both are anycast resolvers on :443 (never exit-policy-firewalled, since
+/// relays + HTTPS already ride it) and effectively always-on.
+const PROBE_ADDRS: [SocketAddr; 2] = [
+	SocketAddr::new(IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1)), 443),
+	SocketAddr::new(IpAddr::V4(Ipv4Addr::new(9, 9, 9, 9)), 443),
+];
+/// Per-target connect wait; a mixnet TCP handshake is a few seconds.
 const PROBE_TIMEOUT: Duration = Duration::from_secs(8);
+/// Probe rounds before a tunnel is declared dead. A single lost mixnet packet
+/// mid-handshake should not condemn a whole tunnel, so an all-miss round is
+/// retried once (mirrors the DoT/DoH round loop). Only a tunnel that reaches
+/// NEITHER stable target across BOTH rounds is DEAD — this is what stops a
+/// healthy-but-unlucky tunnel from being thrown away and reselected forever.
+const PROBE_ROUNDS: usize = 2;
 
-/// End-to-end exit-liveness probe: open a TCP connection THROUGH the tunnel to a
-/// stable public address and immediately drop it. Because TCP over the mixnet
-/// RETRANSMITS, a single lost datagram does not spuriously fail a healthy exit —
-/// unlike the old UDP DNS probe, whose lost datagrams falsely declared good
-/// exits DEAD and drove reselects. Proves the full path (mixnet → IPR exit →
-/// internet) and keeps the gateway/IPR session from idling out. Used by the
-/// fresh-tunnel gate and the watchdog keepalive.
+/// End-to-end exit-liveness probe: try to open a TCP connection THROUGH the tunnel
+/// to any of a few stable public addresses (raced, retried a round) and drop the
+/// winner immediately. Because TCP over the mixnet RETRANSMITS, a single lost
+/// datagram does not spuriously fail a healthy exit; racing several targets over
+/// two rounds additionally absorbs a momentarily slow single path — together they
+/// stop the false-DEAD reselect churn the old single-target probe caused. Proves
+/// the full path (mixnet → IPR exit → internet) and keeps the gateway/IPR session
+/// from idling out. Used by the fresh-tunnel gate and the watchdog keepalive.
 pub async fn probe(tunnel: &Tunnel) -> bool {
-	match tokio::time::timeout(PROBE_TIMEOUT, tunnel.tcp_connect(PROBE_ADDR)).await {
-		Ok(Ok(_stream)) => true,
-		Ok(Err(e)) => {
-			debug!("probe: tcp_connect to {PROBE_ADDR} through tunnel failed: {e}");
-			false
+	for round in 0..PROBE_ROUNDS {
+		let mut inflight = FuturesUnordered::new();
+		for addr in PROBE_ADDRS {
+			inflight.push(async move {
+				matches!(
+					tokio::time::timeout(PROBE_TIMEOUT, tunnel.tcp_connect(addr)).await,
+					Ok(Ok(_))
+				)
+			});
 		}
-		Err(_) => {
-			debug!("probe: tcp_connect to {PROBE_ADDR} through tunnel timed out");
-			false
+		while let Some(reached) = inflight.next().await {
+			if reached {
+				return true;
+			}
 		}
+		debug!(
+			"probe: no stable target reachable through tunnel (round {}/{PROBE_ROUNDS})",
+			round + 1
+		);
 	}
+	debug!("probe: tunnel failed liveness — reached no stable target in {PROBE_ROUNDS} rounds");
+	false
 }
 
 /// Encode a recursive A query for `host` with transaction id `id`.
