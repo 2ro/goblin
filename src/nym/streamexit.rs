@@ -266,4 +266,200 @@ mod tests {
 			"unexpected relay reply: {txt}"
 		);
 	}
+
+	/// INCIDENT REPRO / VERIFICATION harness: publish a ~2.5KB and a ~66KB
+	/// kind-1059 EVENT over a SCRATCH scoped exit (address from env
+	/// `GOBLIN_SCRATCH_EXIT`) to relay.floonet.dev, plus a clearnet control, and
+	/// report which land (clearnet oracle = ground truth, waits past EOSE so a
+	/// LATE arrival is still caught). Proves whether the exit pump forwards
+	/// multi-fragment writes. Run:
+	///   GOBLIN_SCRATCH_EXIT=<addr> cargo test --lib \
+	///     nym::streamexit::tests::scratch_exit_publish_bytes -- --ignored --nocapture
+	#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+	#[ignore]
+	async fn scratch_exit_publish_bytes() {
+		use futures::{SinkExt, StreamExt};
+		use nostr_sdk::JsonUtil;
+		use nostr_sdk::prelude::*;
+		use tokio_tungstenite::tungstenite::Message;
+
+		let _ = rustls::crypto::ring::default_provider().install_default();
+		let _ = env_logger::builder()
+			.is_test(false)
+			.filter_level(log::LevelFilter::Info)
+			.filter_module("grim::nym", log::LevelFilter::Debug)
+			.try_init();
+
+		let exit = std::env::var("GOBLIN_SCRATCH_EXIT")
+			.expect("set GOBLIN_SCRATCH_EXIT to the scratch exit's nym address");
+		let relay_url = "wss://relay.floonet.dev";
+
+		let keys = Keys::generate();
+		let mk = |n: usize| -> Event {
+			let nonce = format!("{:016x}", rand::random::<u64>());
+			EventBuilder::new(Kind::GiftWrap, format!("{nonce}{}", "x".repeat(n)))
+				.tag(Tag::public_key(keys.public_key()))
+				.sign_with_keys(&keys)
+				.expect("sign event")
+		};
+		let small = mk(2_000);
+		let big = mk(64_000);
+		let clear = mk(2_000);
+		println!(
+			"[repro] small id={} wire={}B | big id={} wire={}B | clear id={} wire={}B",
+			small.id.to_hex(),
+			small.as_json().len(),
+			big.id.to_hex(),
+			big.as_json().len(),
+			clear.id.to_hex(),
+			clear.as_json().len()
+		);
+
+		// Clearnet control FIRST (proves the events + relay are fine end to end).
+		let clear_ok = clearnet_publish(relay_url, &clear).await;
+		println!("[repro] clearnet publish OK-frame for clear = {clear_ok}");
+
+		// Open the SCRATCH scoped exit and run the SAME TLS+ws the wallet uses.
+		let mut stream = None;
+		for attempt in 1..=6 {
+			match open_stream(&exit, Duration::from_secs(90)).await {
+				Ok(s) => {
+					println!("[repro] open_stream OK on attempt {attempt}");
+					stream = Some(s);
+					break;
+				}
+				Err(e) => println!("[repro] open_stream attempt {attempt} failed: {e}"),
+			}
+		}
+		let stream = stream.expect("scratch exit stream opened within retries");
+		let (mut ws, _resp) = tokio::time::timeout(
+			Duration::from_secs(45),
+			tokio_tungstenite::client_async_tls(relay_url, stream),
+		)
+		.await
+		.expect("TLS+ws handshake timed out (dead exit?)")
+		.expect("TLS+ws handshake through scratch exit failed");
+		println!("[repro] TLS+ws through scratch exit OK");
+
+		for (label, ev) in [("small", &small), ("big", &big)] {
+			let frame = format!(r#"["EVENT",{}]"#, ev.as_json());
+			println!("[repro] EXIT sending {label} ({} B ws frame)", frame.len());
+			ws.send(Message::Text(frame.into()))
+				.await
+				.expect("ws send over exit");
+		}
+
+		// Keep draining the exit ws in the background so the relay->client OK path
+		// keeps moving while we measure landing time.
+		let drainer = tokio::spawn(async move {
+			let end = tokio::time::Instant::now() + Duration::from_secs(300);
+			while tokio::time::Instant::now() < end {
+				match tokio::time::timeout(Duration::from_secs(5), ws.next()).await {
+					Ok(Some(Ok(Message::Text(t)))) => {
+						println!("[repro] EXIT relay -> {}", t.as_str())
+					}
+					Ok(Some(Ok(_))) => {}
+					Ok(Some(Err(_))) | Ok(None) => break,
+					Err(_) => {}
+				}
+			}
+		});
+
+		// Measure delivery LATENCY via the clearnet oracle (waits past EOSE).
+		let t0 = tokio::time::Instant::now();
+		let probe = Duration::from_secs(180);
+		let small_id = small.id.to_hex();
+		let big_id = big.id.to_hex();
+		let small_fut = async {
+			let ok = oracle_landed(relay_url, &small_id, probe).await;
+			println!(
+				"[repro] ===== EXIT small landed={ok} after {}s =====",
+				t0.elapsed().as_secs()
+			);
+			ok
+		};
+		let big_fut = async {
+			let ok = oracle_landed(relay_url, &big_id, probe).await;
+			println!(
+				"[repro] ===== EXIT big landed={ok} after {}s =====",
+				t0.elapsed().as_secs()
+			);
+			ok
+		};
+		let (_s, _b) = tokio::join!(small_fut, big_fut);
+
+		let clear_landed =
+			oracle_landed(relay_url, &clear.id.to_hex(), Duration::from_secs(20)).await;
+		println!("[repro] ===== CLEARNET control clear landed={clear_landed} =====");
+		drainer.abort();
+	}
+
+	/// Clearnet publish `ev`; returns true on relay `OK ... true`. Positive control.
+	#[cfg(test)]
+	async fn clearnet_publish(url: &str, ev: &nostr_sdk::Event) -> bool {
+		use futures::{SinkExt, StreamExt};
+		use nostr_sdk::JsonUtil;
+		use tokio_tungstenite::tungstenite::Message;
+		let (mut ws, _) = match tokio_tungstenite::connect_async(url).await {
+			Ok(x) => x,
+			Err(e) => {
+				println!("[oracle] clearnet connect err: {e}");
+				return false;
+			}
+		};
+		let frame = format!(r#"["EVENT",{}]"#, ev.as_json());
+		if ws.send(Message::Text(frame.into())).await.is_err() {
+			return false;
+		}
+		let id = ev.id.to_hex();
+		for _ in 0..20 {
+			match tokio::time::timeout(Duration::from_secs(10), ws.next()).await {
+				Ok(Some(Ok(Message::Text(t)))) => {
+					let t = t.as_str();
+					if t.starts_with("[\"OK\"") {
+						println!("[oracle] clearnet OK-frame: {t}");
+						return t.contains(&id) && t.contains("true");
+					}
+				}
+				_ => break,
+			}
+		}
+		false
+	}
+
+	/// Clearnet oracle: REQ for `id_hex`; true iff the relay returns the stored
+	/// EVENT within `timeout`. Ignores EOSE and keeps the sub OPEN so a LATE
+	/// arrival (the slow-exit case) is caught the instant the relay stores it.
+	#[cfg(test)]
+	async fn oracle_landed(url: &str, id_hex: &str, timeout: Duration) -> bool {
+		use futures::{SinkExt, StreamExt};
+		use tokio_tungstenite::tungstenite::Message;
+		let (mut ws, _) = match tokio_tungstenite::connect_async(url).await {
+			Ok(x) => x,
+			Err(e) => {
+				println!("[oracle] connect err: {e}");
+				return false;
+			}
+		};
+		let req = format!(r#"["REQ","oracle",{{"ids":["{id_hex}"]}}]"#);
+		if ws.send(Message::Text(req.into())).await.is_err() {
+			return false;
+		}
+		let deadline = tokio::time::Instant::now() + timeout;
+		loop {
+			let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+			if remaining.is_zero() {
+				return false;
+			}
+			match tokio::time::timeout(remaining, ws.next()).await {
+				Ok(Some(Ok(Message::Text(t)))) => {
+					if t.as_str().starts_with("[\"EVENT\"") {
+						return true;
+					}
+				}
+				Ok(Some(Ok(_))) => {}
+				_ => return false,
+			}
+		}
+	}
 }

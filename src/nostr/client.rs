@@ -59,6 +59,19 @@ const LOOKBACK_SECS: i64 = 3 * 86_400;
 const FETCH_TIMEOUT: Duration = Duration::from_secs(30);
 /// Send dispatch timeout.
 const SEND_TIMEOUT: Duration = Duration::from_secs(40);
+/// Money-path safety: a payment/control DM is only reported "sent" once a relay
+/// is confirmed to actually hold the gift wrap. A transport-write success is NOT
+/// proof of delivery — over the scoped Nym exit a multi-fragment wrap can trail
+/// its local "sent" by many seconds to minutes (exit backpressure / gateway
+/// bandwidth), so reporting on the write alone silently loses payments. Total
+/// budget to confirm via read-back before surfacing failure to the caller.
+const CONFIRM_TIMEOUT: Duration = Duration::from_secs(30);
+/// Per-attempt read-back timeout while confirming (short, so one dead relay
+/// doesn't consume the whole confirm budget in a single poll).
+const CONFIRM_POLL: Duration = Duration::from_secs(8);
+/// Gap between confirmation polls — the wrap may still be egressing right after
+/// the transport returns "sent".
+const CONFIRM_GAP: Duration = Duration::from_secs(3);
 /// Rate limit for incoming messages per known contact (events/hour).
 const RATE_CONTACT_PER_HOUR: usize = 30;
 /// Rate limit for incoming messages per unknown sender (events/hour).
@@ -588,18 +601,47 @@ impl NostrService {
 	) -> Result<String, String> {
 		let sent = if v3 {
 			let wrap = wrapv3::wrap(&self.keys, &receiver, content, tags)?;
-			tokio::time::timeout(SEND_TIMEOUT, client.send_event_to(urls, &wrap)).await
+			tokio::time::timeout(SEND_TIMEOUT, client.send_event_to(urls.clone(), &wrap)).await
 		} else {
 			tokio::time::timeout(
 				SEND_TIMEOUT,
-				client.send_private_msg_to(urls, receiver, content, tags),
+				client.send_private_msg_to(urls.clone(), receiver, content, tags),
 			)
 			.await
 		};
 		let res = sent
 			.map_err(|_| "send timeout".to_string())?
 			.map_err(|e| format!("send failed: {e}"))?;
-		Ok(res.val.to_hex())
+		let event_id = res.val;
+
+		// SILENT-LOSS GUARD (money-path safety). `send_*_to` returns success the
+		// moment the gift wrap is written to the (mixnet) transport sink — NOT
+		// when a relay has actually stored it. Over the scoped Nym exit a
+		// multi-fragment wrap can trail its local "sent" by many seconds to
+		// minutes (exit backpressure / gateway bandwidth), so a bare success is a
+		// FALSE "sent" that silently loses the payment. Require a genuine
+		// read-back: poll the target relays for the event id (it may still be
+		// egressing right after send) until one confirms it holds the wrap, or the
+		// CONFIRM_TIMEOUT budget is spent — then surface failure so the caller
+		// retries / falls back instead of dropping the payment.
+		let confirm_filter = Filter::new().id(event_id).limit(1);
+		let confirm_deadline = tokio::time::Instant::now() + CONFIRM_TIMEOUT;
+		loop {
+			if let Ok(events) = client
+				.fetch_events_from(&urls, confirm_filter.clone(), CONFIRM_POLL)
+				.await && events.first().is_some()
+			{
+				return Ok(event_id.to_hex());
+			}
+			if tokio::time::Instant::now() >= confirm_deadline {
+				return Err(format!(
+					"payment not confirmed on any relay within {}s — the transport \
+					 reported it sent but no relay holds it yet; treat as UNSENT and retry",
+					CONFIRM_TIMEOUT.as_secs()
+				));
+			}
+			tokio::time::sleep(CONFIRM_GAP).await;
+		}
 	}
 
 	/// Publish targets for one DM plus the negotiated NIP-44 v3 capability:
