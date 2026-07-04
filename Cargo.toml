@@ -41,6 +41,9 @@ panic = "abort"
 ## the two transports cannot coexist in one binary, which is why Tor replaced Nym).
 default = []
 nym = []
+## Compiles the internal E2E harness (src/wallet/e2e.rs); off by default and the
+## file is untracked, so a fresh clone builds without it.
+e2e-internal = []
 
 [dependencies]
 log = "0.4.27"
@@ -224,9 +227,8 @@ base64 = "0.22"
 sha2 = "0.10"
 hex = "0.4"
 serde_yaml = "0.9"
-## G14 transport-validation harness (tests/xrelay_smoke.rs): re-expose deps that
-## already live in the main graph so the smolmix transport can be exercised and
-## its tunnel/mix-dns logs captured. No new compiles — same versions unify.
+## Re-expose deps that already live in the main graph so the E2E harness can be
+## exercised and its logs captured. No new compiles — same versions unify.
 log = "0.4.27"
 env_logger = "0.11.3"
 rustls = { version = "0.23", features = ["ring"] }

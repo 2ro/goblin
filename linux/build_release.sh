@@ -5,8 +5,8 @@
 # Usage: linux/build_release.sh [platform]
 #   platform: 'x86_64' (default) or 'arm'
 #
-# Goblin links the Nym SDK IN-PROCESS (src/nym/), so the AppImage is one
-# self-contained binary with no sidecar to embed or ship beside it.
+# Goblin links the Tor transport (embedded arti) IN-PROCESS, so the AppImage is
+# one self-contained binary with no sidecar to embed or ship beside it.
 
 set -euo pipefail
 
@@ -41,7 +41,7 @@ export CXXFLAGS_x86_64_unknown_linux_gnu="-DCROARING_COMPILER_SUPPORTS_AVX512=0"
 export BINDGEN_EXTRA_CLANG_ARGS="${BINDGEN_EXTRA_CLANG_ARGS:-} -I/usr/include"
 cargo zigbuild --release --target "${arch}.2.17"
 
-# Assemble the AppDir: AppRun IS the goblin binary (Nym SDK linked in), plus the
+# Assemble the AppDir: AppRun IS the goblin binary (Tor/arti linked in), plus the
 # icon + desktop entry. Nothing else.
 appdir="linux/Goblin.AppDir"
 cp "target/${arch}/release/goblin" "${appdir}/AppRun"

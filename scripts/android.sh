@@ -54,8 +54,8 @@ function build_lib() {
   sed -i -e 's/"cdylib","rlib"]/"rlib"]/g' Cargo.toml
   rm -f Cargo.toml-e
 
-  # The Nym mixnet is linked INTO libgrim.so (nym-sdk is a regular dependency),
-  # so there is no separate sidecar binary to cross-build or bundle into jniLibs.
+  # The Tor transport (embedded arti) is linked INTO libgrim.so, so there is no
+  # separate sidecar binary to cross-build or bundle into jniLibs.
 }
 
 ### Build application

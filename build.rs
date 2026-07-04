@@ -56,9 +56,9 @@ fn main() {
 			.expect("failed to execute git config for hooks");
 	}
 
-	// Goblin links the Nym mixnet SDK in-process (see src/nym/) — no sidecar
-	// subprocess, no bundled/embedded helper binary, and no Tor/webtunnel. There
-	// is nothing transport-related to build or embed here.
+	// Goblin's private transport is Tor via embedded arti (see src/tor/), linked
+	// in-process — no sidecar subprocess and no bundled/embedded helper binary.
+	// There is nothing transport-related to build or embed here.
 
 	// Embed the Goblin icon into goblin.exe so Explorer, the taskbar and Alt-Tab
 	// show it even for the bare exe (the .msi shortcuts already carry it). No-op

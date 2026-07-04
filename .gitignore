@@ -29,3 +29,7 @@ screenshots/
 .foreign_api_secret
 grin-wallet.log
 grin-wallet.toml
+# Internal E2E harnesses — reference funded wallets / live relays; kept on disk,
+# untracked (mod e2e is gated behind the `e2e-internal` feature)
+src/wallet/e2e.rs
+tests/nostr_e2e.rs

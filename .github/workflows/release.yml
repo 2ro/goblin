@@ -25,8 +25,6 @@ permissions:
 
 env:
   TAG: ${{ inputs.tag || github.event.release.tag_name }}
-  # aws-lc-sys (via nym-sdk) needs NASM on native Windows; use its prebuilt NASM.
-  AWS_LC_SYS_PREBUILT_NASM: 1
 
 jobs:
   linux:
@@ -39,7 +37,6 @@ jobs:
         with:
           ref: ${{ inputs.tag || github.event.release.tag_name }}
           submodules: recursive
-      - uses: ./.github/actions/fetch-nym
       - uses: ./.github/actions/fetch-nip44
       - name: Build
         shell: bash
@@ -65,7 +62,6 @@ jobs:
         with:
           ref: ${{ inputs.tag || github.event.release.tag_name }}
           submodules: recursive
-      - uses: ./.github/actions/fetch-nym
       - uses: ./.github/actions/fetch-nip44
       - name: Build
         shell: bash
@@ -113,7 +109,6 @@ jobs:
         with:
           ref: ${{ inputs.tag || github.event.release.tag_name }}
           submodules: recursive
-      - uses: ./.github/actions/fetch-nym
       - uses: ./.github/actions/fetch-nip44
       - name: Build both architectures
         run: |
