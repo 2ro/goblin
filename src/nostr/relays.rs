@@ -14,11 +14,20 @@
 
 //! Default relay set and relay list helpers.
 
-/// Default DM relays: the Floonet relay plus large public relays for redundancy.
+/// Default DM relays: the Floonet relay (the pinned shared floor) plus
+/// Tor-reachable public relays for redundancy.
+///
+/// TRANSPORT CONSTRAINT: Goblin dials every relay over Tor, so the defaults MUST
+/// be relays that accept Tor-exit connections. `relay.damus.io` and `nos.lol`
+/// throttle/block Tor exits — a wallet left on the raw defaults (e.g. when pool
+/// selection hasn't run or found nothing) then had NO working fallback whenever
+/// the Floonet onion flapped, so its payments stopped flowing. `relay.0xchat.com`
+/// and `offchain.pub` are Tor-friendly (and are also probe-vetted pool `dm`
+/// candidates), giving a real fallback that survives an onion drop.
 pub const DEFAULT_RELAYS: &[&str] = &[
 	"wss://relay.floonet.dev",
-	"wss://relay.damus.io",
-	"wss://nos.lol",
+	"wss://relay.0xchat.com",
+	"wss://offchain.pub",
 ];
 
 /// Default NIP-05 identity server.

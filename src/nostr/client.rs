@@ -59,12 +59,12 @@ const LOOKBACK_SECS: i64 = 3 * 86_400;
 const FETCH_TIMEOUT: Duration = Duration::from_secs(30);
 /// Send dispatch timeout.
 const SEND_TIMEOUT: Duration = Duration::from_secs(40);
-/// Money-path safety: a payment/control DM is only reported "sent" once a relay
-/// is confirmed to actually hold the gift wrap. A transport-write success is NOT
-/// proof of delivery — over the transport a wrap can trail its local "sent" by
-/// seconds (transport buffering / a slow relay), so reporting on the write alone
-/// silently loses payments. Total budget to confirm via read-back before
-/// surfacing failure to the caller.
+/// Money-path safety: total budget to read-back-confirm a dispatched wrap on a
+/// relay the recipient reads (a positive delivery proof — a transport-write
+/// success alone is not). The confirm retries across transient transport drops
+/// within this budget; on exhaustion the send is treated as sent-PENDING (the tx
+/// waits for S2 / expiry), NOT a hard failure — see the confirm loop in
+/// `dispatch_dm` for why a hard failure here would trigger duplicate re-dispatch.
 const CONFIRM_TIMEOUT: Duration = Duration::from_secs(30);
 /// Per-attempt read-back timeout while confirming (short, so one dead relay
 /// doesn't consume the whole confirm budget in a single poll).
@@ -614,30 +614,52 @@ impl NostrService {
 			.map_err(|e| format!("send failed: {e}"))?;
 		let event_id = res.val;
 
-		// SILENT-LOSS GUARD (money-path safety). `send_*_to` returns success the
-		// moment the gift wrap is written to the transport sink — NOT when a relay
-		// has actually stored it. Over the transport a wrap can trail its local
-		// "sent" by seconds (transport buffering / a slow relay), so a bare success
-		// is a FALSE "sent" that silently loses the payment. Require a genuine
-		// read-back: poll the target relays for the event id (it may still be in
-		// flight right after send) until one confirms it holds the wrap, or the
-		// CONFIRM_TIMEOUT budget is spent — then surface failure so the caller
-		// retries / falls back instead of dropping the payment.
-		let confirm_filter = Filter::new().id(event_id).limit(1);
+		// DELIVERY CONFIRM (money-path safety), reconnect-resilient. `send_*_to`
+		// returned success the moment the wrap was accepted for delivery to the
+		// relays — that IS write-level evidence, but not proof a relay the RECIPIENT
+		// reads has stored it. Confirm the way the recipient's inbox retrieves it:
+		// query {kinds:[1059], "#p":[receiver]} pinned to THIS wrap's id, over the
+		// SAME target set — which now always includes our own advertised relays
+		// (the shared-relay floor the recipient also reads; see `send_targets`).
+		// First-event-wins via `stream_events_from` returns the instant ANY
+		// targeted relay serves the wrap, so the spinner clears as fast as it lands.
+		// The loop retries across transient transport drops within the budget
+		// (arti rebuilds circuits during the CONFIRM_GAP sleeps), so a flapping
+		// onion doesn't defeat a wrap that actually landed.
+		//
+		// Two outcomes, NEVER a hard failure here (we already hold write-evidence):
+		//   * confirmed  -> Ok, report Sent (strongest evidence).
+		//   * unconfirmed within the budget -> Ok as sent-PENDING, logged. Over a
+		//     flapping onion the read-back can't complete even though the write
+		//     landed; a hard error would mark the tx SendFailed, which `reconcile`
+		//     re-dispatches -> DUPLICATE wraps + a stuck "sending" spinner. Instead
+		//     the tx moves to AwaitingS2 (which `reconcile` never re-dispatches) and
+		//     the normal S2-wait / expiry path resolves it. Only a genuine send
+		//     FAILURE (the `send_*_to` error above, BEFORE this loop) ever
+		//     re-dispatches — so we never claim Sent with zero evidence.
+		use futures::StreamExt;
+		let confirm_filter = Filter::new()
+			.kind(Kind::GiftWrap)
+			.pubkey(receiver)
+			.id(event_id)
+			.limit(1);
 		let confirm_deadline = tokio::time::Instant::now() + CONFIRM_TIMEOUT;
 		loop {
-			if let Ok(events) = client
-				.fetch_events_from(&urls, confirm_filter.clone(), CONFIRM_POLL)
-				.await && events.first().is_some()
+			if let Ok(mut stream) = client
+				.stream_events_from(urls.clone(), confirm_filter.clone(), CONFIRM_POLL)
+				.await && stream.next().await.is_some()
 			{
 				return Ok(event_id.to_hex());
 			}
 			if tokio::time::Instant::now() >= confirm_deadline {
-				return Err(format!(
-					"payment not confirmed on any relay within {}s — the transport \
-					 reported it sent but no relay holds it yet; treat as UNSENT and retry",
+				warn!(
+					"nostr: wrap {} dispatched but not read-back-confirmed within {}s \
+					 (likely a transient transport drop); treating as sent-pending — \
+					 tx waits for S2 / expiry, NOT re-dispatched",
+					event_id.to_hex(),
 					CONFIRM_TIMEOUT.as_secs()
-				));
+				);
+				return Ok(event_id.to_hex());
 			}
 			tokio::time::sleep(CONFIRM_GAP).await;
 		}
@@ -645,27 +667,42 @@ impl NostrService {
 
 	/// Publish targets for one DM plus the negotiated NIP-44 v3 capability:
 	/// the recipient's advertised 10050 inbox (capped at 3) when they publish
-	/// one; otherwise the pragmatic fallback of nprofile relay hints plus our
-	/// own relay set (most Goblin peers share the Goblin relay). No extra
-	/// targets beyond that — wider fan-out adds metadata surface, not
-	/// deliverability. `true` means the recipient's 10050 `encryption` tag
-	/// advertises `nip44_v3`; no tag (or no 10050 at all) = v2 only.
+	/// one, PLUS the nprofile relay hints, ALWAYS unioned with our OWN advertised
+	/// set. `true` means the recipient's 10050 `encryption` tag advertises
+	/// `nip44_v3`; no tag (or no 10050 at all) = v2 only.
+	///
+	/// MONEY-PATH SAFETY: we must NEVER return a target set that excludes our own
+	/// relays. Our advertised set always begins with the shared relay floor
+	/// (`relay.floonet.dev`, `DEFAULT_RELAYS[0]`, pinned first by
+	/// `ensure_advertised_set`), and every Goblin peer's inbox subscription
+	/// (`{kinds:[1059], "#p":[them]}`, see the service loop) likewise reads that
+	/// same shared relay. The prior code early-returned ONLY the recipient's
+	/// cached 10050 set: if that cache was stale or hint-seeded and missed the
+	/// shared relay, the wrap was published solely to relays the recipient never
+	/// reads — delivered nowhere while the sender saw success. Unioning our own
+	/// set guarantees the wrap always lands on a relay both parties read, even
+	/// when the recipient's cached relays are wrong.
 	async fn send_targets(
 		&self,
 		client: &Client,
 		receiver: &PublicKey,
 		relay_hints: &[String],
 	) -> (Vec<String>, bool) {
-		let (urls, v3) = self.fetch_dm_relays(client, receiver).await;
-		if !urls.is_empty() {
-			return (urls, v3);
-		}
+		let (recipient_relays, v3) = self.fetch_dm_relays(client, receiver).await;
 		let mut urls: Vec<String> = vec![];
-		for r in relay_hints {
-			if !urls.contains(r) {
-				urls.push(r.clone());
+		// The recipient's own advertised inbox first (best delivery target when
+		// fresh), then any nprofile relay hints...
+		for r in recipient_relays
+			.into_iter()
+			.chain(relay_hints.iter().cloned())
+		{
+			if !urls.contains(&r) {
+				urls.push(r);
 			}
 		}
+		// ...and ALWAYS our own advertised set (the shared-relay floor). This is
+		// the load-bearing union: it never lets a stale recipient cache exclude
+		// the relay both parties actually read.
 		for r in self.relays() {
 			if !urls.contains(&r) {
 				urls.push(r);
@@ -1506,8 +1543,20 @@ async fn handle_wrap(svc: &Arc<NostrService>, wallet: &Wallet, event: Event) {
 	// nostr-sdk path, 0x03 = the nip44 crate (G4); anything else errors cleanly.
 	let unwrapped = match wrapv3::unwrap(&svc.keys, &event).await {
 		Ok(u) => u,
-		Err(_) => {
-			svc.store.mark_processed(&wrap_id);
+		Err(e) => {
+			// A gift wrap that reached here is p-tagged to US (both the catch-up
+			// fetch and the live subscription filter name our pubkey), so a decrypt
+			// failure is a wrap ADDRESSED to us that we could not open — most often a
+			// NIP-44 v2/v3 negotiation mismatch or a decrypt bug, i.e. potentially a
+			// real incoming payment. Do NOT silently drop it: surface the failure,
+			// and do NOT mark it processed, so a corrected build can re-attempt the
+			// unwrap on the next catch-up instead of the dedup cache eating the
+			// payment forever. Total unwrap work stays bounded by the global decrypt
+			// ceiling checked above, which is the designed spam guard.
+			warn!(
+				"nostr: gift wrap {wrap_id} addressed to us failed to unwrap: {e}; \
+				 leaving unprocessed for retry"
+			);
 			return;
 		}
 	};

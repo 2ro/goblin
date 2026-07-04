@@ -15,12 +15,11 @@
 //! Embedded-Tor transport. Everything Goblin sends over the network — nostr relay
 //! websockets and every HTTP request (NIP-05, price, relay pool, avatars) — rides
 //! Tor, embedded in-process (arti), copied from our sister wallet GRIM's proven,
-//! shipping engine. The wallet dials the relay's pinned `.onion` over Tor and
-//! speaks PLAIN websocket to it (the onion connection is already encrypted +
-//! authenticated end to end — the `.onion` address IS the relay's public key — so
-//! a TLS wrapper is redundant and the relay backend does not serve it). Relays
-//! WITHOUT a pinned onion (e.g. a recipient's arbitrary DM relay) are reached over
-//! a Tor exit to their clearnet host, with the usual TLS for `wss://`.
+//! shipping engine. Every relay is reached over a Tor exit to its clearnet host,
+//! with the usual hostname-validated TLS for `wss://`: the wallet's own IP is
+//! never exposed, while the relay stays a normal public endpoint. (Earlier builds
+//! could pin a per-relay `.onion` for a direct onion-circuit money path; that was
+//! dropped in build134 — onion services flapped — in favour of Tor-exit only.)
 //!
 //! This replaces the Nym-mixnet transport (`crate::nym`, left dormant): Tor is
 //! free, unmetered, has no token or grant to expire, and GRIM has already proven
@@ -79,45 +78,6 @@ pub(crate) fn cache_path() -> String {
 	let mut base = base_path();
 	base.push("cache");
 	base.to_str().unwrap().to_string()
-}
-
-// --- Onion resolution ---------------------------------------------------------
-
-/// The pinned `.onion` `(host, port)` for a relay `url`, if one is configured.
-/// The `GOBLIN_TOR_ONION` env override (for ad-hoc testing) wins; otherwise the
-/// pool's per-relay `onion` field ([`crate::nostr::pool::RelayPool::onion_for`]).
-/// `None` → this relay has no onion and is reached over a Tor exit to its clearnet
-/// host instead (see [`transport`]).
-pub(crate) fn onion_for(url: &str) -> Option<(String, u16)> {
-	if let Ok(env) = std::env::var("GOBLIN_TOR_ONION") {
-		let env = env.trim();
-		if !env.is_empty() {
-			return parse_onion(env);
-		}
-	}
-	crate::nostr::pool::load()
-		.onion_for(url)
-		.and_then(|o| parse_onion(&o))
-}
-
-/// Parse an onion target `host[:port]` → `(host, port)`. Defaults to port 80
-/// (plain ws over the onion). Tolerant of a `ws://`/`http://` prefix and a
-/// trailing slash so the pinned string may be written either way.
-fn parse_onion(s: &str) -> Option<(String, u16)> {
-	let s = s
-		.trim()
-		.trim_start_matches("ws://")
-		.trim_start_matches("http://")
-		.trim_end_matches('/');
-	if s.is_empty() {
-		return None;
-	}
-	match s.rsplit_once(':') {
-		Some((host, port)) if !port.is_empty() && port.chars().all(|c| c.is_ascii_digit()) => {
-			Some((host.to_string(), port.parse().ok()?))
-		}
-		_ => Some((s.to_string(), 80)),
-	}
 }
 
 // --- HTTP over Tor ------------------------------------------------------------

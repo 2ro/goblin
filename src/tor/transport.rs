@@ -12,19 +12,14 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! WebSocket transport for the Nostr relay pool routed over embedded Tor.
-//! ANCHOR: a relay whose pool entry pins an `.onion`
-//! ([`crate::nostr::pool::PoolRelay::onion`]) is dialed straight to that onion
-//! over Tor — a real onion circuit, no exit node — and spoken to in PLAIN
-//! websocket ([`tokio_tungstenite::client_async`]). The onion connection is
-//! already encrypted AND authenticated end to end (the `.onion` address IS the
-//! relay's public key), so a TLS wrapper is redundant and the relay backend does
-//! not serve it. EXIT PATH (every relay without a pinned onion — e.g. a
-//! recipient's arbitrary DM relay a send fans out to): dial the relay's clearnet
-//! host over a Tor exit and run the usual hostname-validated TLS + websocket
-//! ([`tokio_tungstenite::client_async_tls`]) for `wss://`. Either way the payload
-//! and in-flight destination never touch the clear, and the wallet's own IP is
-//! never exposed.
+//! WebSocket transport for the Nostr relay pool routed over embedded Tor. Every
+//! relay is dialed the same way: reach its clearnet host over a Tor exit and run
+//! the usual hostname-validated TLS + websocket
+//! ([`tokio_tungstenite::client_async_tls`]) for `wss://`. The payload and the
+//! in-flight destination never touch the clear, and the wallet's own IP is never
+//! exposed. (Earlier builds could dial a relay's pinned `.onion` directly over a
+//! real onion circuit as a money-path anchor; that was dropped in build134 — the
+//! onion services flapped — leaving the Tor-exit path as the only one.)
 
 use std::pin::Pin;
 use std::task::{Context, Poll};
@@ -70,37 +65,11 @@ impl WebSocketTransport for TorWebSocketTransport {
 				return Err(terr("tor client not bootstrapped"));
 			}
 
-			// MONEY-PATH ANCHOR: when the pool pins this relay's `.onion`, dial it
-			// directly over Tor and speak PLAIN websocket — the onion connection is
-			// already encrypted+authenticated end to end (the `.onion` IS the
-			// relay's public key), so no TLS on top.
-			if let Some((onion, port)) = crate::tor::onion_for(url.as_str()) {
-				let t = Instant::now();
-				let stream = tokio::time::timeout(timeout, crate::tor::connect(&onion, port))
-					.await
-					.map_err(|_| terr("tor onion connect timeout"))?
-					.map_err(terr)?;
-				// PLAIN ws over the onion (client_async, NOT client_async_tls). The
-				// handshake targets the onion host itself.
-				let ws_url = format!("ws://{onion}/");
-				let (ws, _response) = tokio::time::timeout(
-					timeout,
-					tokio_tungstenite::client_async(ws_url.as_str(), stream),
-				)
-				.await
-				.map_err(|_| terr("websocket handshake timeout (onion)"))?
-				.map_err(|e| terr(format!("websocket handshake failed (onion): {e}")))?;
-				log::info!(
-					"[timing] tor: relay {host} CONNECTED via onion — stream+ws {}ms",
-					t.elapsed().as_millis()
-				);
-				return Ok(split_ws(ws));
-			}
-
-			// EXIT PATH: no pinned onion → reach the relay's clearnet host over a
-			// Tor exit, with the usual TLS + websocket for wss (SNI = the relay
-			// host). This is what lets a send fan out to a recipient's arbitrary
-			// public DM relays over Tor.
+			// Reach the relay's clearnet host over a Tor exit, with the usual
+			// hostname-validated TLS + websocket for wss (SNI = the relay host).
+			// This is the single dial path: the wallet's IP never leaves Tor, and a
+			// send fans out to a recipient's arbitrary public DM relays exactly the
+			// way it reaches the shared floor relay (relay.floonet.dev).
 			let port = url.port().unwrap_or(match url.scheme() {
 				"ws" => 80,
 				_ => 443,
@@ -126,9 +95,8 @@ impl WebSocketTransport for TorWebSocketTransport {
 	}
 }
 
-/// Split a websocket into the pool's boxed sink/stream halves — shared by the
-/// onion and exit dial paths, so everything above the byte transport is identical
-/// whichever egress carried the connection.
+/// Split a websocket into the pool's boxed sink/stream halves, so everything above
+/// the byte transport is identical regardless of which Tor circuit carried it.
 fn split_ws<S>(ws: tokio_tungstenite::WebSocketStream<S>) -> (WebSocketSink, WebSocketStream)
 where
 	S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Send + Unpin + 'static,
