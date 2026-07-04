@@ -6,17 +6,17 @@
 
 Goblin is a private, pay-by-username wallet for [GRIN ツ](https://grin.mw) — confidential digital cash on [Mimblewimble](https://github.com/mimblewimble/grin), with no amounts or addresses on the chain.
 
-Instead of passing slatepack files back and forth, you **pay a `username` (or an `npub`)** and the payment is delivered for you as an **end-to-end encrypted message over [nostr](https://github.com/nostr-protocol/nips), routed through the [Nym mixnet](https://nym.com)**. Relays only ever see ciphertext — never the amount, the sender, or the recipient — and the mixnet hides who is talking to whom at the network layer.
+Instead of passing slatepack files back and forth, you **pay a `username` (or an `npub`)** and the payment is delivered for you as an **end-to-end encrypted message over [nostr](https://github.com/nostr-protocol/nips), routed through [Tor](https://www.torproject.org)**. Relays only ever see ciphertext — never the amount, the sender, or the recipient. Tor hides your IP from the relay; the relay and encryption hide the rest — content, sender, timing.
 
 Goblin is a fork of the **Grim** egui GRIN wallet: it keeps Grim's full GRIN node/wallet engine and layers a Nostr-native, mobile-first payments experience on top.
 
 ## What it does
 
-- **Send to people** — pay a `username` or `npub`; the GRIN slatepack travels as a [NIP-17](https://nips.nostr.com/17) gift-wrapped DM ([kind 1059](https://nostrbook.dev/kinds/1059)) over the Nym mixnet and is applied automatically by the recipient's wallet. No files to swap, no need to both be online at once.
+- **Send to people** — pay a `username` or `npub`; the GRIN slatepack travels as a [NIP-17](https://nips.nostr.com/17) gift-wrapped DM ([kind 1059](https://nostrbook.dev/kinds/1059)) over Tor and is applied automatically by the recipient's wallet. No files to swap, no need to both be online at once.
 - **Manual slatepacks too** — when you need to pay or get paid without a handle, **Settings → Wallet → Slatepacks** exposes the classic by-hand flow: create a slatepack to send, or paste one to receive, finalize, or pay.
 - **In-app identity** — a nostr payment key that is deliberately *not* part of your seed, so you can rotate it any time to stay unlinkable without touching your funds. An optional human-readable `name` comes from the goblin.st identity service.
-- **Private by construction** — GRIN's address-less, confidential chain; your payments and identity (nostr relays, NIP-05 lookups, price) are routed through the [Nym mixnet](https://nym.com), so who-pays-whom never touches the clear net. The GRIN node connection — block sync and broadcasting your transaction — is direct: public chain data, the same for everyone, and not tied to your identity. Keys, names and history stay on your device.
-- **Configurable amount pairing** — show balances against a world currency, Bitcoin, or sats (rates fetched over the mixnet), or turn the preview off.
+- **Private by construction** — GRIN's address-less, confidential chain; your payments and identity (nostr relays, NIP-05 lookups, price) are routed through [Tor](https://www.torproject.org), so who-pays-whom never touches the clear net. The GRIN node connection — block sync and broadcasting your transaction — is direct: public chain data, the same for everyone, and not tied to your identity. Keys, names and history stay on your device.
+- **Configurable amount pairing** — show balances against a world currency, Bitcoin, or sats (rates fetched over Tor), or turn the preview off.
 - **Cross-platform** — Linux, macOS, Windows, Android, built in pure Rust on [egui](https://github.com/emilk/egui).
 
 ## How a payment travels
@@ -24,7 +24,7 @@ Goblin is a fork of the **Grim** egui GRIN wallet: it keeps Grim's full GRIN nod
 ```
    you ──slatepack──▶ NIP-17 gift wrap (kind 1059, NIP-44 encrypted)
                           │
-                   Nym mixnet (5-hop)
+                         Tor
                           │
             ┌─────────────┴─────────────┐
         your relays              recipient's DM relays (kind 10050)
@@ -33,7 +33,7 @@ Goblin is a fork of the **Grim** egui GRIN wallet: it keeps Grim's full GRIN nod
    recipient ◀──unwrap, verify seal author, apply slatepack
 ```
 
-The wrap is [NIP-44](https://nips.nostr.com/44)-encrypted, and delivery uses the recipient's DM relay list ([kind 10050](https://nostrbook.dev/kinds/10050)).
+The wrap is [NIP-44](https://nips.nostr.com/44)-encrypted, and delivery uses the recipient's DM relay list ([kind 10050](https://nostrbook.dev/kinds/10050)). Tor hides your IP from the relay; the relay and the encryption above hide the rest — content, sender, timing.
 
 Both parties only need one relay in common. The default set is the Goblin relay plus large public relays (`relay.damus.io`, `nos.lol`), and the set is editable in **Settings → Relays**.
 
@@ -41,16 +41,15 @@ Both parties only need one relay in common. The default set is the Goblin relay 
 
 ### Desktop (Linux / macOS / Windows)
 
-Goblin links the [Nym mixnet](https://nym.com) SDK **in-process** — the wallet is a single self-contained binary, no sidecar. The SDK builds from a sibling `../nym` checkout (a pinned nym tree with a small Android TLS patch):
+Goblin links [Tor](https://www.torproject.org) **in-process** via [arti](https://gitlab.torproject.org/tpo/core/arti) — the wallet is a single self-contained binary, no sidecar, nothing separate to install:
 
 ```
-git clone --branch goblin https://git.us-ea.st/GRIN/nym ../nym
 git submodule update --init --recursive
 cargo build --release
 ./target/release/goblin
 ```
 
-Goblin's identity and payment traffic — nostr relays, NIP-05 lookups and price fetches — is routed over the mixnet through a network requester (the default is baked into `NETWORK_REQUESTER` in `src/nym/sidecar.rs`); the SDK's SOCKS5 listener is run in-process on `127.0.0.1:1080`. If something is already listening there, Goblin reuses it. The GRIN node connection (block sync and transaction broadcast) is **not** mixed — it connects directly, as it carries only public chain data that isn't linked to your wallet.
+Goblin's identity and payment traffic — nostr relays, NIP-05 lookups and price fetches — rides Tor: the money-path relay is dialed directly at its pinned `.onion` address, and any relay without one (e.g. a recipient's arbitrary DM relay) is reached over a Tor exit to its clearnet host. The GRIN node connection (block sync and transaction broadcast) is **not** routed through Tor — it connects directly, as it carries only public chain data that isn't linked to your wallet.
 
 ### Android
 
