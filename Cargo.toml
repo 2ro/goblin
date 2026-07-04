@@ -2,7 +2,7 @@
 name = "grim"
 version = "0.3.6"
 authors = ["Ardocrat <ardocrat@gri.mw>"]
-description = "Goblin: a peer-to-peer wallet for Grin. Send and receive instantly with a handle - slatepacks and the Nym mixnet handled for you."
+description = "Goblin: a peer-to-peer wallet for Grin. Send and receive instantly with a handle - slatepacks and Tor handled for you."
 license = "Apache-2.0"
 repository = "https://code.gri.mw/GUI/grim"
 keywords = [ "crypto", "grin", "mimblewimble", "nostr" ]

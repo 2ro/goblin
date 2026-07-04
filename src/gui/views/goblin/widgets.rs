@@ -463,12 +463,15 @@ pub fn field_well(ui: &mut Ui, content: impl FnOnce(&mut Ui)) {
 
 /// A balance hero block: kicker, big number + ツ, optional fiat line.
 /// `updating` marks a zero balance that is only zero because funds are in
-/// flight or the first sync is still running.
+/// flight or the first sync is still running. `node_updating` flags a
+/// still-warming node (not yet synced) so a possibly-stale balance shows a
+/// quiet "Updating…" line too.
 pub fn balance_hero(
 	ui: &mut Ui,
 	total: u64,
 	spendable: u64,
 	updating: bool,
+	node_updating: bool,
 	sync_pct: u8,
 	fiat: Option<&str>,
 	size: f32,
@@ -512,6 +515,17 @@ pub fn balance_hero(
 		ui.vertical_centered(|ui| {
 			ui.label(
 				RichText::new(label)
+					.font(FontId::new(12.5, fonts::medium()))
+					.color(t.text_dim),
+			);
+		});
+	} else if node_updating {
+		// Node still warming (not yet synced): the shown balance may be stale,
+		// so flag it with a quiet "Updating…". Clears once the node is ready.
+		ui.add_space(4.0);
+		ui.vertical_centered(|ui| {
+			ui.label(
+				RichText::new(t!("goblin.home.updating").to_string())
 					.font(FontId::new(12.5, fonts::medium()))
 					.color(t.text_dim),
 			);

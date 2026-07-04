@@ -1012,6 +1012,7 @@ impl GoblinWalletView {
 					total,
 					spendable,
 					updating,
+					wallet.syncing(),
 					wallet.info_sync_progress(),
 					fiat_line(&data).as_deref(),
 					56.0,
@@ -2766,8 +2767,8 @@ impl GoblinWalletView {
 					if settings_row_nav(ui, "nostr-sdk", "0.44") {
 						open_url(ui, "https://github.com/rust-nostr/nostr");
 					}
-					if settings_row_nav(ui, "Nym mixnet", "sdk 1.21") {
-						open_url(ui, "https://nym.com");
+					if settings_row_nav(ui, "Tor (arti)", "0.43") {
+						open_url(ui, "https://gitlab.torproject.org/tpo/core/arti");
 					}
 					if settings_row_nav(ui, "egui", "0.33") {
 						open_url(ui, "https://github.com/emilk/egui");
