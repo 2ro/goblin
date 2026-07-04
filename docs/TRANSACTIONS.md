@@ -18,7 +18,7 @@ A Goblin payment is **a Grin transaction wrapped in a private nostr message**.
 
 2. **Nostr layer (the delivery).** Instead of making you hand slate files back
    and forth, Goblin delivers each slate as an **end-to-end-encrypted nostr
-   direct message**, routed through the **Nym mixnet**. You pay a `username` or
+   direct message**, routed through **Tor**. You pay a `username` or
    `npub`; the recipient's wallet applies the slate automatically.
 
 The slate is the payload; nostr is the transport. Everything below is about how
@@ -85,7 +85,7 @@ Names are kept fresh: see [§11 Name freshness](#11-contacts--name-freshness).
 
 ---
 
-## 3. Transport: NIP-17 gift wraps over Nym
+## 3. Transport: NIP-17 gift wraps over Tor
 
 A payment DM is built and sent by `send_payment_dm`; control messages (voids) by
 `send_control_dm` (both in `src/nostr/client.rs`). The message structure
@@ -106,10 +106,12 @@ A payment DM is built and sent by `send_payment_dm`; control messages (voids) by
 hints carried by a pasted `nprofile`. Default relays: `relay.goblin.st`,
 `relay.damus.io`, `nos.lol` (`src/nostr/relays.rs`), capped at `MAX_DM_RELAYS`.
 
-**How relays are reached:** every relay connection runs through the in-process
-**Nym mixnet** SOCKS5 proxy (`NymWebSocketTransport`; `run_service` waits for the
-proxy to be ready before dialing). The mixnet hides who-talks-to-whom at the
-network layer. The Grin *node* connection (block sync + broadcasting the final tx)
+**How relays are reached:** every relay connection runs through an in-process
+**Tor** client (arti, linked directly into the wallet binary — no sidecar), via
+`TorWebSocketTransport` (`run_service` waits for Tor to be ready before dialing).
+So the relay never sees your IP: the money-path relay is dialed at its pinned
+`.onion` address, and any relay without one is reached over a Tor exit to its
+clearnet host. The Grin *node* connection (block sync + broadcasting the final tx)
 is direct clearnet — it's public chain data, the same for everyone, not tied to
 your identity.
 
