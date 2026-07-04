@@ -366,7 +366,6 @@ goblin:
     node_synced: "Узел синхронизирован"
     syncing: "Синхронизация…"
     balance_updating: "Баланс обновляется…"
-    updating: "Обновление…"
     listening: "Ожидание платежей"
     block: "Блок %{height}"
     waiting_for_chain: "Ожидание цепочки…"

@@ -366,7 +366,6 @@ goblin:
     node_synced: "Node synchronisiert"
     syncing: "Synchronisiere…"
     balance_updating: "Guthaben wird aktualisiert…"
-    updating: "Wird aktualisiert…"
     listening: "Wartet auf Zahlungen"
     block: "Block %{height}"
     waiting_for_chain: "Warte auf Chain…"

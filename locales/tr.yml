@@ -366,7 +366,6 @@ goblin:
     node_synced: "Düğüm eşitlendi"
     syncing: "Eşitleniyor…"
     balance_updating: "Bakiye güncelleniyor…"
-    updating: "Güncelleniyor…"
     listening: "Ödemeler bekleniyor"
     block: "Blok %{height}"
     waiting_for_chain: "Zincir bekleniyor…"

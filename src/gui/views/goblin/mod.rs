@@ -1012,7 +1012,6 @@ impl GoblinWalletView {
 					total,
 					spendable,
 					updating,
-					wallet.syncing(),
 					wallet.info_sync_progress(),
 					fiat_line(&data).as_deref(),
 					56.0,
