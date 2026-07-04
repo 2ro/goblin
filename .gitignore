@@ -7,6 +7,9 @@ android/keystore
 android/keystore.asc
 android/keystore.properties
 android/*.apk
+android/*.apk.sha256
+android/*.AppImage
+android/*.AppImage.sha256
 android/*sha256sum.txt
 /.idea
 .DS_Store
