@@ -35,7 +35,7 @@ use crate::nostr::relays::MAX_DM_RELAYS;
 use crate::nostr::types::*;
 use crate::nostr::wrapv3;
 use crate::nostr::{NostrConfig, NostrIdentity, NostrStore};
-use crate::nym::NymWebSocketTransport;
+use crate::tor::TorWebSocketTransport;
 use crate::wallet::Wallet;
 use crate::wallet::types::WalletTask;
 
@@ -61,10 +61,10 @@ const FETCH_TIMEOUT: Duration = Duration::from_secs(30);
 const SEND_TIMEOUT: Duration = Duration::from_secs(40);
 /// Money-path safety: a payment/control DM is only reported "sent" once a relay
 /// is confirmed to actually hold the gift wrap. A transport-write success is NOT
-/// proof of delivery — over the scoped Nym exit a multi-fragment wrap can trail
-/// its local "sent" by many seconds to minutes (exit backpressure / gateway
-/// bandwidth), so reporting on the write alone silently loses payments. Total
-/// budget to confirm via read-back before surfacing failure to the caller.
+/// proof of delivery — over the transport a wrap can trail its local "sent" by
+/// seconds (transport buffering / a slow relay), so reporting on the write alone
+/// silently loses payments. Total budget to confirm via read-back before
+/// surfacing failure to the caller.
 const CONFIRM_TIMEOUT: Duration = Duration::from_secs(30);
 /// Per-attempt read-back timeout while confirming (short, so one dead relay
 /// doesn't consume the whole confirm budget in a single poll).
@@ -615,13 +615,12 @@ impl NostrService {
 		let event_id = res.val;
 
 		// SILENT-LOSS GUARD (money-path safety). `send_*_to` returns success the
-		// moment the gift wrap is written to the (mixnet) transport sink — NOT
-		// when a relay has actually stored it. Over the scoped Nym exit a
-		// multi-fragment wrap can trail its local "sent" by many seconds to
-		// minutes (exit backpressure / gateway bandwidth), so a bare success is a
-		// FALSE "sent" that silently loses the payment. Require a genuine
-		// read-back: poll the target relays for the event id (it may still be
-		// egressing right after send) until one confirms it holds the wrap, or the
+		// moment the gift wrap is written to the transport sink — NOT when a relay
+		// has actually stored it. Over the transport a wrap can trail its local
+		// "sent" by seconds (transport buffering / a slow relay), so a bare success
+		// is a FALSE "sent" that silently loses the payment. Require a genuine
+		// read-back: poll the target relays for the event id (it may still be in
+		// flight right after send) until one confirms it holds the wrap, or the
 		// CONFIRM_TIMEOUT budget is spent — then surface failure so the caller
 		// retries / falls back instead of dropping the payment.
 		let confirm_filter = Filter::new().id(event_id).limit(1);
@@ -870,32 +869,27 @@ async fn run_service(svc: Arc<NostrService>, wallet: Wallet) {
 
 	let client = Client::builder()
 		.signer(svc.keys.clone())
-		.websocket_transport(NymWebSocketTransport)
+		.websocket_transport(TorWebSocketTransport)
 		.build();
-	// Wait for the in-process Nym mixnet tunnel before any network work
-	// (relay dials, pool refresh, NIP-11 probes). `warm_up()` starts it at
-	// launch, but a fast wallet-open can beat the cold mixnet bootstrap — and
-	// dialing before it's up drops every relay into nostr-sdk's backing-off
-	// reconnect, leaving the wallet on "Connecting…" long after the mixnet is
-	// actually ready. Once it's warm this returns immediately.
-	for i in 0..60u32 {
-		if crate::nym::is_ready() {
+	// Wait for the embedded Tor client before any network work (relay dials, pool
+	// refresh, NIP-11 probes). `warm_up()` starts it at launch, but a fast
+	// wallet-open can beat the cold Tor bootstrap — and dialing before it's up
+	// drops every relay into nostr-sdk's backing-off reconnect, leaving the wallet
+	// on "Connecting…" long after Tor is actually ready. Once it's bootstrapped
+	// this returns immediately.
+	for i in 0..240u32 {
+		if crate::tor::is_ready() {
 			if i > 0 {
-				info!(
-					"nostr: Nym tunnel ready after ~{}ms, dialing relays",
-					i * 500
-				);
+				info!("nostr: Tor ready after ~{}ms, dialing relays", i * 500);
 			}
 			break;
 		}
 		tokio::time::sleep(Duration::from_millis(500)).await;
 	}
-	// We are now a relay consumer: arm nymproc's relay-reachability governance of
-	// exit health for our lifetime, so a DNS-ok-but-relay-dead exit gets
-	// condemned. Disarmed when the loop exits (see below), so plain HTTP-only
-	// usage of the tunnel never condemns an otherwise-healthy exit.
-	crate::nym::set_relay_consumer(true);
-	// Refresh the relay candidate pool cache (gist over Nym) when stale.
+	// We are now a relay consumer (API parity with the old transport; inert under
+	// Tor, which manages its own circuit health). Disarmed when the loop exits.
+	crate::tor::set_relay_consumer(true);
+	// Refresh the relay candidate pool cache (gist over Tor) when stale.
 	tokio::spawn(crate::nostr::pool::refresh_if_stale());
 	// Select this identity's advertised relay set if it hasn't one yet.
 	ensure_advertised_set(&svc).await;
@@ -906,59 +900,19 @@ async fn run_service(svc: Arc<NostrService>, wallet: Wallet) {
 		svc.npub(),
 		relays
 	);
-	// Prewarm mix-dns for the hosts we're about to (or will soon) hit — the
-	// relays being dialed, the NIP-05 name authority (Claim username), and the
-	// price API — so those resolutions are already cached by the time the user
-	// acts, rather than each paying a cold mixnet round trip inline. The node host
-	// is NOT here — it never rides the mixnet.
-	//
-	// Unlike before this no longer silently SKIPS when the tunnel isn't up yet
-	// (the cold-start case that used to leave the first relay dial to a cold DoT
-	// round trip): it WAITS for the tunnel, prewarms, then keeps the entries hot
-	// by re-prewarming on a cadence below the DNS cache TTL floor, so known/stable
-	// hosts are refreshed in the background before they can expire.
-	{
-		let mut hosts: Vec<String> = relays
-			.iter()
-			.filter_map(|r| nostr_sdk::Url::parse(r).ok())
-			.filter_map(|u| u.host_str().map(|h| h.to_string()))
-			.collect();
-		// The name authority, both from this service's config and the process-wide
-		// configured home domain (they're normally the same; dedup below folds it).
-		hosts.push(svc.config.read().home_domain());
-		hosts.push(crate::nostr::nip05::home_domain());
-		hosts.push("api.coingecko.com".to_string());
-		hosts.retain(|h| !h.is_empty());
-		hosts.sort();
-		hosts.dedup();
-		tokio::spawn(async move {
-			// Wait out the cold start rather than skipping the prewarm entirely.
-			let Some(tunnel) = crate::nym::nymproc::wait_for_tunnel(Duration::from_secs(60)).await
-			else {
-				return;
-			};
-			crate::nym::dns::prewarm(&tunnel, &hosts).await;
-			// Keep the entries warm: re-prewarm every 45s (below the 60s TTL
-			// floor) so a stable host never expires out of the cache between
-			// uses. Picks up the current tunnel each cycle, so it survives exit
-			// reselects.
-			loop {
-				tokio::time::sleep(Duration::from_secs(45)).await;
-				if let Some(t) = crate::nym::nymproc::tunnel() {
-					crate::nym::dns::prewarm(&t, &hosts).await;
-				}
-			}
-		});
-	}
+	// (No DNS prewarm here: unlike the old mixnet path, arti resolves relay and
+	// HTTP hostnames internally as part of the circuit dial — there is no
+	// separate in-tunnel DoT round trip to warm. The node host was never on this
+	// path and still isn't — it never rides the private transport.)
 	for relay in &relays {
 		if let Err(e) = client.add_relay(relay.clone()).await {
 			warn!("nostr: add relay {relay} failed: {e}");
 		}
 	}
-	// The tunnel generation these relays are being dialed on. If the exit is
-	// later reselected (generation bumped by nymproc), the status loop drops
-	// these now-dead sockets and re-dials through the fresh tunnel.
-	let mut dial_gen = crate::nym::tunnel_generation();
+	// The transport generation these relays are being dialed on. With Tor this is
+	// stable (arti rebuilds circuits transparently), so the reselect-driven
+	// re-dial below simply never fires — the status loop still re-checks liveness.
+	let mut dial_gen = crate::tor::tunnel_generation();
 	let connect_started = std::time::Instant::now();
 	client.connect().await;
 	{
@@ -1000,7 +954,7 @@ async fn run_service(svc: Arc<NostrService>, wallet: Wallet) {
 					// window as soon as the exit is proven to carry relay traffic,
 					// independent of the up-to-30s catch-up fetch below (a slow
 					// catch-up must not get a good exit wrongly condemned).
-					crate::nym::report_relay_live(report_gen);
+					crate::tor::report_relay_live(report_gen);
 					return;
 				}
 				if svc_probe.shutdown.load(Ordering::SeqCst)
@@ -1080,7 +1034,7 @@ async fn run_service(svc: Arc<NostrService>, wallet: Wallet) {
 	// actual connected+subscribed relay on THIS tunnel generation, not merely a
 	// warm tunnel — and so nymproc's relay-readiness window closes successfully.
 	if connected {
-		crate::nym::report_relay_live(dial_gen);
+		crate::tor::report_relay_live(dial_gen);
 	}
 
 	let mut notifications = client.notifications();
@@ -1123,7 +1077,7 @@ async fn run_service(svc: Arc<NostrService>, wallet: Wallet) {
 				// subscription — a reselect thus transparently restores
 				// receive+send. (An individual relay bounce with the exit still
 				// healthy is left to nostr-sdk's own auto-reconnect + resubscribe.)
-				let generation = crate::nym::tunnel_generation();
+				let generation = crate::tor::tunnel_generation();
 				if generation != dial_gen {
 					info!("nostr: tunnel reselected (gen {dial_gen} -> {generation}); re-dialing relays over the new exit");
 					redial_on_new_tunnel(&client, &relays, &filter).await;
@@ -1135,9 +1089,9 @@ async fn run_service(svc: Arc<NostrService>, wallet: Wallet) {
 				// a live relay closes/keeps-open nymproc's readiness window; all
 				// relays down for too long condemns the exit and reselects.
 				if connected {
-					crate::nym::report_relay_live(dial_gen);
+					crate::tor::report_relay_live(dial_gen);
 				} else {
-					crate::nym::report_relay_down(dial_gen);
+					crate::tor::report_relay_down(dial_gen);
 				}
 				let now = unix_time();
 				if now - last_heartbeat >= 30 {
@@ -1181,7 +1135,7 @@ async fn run_service(svc: Arc<NostrService>, wallet: Wallet) {
 
 	// No longer a relay consumer: disarm relay-reachability governance so the
 	// idle tunnel isn't condemned for "no relay" once we stop dialing.
-	crate::nym::set_relay_consumer(false);
+	crate::tor::set_relay_consumer(false);
 	{
 		let mut w_client = svc.client.write();
 		*w_client = None;

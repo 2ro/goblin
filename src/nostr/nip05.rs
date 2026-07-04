@@ -22,7 +22,7 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 
 use crate::nostr::relays::HOME_NIP05_DOMAIN;
-use crate::nym;
+use crate::tor;
 use parking_lot::RwLock;
 
 /// The active name-authority "home" domain, mirrored here from the wallet config
@@ -102,7 +102,7 @@ pub async fn resolve(name: &str, domain: &str) -> Option<Nip05Resolution> {
 		domain,
 		urlencode(name)
 	);
-	let body = nym::http_request("GET", url, None, vec![]).await?;
+	let body = tor::http_request("GET", url, None, vec![]).await?;
 	parse_well_known(&body, name)
 }
 
@@ -120,7 +120,7 @@ pub async fn name_by_pubkey(domain: &str, pubkey_hex: &str) -> Option<String> {
 		domain,
 		urlencode(pubkey_hex)
 	);
-	let body = nym::http_request("GET", url, None, vec![]).await?;
+	let body = tor::http_request("GET", url, None, vec![]).await?;
 	let doc: Value = serde_json::from_str(&body).ok()?;
 	doc.get("name")
 		.and_then(|v| v.as_str())
@@ -159,7 +159,7 @@ pub async fn check(pubkey: &PublicKey, name: &str, domain: &str) -> Nip05Check {
 		domain,
 		urlencode(name)
 	);
-	let Some(body) = nym::http_request("GET", url, None, vec![]).await else {
+	let Some(body) = tor::http_request("GET", url, None, vec![]).await else {
 		return Nip05Check::Unreachable;
 	};
 	check_body(&body, pubkey, name)
@@ -218,7 +218,7 @@ pub async fn check_availability(server: &str, name: &str) -> Availability {
 		server.trim_end_matches('/'),
 		urlencode(name)
 	);
-	let body = match nym::http_request("GET", url, None, vec![]).await {
+	let body = match tor::http_request("GET", url, None, vec![]).await {
 		Some(b) => b,
 		None => return Availability::Unknown,
 	};
@@ -284,7 +284,7 @@ pub async fn register(server: &str, name: &str, keys: &Keys) -> RegisterResult {
 		("Authorization".to_string(), auth),
 		("Content-Type".to_string(), "application/json".to_string()),
 	];
-	let Some(resp) = nym::http_request("POST", url, Some(body), headers).await else {
+	let Some(resp) = tor::http_request("POST", url, Some(body), headers).await else {
 		return RegisterResult::Network;
 	};
 	let Ok(doc) = serde_json::from_str::<Value>(&resp) else {
@@ -313,7 +313,7 @@ pub async fn unregister(server: &str, name: &str, keys: &Keys) -> Result<(), Str
 		return Err("couldn't sign the request".to_string());
 	};
 	let headers = vec![("Authorization".to_string(), auth)];
-	match nym::http_request("DELETE", url, None, headers).await {
+	match tor::http_request("DELETE", url, None, headers).await {
 		Some(resp) if resp.contains("\"released\":true") => Ok(()),
 		Some(resp) => Err(serde_json::from_str::<serde_json::Value>(&resp)
 			.ok()
@@ -328,7 +328,7 @@ pub async fn unregister(server: &str, name: &str, keys: &Keys) -> Result<(), Str
 pub async fn fetch_profile(server: &str, name: &str) -> Option<Option<String>> {
 	let server = server.trim_end_matches('/');
 	let url = format!("{}/api/v1/profile/{}", server, urlencode(name));
-	let (code, raw) = nym::http_request_bytes("GET", url, None, vec![]).await?;
+	let (code, raw) = tor::http_request_bytes("GET", url, None, vec![]).await?;
 	if code == 404 {
 		return Some(None);
 	}
@@ -347,7 +347,7 @@ pub async fn fetch_avatar(server: &str, hash: &str) -> Option<Vec<u8>> {
 	}
 	let server = server.trim_end_matches('/');
 	let url = format!("{}/api/v1/avatar/{}.png", server, hash);
-	let (code, raw) = nym::http_request_bytes("GET", url, None, vec![]).await?;
+	let (code, raw) = tor::http_request_bytes("GET", url, None, vec![]).await?;
 	if code != 200 || raw.len() > 1_048_576 || !raw.starts_with(&[0x89, b'P', b'N', b'G']) {
 		return None;
 	}

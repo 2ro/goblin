@@ -66,7 +66,7 @@ const PINNED_POOL: &str = r#"{
   "notes": "Goblin wallet relay candidate pool. Clients verify each entry locally (NIP-11 probe) before use. Requirements: max_message_length >= 131072, no payment or auth required for writes, tolerates NIP-59 backdating. The optional per-relay 'exit' is that operator's co-located scoped mixnet exit (Recipient address): a MixnetStream the wallet dials directly to reach the relay with no public DNS and no public IPR — the fast money path.",
   "min_message_length": 131072,
   "relays": [
-    { "url": "wss://relay.floonet.dev", "roles": ["dm", "discovery"], "vetted": "2026-07-02", "exit": "EqbUPt7aYkar2CTmjBVnyWaKzb2WT8NdojUGXU4mrfNG.AF5YCD8hgEUqByamrPqZz72h7GE599LbqQrhaew9bBip@HfyUPUv4z8uMQoZYuZGMWf6oe2vaKBVPrfgHk6WvwFPe" },
+    { "url": "wss://relay.floonet.dev", "roles": ["dm", "discovery"], "vetted": "2026-07-02", "exit": "EqbUPt7aYkar2CTmjBVnyWaKzb2WT8NdojUGXU4mrfNG.AF5YCD8hgEUqByamrPqZz72h7GE599LbqQrhaew9bBip@HfyUPUv4z8uMQoZYuZGMWf6oe2vaKBVPrfgHk6WvwFPe", "onion": "m2ji5o6p6qapd4ies4wua64skjx2emd6lrp7hhvrib33ogveyihopryd.onion" },
     { "url": "wss://relay.primal.net",   "roles": ["dm"],              "vetted": "2026-07-01" },
     { "url": "wss://relay.damus.io",     "roles": ["dm"],              "vetted": "2026-07-01" },
     { "url": "wss://nos.lol",            "roles": ["dm"],              "vetted": "2026-07-01" },
@@ -103,6 +103,16 @@ pub struct PoolRelay {
 	/// it is meant to replace.
 	#[serde(default)]
 	pub exit: Option<String>,
+	/// This relay's pinned `.onion` address (`<host>.onion`, optional `:port`),
+	/// when its operator fronts the relay with a Tor onion service. The wallet
+	/// dials this over embedded Tor and speaks PLAIN websocket to it (the onion
+	/// connection is already encrypted+authenticated end to end). Absent → the
+	/// relay is reached over a Tor exit to its clearnet host instead. Added beside
+	/// `exit` the same tolerant way (no `deny_unknown_fields`, `version` stays 1),
+	/// so OLDER builds simply ignore it — no schema break, no flag day. Carried in
+	/// the pinned pool so the money-path relay's onion bootstraps OFFLINE.
+	#[serde(default)]
+	pub onion: Option<String>,
 }
 
 impl PoolRelay {
@@ -189,6 +199,27 @@ impl RelayPool {
 			.iter()
 			.any(|r| r.exit.as_deref().is_some_and(|e| !e.trim().is_empty()))
 	}
+
+	/// The pinned `.onion` for `url`, if the pool advertises one (url compared
+	/// modulo a trailing slash). `None` → reach the relay over a Tor exit to its
+	/// clearnet host. This is how the wallet learns the money-path relay's onion
+	/// (see [`PoolRelay::onion`]).
+	pub fn onion_for(&self, url: &str) -> Option<String> {
+		let want = url.trim_end_matches('/');
+		self.relays
+			.iter()
+			.find(|r| r.url.trim_end_matches('/') == want)
+			.and_then(|r| r.onion.clone())
+			.filter(|o| !o.trim().is_empty())
+	}
+
+	/// Whether ANY relay in the pool pins an `.onion`. Used to prefer a pool that
+	/// carries the money-path onion (see [`load`]).
+	pub fn has_onion(&self) -> bool {
+		self.relays
+			.iter()
+			.any(|r| r.onion.as_deref().is_some_and(|o| !o.trim().is_empty()))
+	}
 }
 
 /// Disk path of the cached pool file.
@@ -202,12 +233,12 @@ pub fn load() -> RelayPool {
 	std::fs::read_to_string(cache_path())
 		.ok()
 		.and_then(|raw| RelayPool::parse(&raw))
-		// A cache written by a pre-exit build parses fine but hides the
-		// scoped-exit money path (and the current primary relay) for up to
-		// CACHE_MAX_AGE_SECS after an app update — relay connects then ride
-		// the slow public-IPR path for days. The pinned pool is newer than
-		// any exit-less file, so prefer it until the next gist refresh.
-		.filter(RelayPool::has_exit)
+		// A cache written by a pre-Tor build parses fine but hides the onion
+		// money path (and the current primary relay) for up to CACHE_MAX_AGE_SECS
+		// after an app update — relay connects then have no onion to dial for days.
+		// The pinned pool is newer than any onion-less file, so prefer it until the
+		// next gist refresh.
+		.filter(RelayPool::has_onion)
 		.unwrap_or_else(|| RelayPool::parse(PINNED_POOL).expect("pinned pool parses"))
 }
 
@@ -226,17 +257,17 @@ pub async fn refresh_if_stale() {
 		.and_then(|t| t.elapsed().ok())
 		.map(|age| age.as_secs() < CACHE_MAX_AGE_SECS)
 		.unwrap_or(false)
-		// An exit-less cache predates the current pool shape (see `load`,
+		// An onion-less cache predates the current pool shape (see `load`,
 		// which already ignores it) — replace it now instead of serving the
 		// pinned fallback for the rest of the file's 7 days.
 		&& std::fs::read_to_string(&path)
 			.ok()
 			.and_then(|raw| RelayPool::parse(&raw))
-			.is_some_and(|p| p.has_exit());
+			.is_some_and(|p| p.has_onion());
 	if fresh {
 		return;
 	}
-	let Some(raw) = crate::nym::http_request("GET", POOL_URL.to_string(), None, vec![]).await
+	let Some(raw) = crate::tor::http_request("GET", POOL_URL.to_string(), None, vec![]).await
 	else {
 		warn!("relay pool: refresh fetch failed, keeping current pool");
 		return;
@@ -305,7 +336,7 @@ pub async fn probe(url: &str) -> bool {
 	let headers = vec![("Accept".to_string(), "application/nostr+json".to_string())];
 	let ok = tokio::time::timeout(
 		PROBE_TIMEOUT,
-		crate::nym::http_request("GET", http_url, None, headers),
+		crate::tor::http_request("GET", http_url, None, headers),
 	)
 	.await
 	.ok()
@@ -385,6 +416,15 @@ mod tests {
 		assert_eq!(dm.len(), 10);
 		assert!(dm.iter().any(|r| r.url == "wss://relay.floonet.dev"));
 		assert!(dm.iter().all(|r| r.vetted.is_some()));
+		// The money-path relay pins its .onion so the Tor transport bootstraps
+		// OFFLINE, before any network; every other relay is onion-less (reached
+		// over a Tor exit).
+		assert!(pool.has_onion());
+		assert_eq!(
+			pool.onion_for("wss://relay.floonet.dev"),
+			Some("m2ji5o6p6qapd4ies4wua64skjx2emd6lrp7hhvrib33ogveyihopryd.onion".to_string())
+		);
+		assert!(pool.onion_for("wss://nos.lol").is_none());
 		let disc = pool.discovery_relays();
 		// relay.floonet.dev carries both roles; the two indexers
 		// are discovery-only.
@@ -505,6 +545,7 @@ mod tests {
 			roles: vec!["dm".to_string()],
 			vetted: vetted.then(|| "2026-07-01".to_string()),
 			exit: None,
+			onion: None,
 		};
 		vec![
 			mk("wss://a.example", false),
@@ -530,6 +571,7 @@ mod tests {
 			roles: vec!["dm".to_string()],
 			vetted: Some("2026-07-01".to_string()),
 			exit: None,
+			onion: None,
 		});
 		let order = weighted_order("wss://relay.goblin.st", &with_goblin, |_| 0);
 		assert_eq!(order.len(), 4);

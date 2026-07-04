@@ -795,9 +795,9 @@ impl GoblinWalletView {
 										ui.label(
 											// Relay-gated: "Connected over Nym" only once a
 											// relay is live on the current tunnel generation.
-											RichText::new(if crate::nym::transport_ready() {
+											RichText::new(if crate::tor::transport_ready() {
 												t!("goblin.home.connected_nym")
-											} else if crate::nym::is_ready() {
+											} else if crate::tor::is_ready() {
 												t!("goblin.home.nym_ready")
 											} else {
 												t!("goblin.home.connecting_nym")
@@ -2412,9 +2412,9 @@ impl GoblinWalletView {
 					// tunnel being warm is not enough — a relay must actually carry
 					// our traffic on the current exit. Otherwise show the tunnel is
 					// up but relays are still connecting/reconnecting.
-					let mixnet = if crate::nym::transport_ready() {
+					let mixnet = if crate::tor::transport_ready() {
 						t!("goblin.home.connected_nym")
-					} else if crate::nym::is_ready() {
+					} else if crate::tor::is_ready() {
 						t!("goblin.home.nym_ready")
 					} else {
 						t!("goblin.home.connecting_nym")
@@ -2435,7 +2435,7 @@ impl GoblinWalletView {
 							.font(FontId::new(12.0, fonts::regular()))
 							.color(t.surface_text_mute),
 					);
-					if !crate::nym::transport_ready() || !connected {
+					if !crate::tor::transport_ready() || !connected {
 						ui.ctx()
 							.request_repaint_after(std::time::Duration::from_millis(600));
 					}

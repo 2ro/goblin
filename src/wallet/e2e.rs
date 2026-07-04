@@ -175,9 +175,9 @@ mod tests {
 
 		// The app installs these at startup (src/lib.rs); a bare test must too.
 		let _ = rustls::crypto::ring::default_provider().install_default();
-		crate::nym::warm_up();
+		crate::tor::warm_up();
 		assert!(
-			wait_until("nym tunnel is_ready", 180, crate::nym::is_ready),
+			wait_until("nym tunnel is_ready", 180, crate::tor::is_ready),
 			"nym tunnel never came up"
 		);
 
@@ -470,14 +470,14 @@ mod tests {
 			"money relay {RELAY} advertises no scoped exit in the pool; the split money path cannot be verified"
 		);
 
-		crate::nym::warm_up();
+		crate::tor::warm_up();
 		assert!(
-			wait_until("nym tunnel is_ready", 180, crate::nym::is_ready),
+			wait_until("nym tunnel is_ready", 180, crate::tor::is_ready),
 			"nym tunnel never came up"
 		);
 		println!(
 			"[fe2e] nym ready; tunnel_generation={}",
-			crate::nym::tunnel_generation()
+			crate::tor::tunnel_generation()
 		);
 
 		// One external node for BOTH wallets: the money path splits at the RELAY

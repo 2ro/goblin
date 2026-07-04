@@ -804,7 +804,7 @@ impl OnboardingContent {
 					ui.label(
 						// Relay-gated readiness: "connected over Nym" only once a
 						// relay is actually live, not merely when the tunnel is warm.
-						RichText::new(if crate::nym::transport_ready() {
+						RichText::new(if crate::tor::transport_ready() {
 							t!("goblin.onboarding.identity.connected_nym")
 						} else {
 							t!("goblin.onboarding.identity.connecting_nym")

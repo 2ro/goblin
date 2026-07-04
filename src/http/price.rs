@@ -24,7 +24,7 @@ use std::collections::{HashMap, HashSet};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::AppConfig;
-use crate::nym;
+use crate::tor;
 
 /// Cache refresh interval (seconds).
 const REFRESH_SECS: i64 = 300;
@@ -154,7 +154,7 @@ pub fn eager_refresh() {
 		.build()
 		.unwrap();
 	rt.block_on(async {
-		let generation = nym::tunnel_generation();
+		let generation = tor::tunnel_generation();
 		let mut ok = false;
 		for attempt in 1..=PROBE_ATTEMPTS {
 			match tokio::time::timeout(PROBE_TIMEOUT, fetch_rate(&vs)).await {
@@ -175,8 +175,8 @@ pub fn eager_refresh() {
 		// generation we probed: the exit is up but blackholing our HTTP. Condemn
 		// it so a fresh exit is selected in seconds, not minutes. Guarded to the
 		// probed generation so a reselect that already happened is never hit.
-		if !ok && nym::is_ready() && nym::tunnel_generation() == generation {
-			nym::condemn_exit(generation);
+		if !ok && tor::is_ready() && tor::tunnel_generation() == generation {
+			tor::condemn_exit(generation);
 		}
 	});
 	FETCHING.write().remove(&vs);
@@ -191,7 +191,7 @@ async fn fetch_rate(vs: &str) -> Option<f64> {
 	// CoinGecko rejects requests without a User-Agent (403). A static,
 	// non-identifying UA is fine over the mixnet.
 	let headers = vec![("User-Agent".to_string(), "goblin-wallet".to_string())];
-	let body = nym::http_request("GET", url, None, headers).await?;
+	let body = tor::http_request("GET", url, None, headers).await?;
 	let parsed: Option<f64> = serde_json::from_str::<serde_json::Value>(&body)
 		.ok()
 		.and_then(|doc| doc.get("grin")?.get(vs)?.as_f64());

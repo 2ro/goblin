@@ -38,8 +38,14 @@ mod http;
 pub mod logger;
 mod node;
 pub mod nostr;
+/// The old Nym-mixnet transport, DORMANT since the Tor swap. Retained on disk but
+/// only compiled with `--features nym` (its nym-sdk deps link a different
+/// libsqlite3-sys than arti and cannot coexist with Tor in one binary). Deletion
+/// is a later phase.
+#[cfg(feature = "nym")]
 pub mod nym;
 mod settings;
+pub mod tor;
 mod wallet;
 
 /// Upstream GRIM version the fork is based on (third-party credit).
@@ -117,11 +123,12 @@ pub fn start(options: NativeOptions, app_creator: eframe::AppCreator) -> eframe:
 	// would panic on the first TLS handshake. nym uses its own explicit provider,
 	// so this only steers our relay/HTTP TLS. Idempotent (Err if already set).
 	let _ = rustls::crypto::ring::default_provider().install_default();
-	// Pre-warm the in-process Nym mixnet tunnel FIRST, before i18n/node setup, so
-	// the mixnet bootstrap (the long pole on cold start) overlaps everything else
-	// and price/NIP-05/nostr are ready at first use. All of Goblin's outbound
-	// traffic egresses through it; nothing clearnet.
-	nym::warm_up();
+	// Pre-warm the embedded Tor client FIRST, before i18n/node setup, so the Tor
+	// bootstrap (the long pole on cold start) overlaps everything else and
+	// price/NIP-05/nostr are ready at first use. All of Goblin's relay + HTTP
+	// traffic egresses through Tor; the Grin node stays on the clear internet
+	// exactly as before (its lazy warm-on-activity polling is untouched).
+	tor::warm_up();
 	// Seed the price cache from disk so the amount preview can paint an instant
 	// (stale-marked) fiat value while the first live fetch is still in flight.
 	crate::http::price::seed_from_disk();
