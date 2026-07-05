@@ -46,6 +46,12 @@ const MAX_MEMO_BYTES: usize = 256;
 /// param is an opaque routing key (magick's `MM-<hex>` invoice number), never
 /// free text, so it is capped tight per the frozen contract (section 4.1).
 const MAX_ORDER_BYTES: usize = 64;
+/// Upper bound on the whole-GRIN part of an accepted amount. It sits far below
+/// the point where `amount_from_hr_string`'s `grins * GRIN_BASE` would overflow
+/// u64 (which in release wraps to a small atomic value while the review screen
+/// still shows the giant figure), yet comfortably above Grin's real circulating
+/// supply (~10^8 GRIN). A scanned amount above this is abuse, not a payment.
+const MAX_WHOLE_GRIN: u64 = 1_000_000_000;
 
 /// Schemes that unlock amount/memo parsing. `goblin:` is Goblin's registered
 /// deep-link scheme (web "Open in Goblin" buttons, so the OS opens the wallet);
@@ -187,6 +193,24 @@ pub fn is_pay_uri(scanned: &str) -> bool {
 /// manual entry). Returns the clean decoded decimal string on success.
 fn validate_amount(raw: &str) -> Option<String> {
 	let decoded = String::from_utf8_lossy(&percent_decode(raw)).into_owned();
+	// A Grin amount is only ASCII `[0-9.]`. Reject any non-ASCII up front:
+	// `amount_from_hr_string` slices the fractional tail at a fixed byte index,
+	// which panics if that index lands inside a multibyte UTF-8 char. The scan /
+	// deep-link thread has no catch_unwind, so a crafted amount like `0.€€€€`
+	// would crash the wallet. Fail closed to manual entry instead.
+	if !decoded.is_ascii() {
+		return None;
+	}
+	// Cap the whole-GRIN part below the u64 overflow point. Without this a giant
+	// amount wraps (in release) to a small atomic value that is what actually
+	// gets dispatched, while the review screen shows the giant figure. A whole
+	// part that does not even fit u64 is left for `amount_from_hr_string` to
+	// reject (its own `parse::<u64>` errors, so no wrap can occur).
+	if let Ok(whole) = decoded.split('.').next().unwrap_or("").parse::<u64>() {
+		if whole > MAX_WHOLE_GRIN {
+			return None;
+		}
+	}
 	match amount_from_hr_string(&decoded) {
 		Ok(atomic) if atomic > 0 => Some(decoded),
 		_ => None,
@@ -436,6 +460,54 @@ mod tests {
 			let out = parse(&format!("nostr:{NPROFILE}?amount={bad}"));
 			assert_eq!(out.amount, None, "expected {bad:?} to be rejected");
 		}
+	}
+
+	#[test]
+	fn multibyte_amount_rejected_no_panic() {
+		// A crafted multibyte amount must never reach grin_core's fixed-index
+		// fractional-tail slice (which panics on a non-char-boundary). It is
+		// dropped to None and the payment degrades to manual entry; no panic on
+		// the scan/deep-link thread. The `0.€€€€` case slices mid-char in
+		// grin_core without the ASCII guard.
+		for bad in [
+			"0.\u{20ac}\u{20ac}\u{20ac}\u{20ac}", // 3-byte euro signs
+			"0.\u{e9}\u{e9}\u{e9}\u{e9}\u{e9}\u{e9}\u{e9}\u{e9}\u{e9}", // 2-byte accents past WIDTH
+			"\u{20ac}",
+			"1\u{e9}",
+			"0.5\u{1f600}", // 4-byte emoji
+		] {
+			let out = parse(&format!("nostr:{NPROFILE}?amount={bad}"));
+			assert_eq!(out.amount, None, "expected {bad:?} to be dropped");
+			assert_eq!(out.recipient, NPROFILE);
+		}
+	}
+
+	#[test]
+	fn oversized_amount_rejected() {
+		// Above the whole-GRIN ceiling → dropped before the grin parse, so a huge
+		// display value can't overflow-wrap into a small dispatched atomic amount.
+		for bad in [
+			"2000000000",           // 2e9 GRIN, over the 1e9 ceiling
+			"99999999999",          // ~1e11 GRIN
+			"1000000001.5",         // just over the ceiling, with a fraction
+			"18446744073709551615", // u64::MAX whole grins (would wrap grins*BASE)
+		] {
+			let out = parse(&format!("nostr:{NPROFILE}?amount={bad}"));
+			assert_eq!(out.amount, None, "expected {bad:?} to be rejected");
+		}
+		// The ceiling itself and just under it still parse.
+		assert_eq!(
+			parse(&format!("nostr:{NPROFILE}?amount=1000000000"))
+				.amount
+				.as_deref(),
+			Some("1000000000")
+		);
+		assert_eq!(
+			parse(&format!("nostr:{NPROFILE}?amount=999999999.5"))
+				.amount
+				.as_deref(),
+			Some("999999999.5")
+		);
 	}
 
 	#[test]
