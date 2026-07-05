@@ -620,7 +620,8 @@ pub fn balance_hero(
 pub fn activity_row(
 	ui: &mut Ui,
 	title: &str,
-	subtitle: &str,
+	note: &str,
+	tail: &str,
 	id: &str,
 	amount: &str,
 	incoming: bool,
@@ -629,7 +630,10 @@ pub fn activity_row(
 	tex: Option<&egui::TextureHandle>,
 ) -> Response {
 	let t = theme::tokens();
-	let row_h = 60.0;
+	// A touch taller than a single-line row so the amount can sit centered
+	// against the two-line title/subtitle stack with clear breathing room
+	// above and below instead of colliding with the title baseline.
+	let row_h = 64.0;
 	let (rect, resp) =
 		ui.allocate_exact_size(Vec2::new(ui.available_width(), row_h), Sense::click());
 	let mut content = ui.new_child(
@@ -658,41 +662,41 @@ pub fn activity_row(
 			avatar_any(ui, title, id, 40.0, tex);
 		}
 		ui.add_space(12.0);
-		ui.vertical(|ui| {
-			ui.add_space(2.0);
-			ui.add(
-				egui::Label::new(
-					RichText::new(title)
-						.font(FontId::new(15.0, fonts::semibold()))
-						.color(t.text),
-				)
-				.truncate(),
-			);
-			// Single-line, truncated: keeps the fixed-height row tidy even when
-			// the subtitle is a long value (e.g. a full npub in the picker).
-			ui.add(
-				egui::Label::new(
-					RichText::new(subtitle)
-						.font(FontId::new(13.0, fonts::regular()))
-						.color(t.text_dim),
-				)
-				.truncate(),
-			);
-		});
+		// Reserve the amount as its own right-hand column FIRST. Placing it
+		// before the text means the title/subtitle column is bounded to the
+		// remaining width and truncates cleanly, instead of stretching under
+		// the amount and colliding with it. Centered against the whole stack,
+		// the amount lands between the title and subtitle lines.
 		ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-			// A canceled tx delivered no funds: mute the amount so it never
-			// reads as a completed green credit (or a real debit).
-			ui.label(
-				RichText::new(amount)
-					.font(FontId::new(15.0, fonts::mono_semibold()))
-					.color(if canceled {
-						t.text_dim
-					} else if incoming {
-						t.pos
-					} else {
-						t.text
-					}),
-			);
+			if !amount.is_empty() {
+				// A canceled tx delivered no funds: mute the amount so it never
+				// reads as a completed green credit (or a real debit).
+				ui.label(
+					RichText::new(amount)
+						.font(FontId::new(15.0, fonts::mono_semibold()))
+						.color(if canceled {
+							t.text_dim
+						} else if incoming {
+							t.pos
+						} else {
+							t.text
+						}),
+				);
+				ui.add_space(10.0);
+			}
+			// Remaining width to the left holds the title + subtitle stack.
+			ui.vertical(|ui| {
+				ui.add_space(2.0);
+				ui.add(
+					egui::Label::new(
+						RichText::new(title)
+							.font(FontId::new(15.0, fonts::semibold()))
+							.color(t.text),
+					)
+					.truncate(),
+				);
+				activity_subtitle(ui, note, tail, t.text_dim);
+			});
 		});
 	});
 	// Divider.
@@ -700,6 +704,40 @@ pub fn activity_row(
 	ui.painter()
 		.hline(rect.left()..=rect.right(), line_y, Stroke::new(1.0, t.line));
 	resp
+}
+
+/// Single-line subtitle for an activity row.
+///
+/// The `tail` (date/time, or a short status word) is pinned to the right and
+/// never clipped; the `note` takes whatever width is left and gets the
+/// ellipsis when it runs out of room. When only one part is present it is
+/// left-aligned under the title, truncating on its own (e.g. a long npub in
+/// the contact picker).
+fn activity_subtitle(ui: &mut Ui, note: &str, tail: &str, color: Color32) {
+	let dim = |s: &str| {
+		RichText::new(s.to_string())
+			.font(FontId::new(13.0, fonts::regular()))
+			.color(color)
+	};
+	match (note.is_empty(), tail.is_empty()) {
+		(true, true) => {}
+		(false, true) => {
+			ui.add(egui::Label::new(dim(note)).truncate());
+		}
+		(true, false) => {
+			ui.add(egui::Label::new(dim(tail)).truncate());
+		}
+		(false, false) => {
+			ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+				ui.spacing_mut().item_spacing.x = 4.0;
+				// Rightmost, full: the date/time (with seconds) is never clipped.
+				ui.add(egui::Label::new(dim(tail)));
+				ui.add(egui::Label::new(dim("·")));
+				// Leftmost, fills the gap: the note truncates with an ellipsis.
+				ui.add(egui::Label::new(dim(note)).truncate());
+			});
+		}
+	}
 }
 
 /// Section header used above grouped lists.

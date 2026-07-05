@@ -1765,18 +1765,19 @@ impl GoblinWalletView {
 									} else {
 										t!("goblin.activity.pending").to_string()
 									};
-									let subtitle = match (&item.note, item.confirmed) {
-										(Some(n), true) => {
-											format!("{} · {}", n, View::format_time(item.time))
-										}
-										(Some(n), false) => format!("{} · {}", n, status_word),
-										(None, true) => View::format_time(item.time),
-										(None, false) => status_word.clone(),
+									// Note truncates; the tail (date/time when
+									// confirmed, else the status word) stays in full.
+									let note = item.note.as_deref().unwrap_or("");
+									let tail = if item.confirmed {
+										View::format_time(item.time)
+									} else {
+										status_word.clone()
 									};
 									if w::activity_row(
 										ui,
 										&item.title,
-										&subtitle,
+										note,
+										&tail,
 										item.npub.as_deref().unwrap_or(""),
 										&amount,
 										item.incoming,
@@ -1971,17 +1972,20 @@ impl GoblinWalletView {
 		} else {
 			t!("goblin.activity.pending").to_string()
 		};
-		let subtitle = match (&item.note, item.confirmed) {
-			(Some(note), true) => format!("{} · {}", note, View::format_time(item.time)),
-			(Some(note), false) => format!("{} · {}", note, status_word),
-			(None, true) => View::format_time(item.time),
-			(None, false) => status_word.clone(),
+		// Note truncates; the tail (date/time when confirmed, else the status
+		// word) is pinned right and kept in full.
+		let note = item.note.as_deref().unwrap_or("");
+		let tail = if item.confirmed {
+			View::format_time(item.time)
+		} else {
+			status_word.clone()
 		};
 		let tex = self.handle_tex(ui.ctx(), wallet, &item.title);
 		if w::activity_row(
 			ui,
 			&item.title,
-			&subtitle,
+			note,
+			&tail,
 			item.npub.as_deref().unwrap_or(""),
 			&amount,
 			item.incoming,
