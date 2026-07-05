@@ -4707,7 +4707,7 @@ impl GoblinWalletView {
 				let before = claim.input.clone();
 				TextEdit::new(egui::Id::from("settings_claim"))
 					.focus(false)
-					.hint_text("yourname")
+					.hint_text(t!("goblin.onboarding.identity.username_field_hint"))
 					.text_color(t.surface_text)
 					.body()
 					.ui(ui, &mut claim.input, cb);

@@ -621,7 +621,7 @@ goblin:
     intro: "Goblin envoie son trafic privé via Tor, qui masque votre IP au relais — le chiffrement masque le reste, afin qu'un relais ne puisse pas relier un paiement à vous."
     payments: "Paiements"
     payments_blurb: "Chaque message nostr transportant un slatepack."
-    usernames: "usernames"
+    usernames: "Noms d'utilisateur"
     usernames_blurb: "Recherches de noms NIP-05 vers et depuis goblin.st."
     price_avatars: "Prix"
     price_avatars_blurb: "Le taux en temps réel affiché à côté des montants."

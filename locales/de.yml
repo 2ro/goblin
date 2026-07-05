@@ -621,7 +621,7 @@ goblin:
     intro: "Goblin sendet seinen privaten Datenverkehr über Tor und verbirgt so deine IP vor dem Relay — die Verschlüsselung verbirgt den Rest, sodass ein Relay eine Zahlung nicht zu dir zurückverfolgen kann."
     payments: "Zahlungen"
     payments_blurb: "Jede nostr-Nachricht, die einen slatepack trägt."
-    usernames: "usernames"
+    usernames: "Benutzernamen"
     usernames_blurb: "NIP-05-Namensabfragen zu und von goblin.st."
     price_avatars: "Preis"
     price_avatars_blurb: "Der Live-Wechselkurs neben den Beträgen."
