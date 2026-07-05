@@ -30,6 +30,7 @@ use crate::gui::icons::{
 };
 use crate::gui::platform::PlatformCallbacks;
 use crate::gui::theme::{self, fonts};
+use crate::gui::views::types::ModalPosition;
 use crate::gui::views::{Content, Modal, TextEdit, View};
 use crate::wallet::Wallet;
 use crate::wallet::types::WalletData;
@@ -5030,6 +5031,7 @@ impl GoblinWalletView {
 					self.identity_switch.wrong_pass = false;
 					self.identity_switch.pending = Some(PendingIdentityAction::Switch(target));
 					Modal::new(IDENTITY_PASS_MODAL)
+						.position(ModalPosition::CenterTop)
 						.title(t!("goblin.identities.title"))
 						.show();
 				}
@@ -5051,35 +5053,56 @@ impl GoblinWalletView {
 								.color(t.surface_text),
 						);
 						ui.add_space(8.0);
-						// Generate vs import toggle.
+						// Generate vs import toggle: two equal-width in-panel buttons,
+						// matching the Cancel/Add row below. `big_action_on_card_ink`
+						// sizes to `ui.available_width()`, so each must be constrained
+						// to half the panel — otherwise the first button eats the whole
+						// width and the second (Import) overflows the card.
 						ui.horizontal(|ui| {
-							if w::big_action_on_card_ink(
-								ui,
-								&t!("goblin.identities.generate"),
-								if self.identity_switch.import {
-									t.surface_text
-								} else {
-									t.pos
+							let half = (ui.available_width() - 10.0) / 2.0;
+							ui.scope_builder(
+								egui::UiBuilder::new().max_rect(egui::Rect::from_min_size(
+									ui.cursor().min,
+									Vec2::new(half, 44.0),
+								)),
+								|ui| {
+									if w::big_action_on_card_ink(
+										ui,
+										&t!("goblin.identities.generate"),
+										if self.identity_switch.import {
+											t.surface_text
+										} else {
+											t.pos
+										},
+									)
+									.clicked()
+									{
+										self.identity_switch.import = false;
+									}
 								},
-							)
-							.clicked()
-							{
-								self.identity_switch.import = false;
-							}
-							ui.add_space(8.0);
-							if w::big_action_on_card_ink(
-								ui,
-								&t!("goblin.identities.import"),
-								if self.identity_switch.import {
-									t.pos
-								} else {
-									t.surface_text
+							);
+							ui.add_space(10.0);
+							ui.scope_builder(
+								egui::UiBuilder::new().max_rect(egui::Rect::from_min_size(
+									ui.cursor().min,
+									Vec2::new(half, 44.0),
+								)),
+								|ui| {
+									if w::big_action_on_card_ink(
+										ui,
+										&t!("goblin.identities.import"),
+										if self.identity_switch.import {
+											t.pos
+										} else {
+											t.surface_text
+										},
+									)
+									.clicked()
+									{
+										self.identity_switch.import = true;
+									}
 								},
-							)
-							.clicked()
-							{
-								self.identity_switch.import = true;
-							}
+							);
 						});
 						if self.identity_switch.import {
 							ui.add_space(8.0);
@@ -5147,6 +5170,7 @@ impl GoblinWalletView {
 											self.identity_switch.pending =
 												Some(PendingIdentityAction::Add(import_nsec));
 											Modal::new(IDENTITY_PASS_MODAL)
+												.position(ModalPosition::CenterTop)
 												.title(t!("goblin.identities.add_title"))
 												.show();
 										}
