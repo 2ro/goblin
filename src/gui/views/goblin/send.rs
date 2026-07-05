@@ -680,31 +680,59 @@ impl SendFlow {
 			// seed words or slatepack contents into the search box.
 			match &result {
 				QrScanResult::Text(text) => {
-					// Parse as a (possibly amount-bearing) pay-URI. UNTRUSTED
-					// input: the parser is pure, fail-closed, and only ever
-					// PREFILLS — the recipient still resolves + verifies via the
-					// picker and the amount/review screens still gate the send.
-					// A bad amount/memo is dropped; a bare `nostr:<nprofile>`
-					// behaves exactly as before.
-					let pay = crate::nostr::payuri::parse(text);
-					// Drop the scanned key into the search box; the picker's
-					// debounced lookup resolves + verifies it like typed input.
-					self.search = pay.recipient;
-					self.input_changed_at = ui.input(|i| i.time);
-					self.lookup_query.clear();
-					self.net_candidate = None;
-					// Prefill the amount only when the wallet's own parser
-					// accepted it (strictly positive). We stay on the normal
-					// picker -> amount/review flow; nothing auto-advances.
-					if let Some(amount) = pay.amount {
-						self.amount = amount;
+					// Classify the scan. UNTRUSTED input: the parser is pure and
+					// fail-closed, and every path still gates the send on the review
+					// screen (the user confirms) — nothing auto-SENDS.
+					match recognize_scan(text) {
+						// GoblinPay checkout QR: recipient key AND amount are both
+						// known, so skip discovery and open review directly, prefilled.
+						// (Owner-ordered: a merchant checkout shouldn't re-walk the
+						// recipient search.) A cheap LOCAL contact lookup supplies a
+						// friendly name when we already know them; otherwise the short
+						// npub — no network resolution on this path.
+						ScanPrefill::Review {
+							hex,
+							relay_hints,
+							amount,
+							memo,
+						} => {
+							let name = wallet
+								.nostr_service()
+								.and_then(|s| s.store.contact(&hex).map(|c| display_name(&c)))
+								.unwrap_or_else(|| short_npub(&hex));
+							self.recipient = Some(Recipient {
+								name,
+								npub: hex,
+								relay_hints,
+							});
+							self.amount = amount;
+							if let Some(memo) = memo {
+								self.note = memo;
+							}
+							self.error = None;
+							self.stage = Stage::Review;
+						}
+						// Only a recipient (or a name/@handle needing resolution):
+						// drop it into the search box so the picker's debounced lookup
+						// resolves + verifies it like typed input, exactly as before.
+						// Any amount/memo still prefill.
+						ScanPrefill::Search {
+							recipient,
+							amount,
+							memo,
+						} => {
+							self.search = recipient;
+							self.input_changed_at = ui.input(|i| i.time);
+							self.lookup_query.clear();
+							self.net_candidate = None;
+							if let Some(amount) = amount {
+								self.amount = amount;
+							}
+							if let Some(memo) = memo {
+								self.note = memo;
+							}
+						}
 					}
-					// Prefill the send note from the (already sanitized) memo;
-					// it rides along into the tx message via `dispatch`.
-					if let Some(memo) = pay.memo {
-						self.note = memo;
-					}
-					let _ = wallet;
 				}
 				_ => self.error = Some(t!("goblin.send.scan_not_recipient").to_string()),
 			}
@@ -1508,4 +1536,158 @@ fn resolve_nip05_blocking(name: &str, domain: &str) -> Option<nip05::Nip05Resolu
 	.join()
 	.ok()
 	.flatten()
+}
+
+/// What a scanned QR resolves to for the send flow.
+#[derive(Debug, PartialEq, Eq)]
+enum ScanPrefill {
+	/// A GoblinPay payment: the recipient key AND a validated amount are both
+	/// already known, so the flow skips the recipient search/discovery step and
+	/// opens the review screen directly. The user still confirms on review.
+	Review {
+		/// Recipient pubkey hex.
+		hex: String,
+		/// nprofile relay hints (delivery targets for an undiscoverable 10050).
+		relay_hints: Vec<String>,
+		/// Validated decimal-GRIN amount string.
+		amount: String,
+		/// Optional sanitized memo → send note.
+		memo: Option<String>,
+	},
+	/// Only a recipient string (a bare key/name, or a payload without a usable
+	/// amount): drop it into the search box and let the picker resolve it, the
+	/// pre-existing behavior. Any amount/memo still prefill.
+	Search {
+		recipient: String,
+		amount: Option<String>,
+		memo: Option<String>,
+	},
+}
+
+/// Decode a recipient string (`npub` / `nprofile` / 64-char hex, with an
+/// optional `nostr:` prefix) to a `(pubkey hex, relay hints)` pair. `None` for a
+/// name / `@handle` (which needs a NIP-05 network resolution) or garbage — those
+/// still go through the search box. Pure: no I/O.
+fn decode_recipient_key(input: &str) -> Option<(String, Vec<String>)> {
+	use nostr_sdk::nips::nip19::Nip19Profile;
+	use nostr_sdk::{FromBech32, PublicKey};
+	let key = input.trim().strip_prefix("nostr:").unwrap_or(input.trim());
+	if let Ok(pk) = PublicKey::from_bech32(key) {
+		Some((pk.to_hex(), vec![]))
+	} else if let Ok(p) = Nip19Profile::from_bech32(key) {
+		let hints = p.relays.iter().map(|r| r.to_string()).collect();
+		Some((p.public_key.to_hex(), hints))
+	} else if key.len() == 64 && key.chars().all(|c| c.is_ascii_hexdigit()) {
+		Some((key.to_lowercase(), vec![]))
+	} else {
+		None
+	}
+}
+
+/// Classify a scanned QR payload (see [`ScanPrefill`]). A GoblinPay checkout QR
+/// carries the recipient AND amount, so when the recipient decodes to a concrete
+/// key locally and the amount validates, we can skip discovery and go straight
+/// to review. Every other payload (name/@handle, amount-less key, non-`nostr:`
+/// text) degrades to the search-box path. Pure and total, so it is unit-testable
+/// without a wallet or camera.
+fn recognize_scan(scanned: &str) -> ScanPrefill {
+	let pay = crate::nostr::payuri::parse(scanned);
+	match (decode_recipient_key(&pay.recipient), pay.amount.clone()) {
+		(Some((hex, relay_hints)), Some(amount)) => ScanPrefill::Review {
+			hex,
+			relay_hints,
+			amount,
+			memo: pay.memo,
+		},
+		_ => ScanPrefill::Search {
+			recipient: pay.recipient,
+			amount: pay.amount,
+			memo: pay.memo,
+		},
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	// A real, valid bech32 npub for decode tests (the Goblin news key).
+	const NPUB: &str = "npub15gsytqvs5c78u83yv2agl4twjkk6qgem7gtwe2agu7s90tkelxys0xxely";
+
+	#[test]
+	fn goblinpay_uri_with_amount_goes_straight_to_review() {
+		let uri = format!("nostr:{NPUB}?amount=1.5&memo=MM-ABC123");
+		match recognize_scan(&uri) {
+			ScanPrefill::Review {
+				hex,
+				amount,
+				memo,
+				relay_hints,
+			} => {
+				assert_eq!(hex.len(), 64);
+				assert_eq!(amount, "1.5");
+				assert_eq!(memo.as_deref(), Some("MM-ABC123"));
+				assert!(relay_hints.is_empty());
+			}
+			other => panic!("expected Review, got {other:?}"),
+		}
+	}
+
+	#[test]
+	fn key_without_amount_uses_search_box() {
+		// A bare recipient key with no amount is NOT a full payment; the picker
+		// resolves it as before (search box), no straight-to-review.
+		match recognize_scan(&format!("nostr:{NPUB}")) {
+			ScanPrefill::Search {
+				recipient,
+				amount,
+				memo,
+			} => {
+				assert_eq!(recipient, NPUB);
+				assert_eq!(amount, None);
+				assert_eq!(memo, None);
+			}
+			other => panic!("expected Search, got {other:?}"),
+		}
+	}
+
+	#[test]
+	fn name_handle_with_amount_still_uses_search_box() {
+		// A NIP-05 name needs a network resolution, so even with an amount it goes
+		// through the search box (which prefills the amount along the way).
+		match recognize_scan("nostr:alice@goblin.st?amount=2") {
+			ScanPrefill::Search {
+				recipient,
+				amount,
+				memo,
+			} => {
+				assert_eq!(recipient, "alice@goblin.st");
+				assert_eq!(amount.as_deref(), Some("2"));
+				assert_eq!(memo, None);
+			}
+			other => panic!("expected Search, got {other:?}"),
+		}
+	}
+
+	#[test]
+	fn non_nostr_payload_uses_search_box() {
+		match recognize_scan("just some text") {
+			ScanPrefill::Search { recipient, .. } => assert_eq!(recipient, "just some text"),
+			other => panic!("expected Search, got {other:?}"),
+		}
+	}
+
+	#[test]
+	fn decode_key_variants() {
+		// Bech32 npub, with and without the scheme prefix.
+		assert!(decode_recipient_key(NPUB).is_some());
+		assert!(decode_recipient_key(&format!("nostr:{NPUB}")).is_some());
+		// 64-char hex is accepted and lower-cased.
+		let hex = "AB".repeat(32);
+		let (out, _) = decode_recipient_key(&hex).unwrap();
+		assert_eq!(out, hex.to_lowercase());
+		// A name / @handle is not a concrete key.
+		assert!(decode_recipient_key("alice@goblin.st").is_none());
+		assert!(decode_recipient_key("@alice").is_none());
+	}
 }
