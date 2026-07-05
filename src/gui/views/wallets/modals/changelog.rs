@@ -16,7 +16,7 @@ use egui::scroll_area::ScrollBarVisibility;
 use egui::{Id, OpenUrl, RichText, ScrollArea};
 
 use crate::gui::Colors;
-use crate::gui::icons::{BRACKETS_CURLY, GITHUB_LOGO, TELEGRAM_LOGO};
+use crate::gui::icons::{BOOK, GITHUB_LOGO, TELEGRAM_LOGO};
 use crate::gui::views::{Modal, View};
 
 /// Application release changelog content.
@@ -30,7 +30,7 @@ const GITHUB_URL: &'static str = "https://github.com/2ro/goblin";
 /// Endpoint for Telegram releases channel.
 const TELEGRAM_URL: &'static str = "https://t.me/goblinfamily";
 /// Endpoint for project website.
-const GIT_URL: &'static str = "https://goblin.st";
+const GIT_URL: &'static str = "https://docs.goblin.st";
 
 impl ChangelogContent {
 	/// Create new content instance.
@@ -114,7 +114,7 @@ impl ChangelogContent {
 			columns[2].vertical_centered_justified(|ui| {
 				// Draw button to open repository link.
 				let mut git_clicked = false;
-				View::button(ui, BRACKETS_CURLY, Colors::white_or_black(false), || {
+				View::button(ui, BOOK, Colors::white_or_black(false), || {
 					git_clicked = true;
 				});
 				if git_clicked {

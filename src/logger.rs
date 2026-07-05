@@ -114,7 +114,7 @@ pub fn init_logger() {
 /// Get information about application build.
 fn build_info() -> String {
 	format!(
-		"This is Grim version {}, built for {} by {}.",
+		"This is Goblin version {}, built for {} by {}.",
 		built_info::PKG_VERSION,
 		built_info::TARGET,
 		built_info::RUSTC_VERSION,
