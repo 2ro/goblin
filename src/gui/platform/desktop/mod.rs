@@ -39,6 +39,17 @@ pub struct Desktop {
 
 	/// Flag to check if attention required after window focusing.
 	attention_required: Arc<AtomicBool>,
+
+	/// Long-lived clipboard owner. On Linux (X11 AND Wayland) the clipboard
+	/// selection is owned by the live `arboard::Clipboard` instance: the prior
+	/// code created a fresh instance per call and dropped it the moment the
+	/// function returned, so the selection ownership was released immediately and
+	/// copied text (e.g. a recovery phrase) vanished before it could be pasted —
+	/// the "Paste does nothing on desktop" bug. Keeping ONE instance alive for
+	/// the app lifetime makes our process the durable selection owner, so a copy
+	/// survives long enough to paste (in-app or into another window). Held behind
+	/// a Mutex because the trait methods take `&self` and arboard's take `&mut`.
+	clipboard: Arc<parking_lot::Mutex<Option<arboard::Clipboard>>>,
 }
 
 impl Desktop {
@@ -49,7 +60,26 @@ impl Desktop {
 			camera_index: Arc::new(AtomicUsize::new(0)),
 			stop_camera: Arc::new(AtomicBool::new(false)),
 			attention_required: Arc::new(AtomicBool::new(false)),
+			clipboard: Arc::new(parking_lot::Mutex::new(None)),
 		}
+	}
+
+	/// Run `f` against the process-wide, lazily-created clipboard instance,
+	/// returning `default` if the clipboard backend can't be opened. Reusing one
+	/// instance (rather than `Clipboard::new()` per call) is what keeps a copied
+	/// selection alive on Linux — see the `clipboard` field.
+	fn with_clipboard<R>(&self, f: impl FnOnce(&mut arboard::Clipboard) -> R, default: R) -> R {
+		let mut guard = self.clipboard.lock();
+		if guard.is_none() {
+			match arboard::Clipboard::new() {
+				Ok(c) => *guard = Some(c),
+				Err(e) => {
+					log::error!("clipboard: failed to open: {e}");
+					return default;
+				}
+			}
+		}
+		f(guard.as_mut().unwrap())
 	}
 
 	// #[allow(dead_code)]
@@ -211,13 +241,24 @@ impl PlatformCallbacks for Desktop {
 	}
 
 	fn copy_string_to_buffer(&self, data: String) {
-		let mut clipboard = arboard::Clipboard::new().unwrap();
-		clipboard.set_text(data).unwrap();
+		// Reuse the long-lived instance so the selection survives the call (see
+		// the `clipboard` field). A backend error is logged, never a panic — a
+		// failed copy must not crash the wallet.
+		self.with_clipboard(
+			|clipboard| {
+				if let Err(e) = clipboard.set_text(data) {
+					log::error!("clipboard: set_text failed: {e}");
+				}
+			},
+			(),
+		);
 	}
 
 	fn get_string_from_buffer(&self) -> String {
-		let mut clipboard = arboard::Clipboard::new().unwrap();
-		clipboard.get_text().unwrap_or("".to_string())
+		self.with_clipboard(
+			|clipboard| clipboard.get_text().unwrap_or_default(),
+			String::new(),
+		)
 	}
 
 	fn start_camera(&self) {
@@ -358,4 +399,29 @@ impl PlatformCallbacks for Desktop {
 lazy_static! {
 	/// Last captured image from started camera.
 	static ref LAST_CAMERA_IMAGE: Arc<RwLock<Option<(Vec<u8>, u32)>>> = Arc::new(RwLock::new(None));
+}
+
+#[cfg(test)]
+mod clipboard_tests {
+	use super::*;
+	use crate::gui::platform::PlatformCallbacks;
+
+	/// Round-trips a copy then paste through the REAL `Desktop` platform impl on
+	/// the live session clipboard. Ignored by default (needs a display/clipboard
+	/// backend); run manually with a Wayland/X11 session:
+	///   cargo test --lib clipboard_roundtrip -- --ignored --nocapture
+	/// Proves the persistent-instance fix: with the old fresh-instance-per-call
+	/// pattern this read back empty on Wayland/X11.
+	#[test]
+	#[ignore]
+	fn clipboard_roundtrip() {
+		let d = Desktop::new();
+		let phrase = "abandon ability able about above absent absorb abstract \
+			absurd abuse access accident account accuse achieve acid acoustic \
+			acquire across act action actor actress";
+		d.copy_string_to_buffer(phrase.to_string());
+		std::thread::sleep(std::time::Duration::from_millis(200));
+		let got = d.get_string_from_buffer();
+		assert_eq!(got, phrase, "clipboard round-trip lost the copied text");
+	}
 }
