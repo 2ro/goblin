@@ -14,10 +14,12 @@ Goblin is a fork of the **Grim** egui GRIN wallet: it keeps Grim's full GRIN nod
 
 - **Send to people** - pay a `username` or `npub`; the GRIN slatepack travels as a [NIP-17](https://nips.nostr.com/17) gift-wrapped DM ([kind 1059](https://nostrbook.dev/kinds/1059)) over Tor and is applied automatically by the recipient's wallet. No files to swap, no need to both be online at once.
 - **Manual slatepacks too** - when you need to pay or get paid without a handle, **Settings → Wallet → Slatepacks** exposes the classic by-hand flow: create a slatepack to send, or paste one to receive, finalize, or pay.
+- **Open-to-pay links** - a `goblin:` or `nostr:` pay link, or a scanned checkout QR, opens the wallet straight to a prefilled review screen (recipient, amount and note filled in, ready to hold-to-send) on desktop, macOS and Android.
+- **Proofs on request** - payments can include a native Grin payment proof when the payment request asks for one, off by default, shown on the review screen. An ordinary person-to-person send carries none.
 - **In-app identity** - a nostr payment key that is deliberately *not* part of your seed, so you can rotate it any time to stay unlinkable without touching your funds. An optional human-readable `name` comes from the goblin.st identity service.
 - **Private by construction** - GRIN's address-less, confidential chain; your payments and identity (nostr relays, NIP-05 lookups, price) are routed through [Tor](https://www.torproject.org), so who-pays-whom never touches the clear net. The GRIN node connection - block sync and broadcasting your transaction - is direct: public chain data, the same for everyone, and not tied to your identity. Keys, names and history stay on your device.
 - **Configurable amount pairing** - show balances against a world currency, Bitcoin, or sats (rates fetched over Tor), or turn the preview off.
-- **News on Home** - the latest post from the official Goblin news key (a [kind 30023](https://nostrbook.dev/kinds/30023) long-form article) appears on the Home screen; it stays hidden when there is nothing to show, and only ever shows the newest article.
+- **News on Home** - the latest post from the official Goblin news key (a [kind 30023](https://nostrbook.dev/kinds/30023) long-form article) appears on the Home screen in your wallet's language, falling back to English; it stays hidden when there is nothing to show, and only ever shows the newest article.
 - **Cross-platform** - Linux, macOS, Windows, Android, built in pure Rust on [egui](https://github.com/emilk/egui).
 
 ## How a payment travels
