@@ -464,11 +464,45 @@ pub fn field_well(ui: &mut Ui, content: impl FnOnce(&mut Ui)) {
 /// A balance hero block: kicker, big number + ツ, optional fiat line.
 /// `updating` marks a zero balance that is only zero because funds are in
 /// flight or the first sync is still running.
+/// Honest subline shown under the balance figure. A wallet that can't reach a
+/// node must never present a bare `0` (or a silently-stale number) as if it were
+/// a live, confirmed balance.
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub enum BalanceSubline {
+	/// Nothing to add: the shown balance is live and non-zero.
+	None,
+	/// Balance reads 0 while a sync/first-scan is in progress or funds are in
+	/// flight — say "updating", not "empty".
+	Updating,
+	/// Balance reads 0 and the node is unreachable with nothing cached — say
+	/// "can't reach node", never a bare 0.
+	Unreachable,
+	/// A cached (last-known) balance is shown but the node is currently
+	/// unreachable — flag it as possibly stale.
+	Stale,
+}
+
+/// Pure decision for the balance subline. `updating` means a sync is in progress
+/// (or funds are in flight); `error` means the wallet currently can't reach a
+/// node. Priority: updating > unreachable > stale.
+pub fn balance_subline(total: u64, updating: bool, error: bool) -> BalanceSubline {
+	if total == 0 && updating {
+		BalanceSubline::Updating
+	} else if total == 0 && error {
+		BalanceSubline::Unreachable
+	} else if error {
+		BalanceSubline::Stale
+	} else {
+		BalanceSubline::None
+	}
+}
+
 pub fn balance_hero(
 	ui: &mut Ui,
 	total: u64,
 	spendable: u64,
 	updating: bool,
+	error: bool,
 	sync_pct: u8,
 	fiat: Option<&str>,
 	size: f32,
@@ -498,24 +532,51 @@ pub fn balance_hero(
 			);
 		});
 	}
-	// A fresh sync or funds in flight leave a stark 0 that reads as "funds
-	// vanished" — say the balance is still updating, with the scan % when the
-	// node reports one (1..99), so the user sees progress without opening the
-	// wallet switcher.
-	if total == 0 && updating {
-		let label = if (1..100).contains(&sync_pct) {
-			format!("{} {sync_pct}%", t!("goblin.home.balance_updating"))
-		} else {
-			t!("goblin.home.balance_updating").to_string()
-		};
-		ui.add_space(4.0);
-		ui.vertical_centered(|ui| {
-			ui.label(
-				RichText::new(label)
-					.font(FontId::new(12.5, fonts::medium()))
-					.color(t.text_dim),
-			);
-		});
+	// A stark 0 (or a stale number) reads as "funds vanished". Pick the honest
+	// subline: still-updating, node-unreachable, or last-known-balance. See
+	// [`balance_subline`] for the pure state machine.
+	match balance_subline(total, updating, error) {
+		BalanceSubline::Updating => {
+			let label = if (1..100).contains(&sync_pct) {
+				format!("{} {sync_pct}%", t!("goblin.home.balance_updating"))
+			} else {
+				t!("goblin.home.balance_updating").to_string()
+			};
+			ui.add_space(4.0);
+			ui.vertical_centered(|ui| {
+				ui.label(
+					RichText::new(label)
+						.font(FontId::new(12.5, fonts::medium()))
+						.color(t.text_dim),
+				);
+			});
+		}
+		BalanceSubline::Unreachable => {
+			// Node unreachable and nothing cached yet: a bare 0 would claim the
+			// wallet is empty. Say the truth so the user switches nodes instead
+			// of assuming funds vanished.
+			ui.add_space(4.0);
+			ui.vertical_centered(|ui| {
+				ui.label(
+					RichText::new(t!("goblin.home.cant_reach_node"))
+						.font(FontId::new(12.5, fonts::medium()))
+						.color(t.neg),
+				);
+			});
+		}
+		BalanceSubline::Stale => {
+			// A cached balance is shown but we can't currently reach a node:
+			// flag it as possibly stale rather than presenting it as live.
+			ui.add_space(4.0);
+			ui.vertical_centered(|ui| {
+				ui.label(
+					RichText::new(t!("goblin.home.balance_stale"))
+						.font(FontId::new(12.5, fonts::medium()))
+						.color(t.text_dim),
+				);
+			});
+		}
+		BalanceSubline::None => {}
 	}
 	if let Some(fiat) = fiat {
 		ui.add_space(4.0);
@@ -936,5 +997,43 @@ impl HoldToSend {
 			return true;
 		}
 		false
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::{BalanceSubline, balance_subline};
+
+	// A live, non-zero balance needs no subline.
+	#[test]
+	fn live_balance_has_no_subline() {
+		assert_eq!(balance_subline(1_000, false, false), BalanceSubline::None);
+	}
+
+	// Zero while syncing / funds in flight is "updating", not "empty".
+	#[test]
+	fn zero_while_updating_says_updating() {
+		assert_eq!(balance_subline(0, true, false), BalanceSubline::Updating);
+	}
+
+	// Zero with an unreachable node and nothing cached must say so, never a
+	// bare 0 that reads as "wallet empty" (the silent-zero incident).
+	#[test]
+	fn zero_with_node_error_says_unreachable() {
+		assert_eq!(balance_subline(0, false, true), BalanceSubline::Unreachable);
+	}
+
+	// A cached balance shown during a node outage is flagged stale, not passed
+	// off as a live figure.
+	#[test]
+	fn cached_balance_with_error_is_stale() {
+		assert_eq!(balance_subline(500, false, true), BalanceSubline::Stale);
+	}
+
+	// Updating wins over error while the balance is still zero: a fresh switch
+	// to a new node shows progress, not a scary red banner, until it errors.
+	#[test]
+	fn updating_takes_priority_over_error_at_zero() {
+		assert_eq!(balance_subline(0, true, true), BalanceSubline::Updating);
 	}
 }

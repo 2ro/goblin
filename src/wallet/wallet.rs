@@ -250,14 +250,17 @@ impl Wallet {
 		None
 	}
 
-	/// Create [`HTTPNodeClient`] from provided config.
-	fn create_node_client(config: &WalletConfig) -> Result<HTTPNodeClient, Error> {
+	/// Resolve the node API URL and secret for the connection saved in `config`.
+	/// Shared by [`Wallet::create_node_client`] (wallet open) and
+	/// [`Wallet::reconnect_node`] (live node switch) so both always target the
+	/// same node for a given config.
+	fn node_url_secret(config: &WalletConfig) -> (String, Option<String>) {
 		let integrated = || {
 			let api_url = format!("http://{}", NodeConfig::get_api_address());
 			let api_secret = NodeConfig::get_api_secret(true);
 			(api_url, api_secret)
 		};
-		let (node_api_url, node_secret) = if let Some(id) = config.ext_conn_id {
+		if let Some(id) = config.ext_conn_id {
 			if let Some(conn) = ConnectionsConfig::ext_conn(id) {
 				(conn.url, conn.secret)
 			} else {
@@ -265,7 +268,12 @@ impl Wallet {
 			}
 		} else {
 			integrated()
-		};
+		}
+	}
+
+	/// Create [`HTTPNodeClient`] from provided config.
+	fn create_node_client(config: &WalletConfig) -> Result<HTTPNodeClient, Error> {
+		let (node_api_url, node_secret) = Self::node_url_secret(config);
 		let client = if AppConfig::use_proxy() {
 			let socks = AppConfig::use_socks_proxy();
 			let url = if socks {
@@ -778,6 +786,57 @@ impl Wallet {
 			ConnectionMethod::External(id, _) => Some(id.clone()),
 		};
 		w_config.save();
+	}
+
+	/// Apply the saved connection to the RUNNING wallet session immediately.
+	///
+	/// A node selection persisted by [`Wallet::update_connection`] only reaches
+	/// an open wallet on the next open, because the node client is baked into the
+	/// wallet instance at open time. This swaps the live node client's URL and
+	/// secret in place (no close/reopen, so the password is not needed again),
+	/// updates the runtime connection so the UI reflects the switch at once, then
+	/// wakes the sync thread to refresh the balance against the new node.
+	///
+	/// If the new node is unreachable the sync simply errors and the honest
+	/// "can't reach node" state surfaces (with the last-known balance retained),
+	/// so the user is never stranded on a silent zero.
+	pub fn reconnect_node(&self) {
+		// Reflect the switch in the runtime connection right away so the picker
+		// and status cards stop showing the previous node.
+		let conn = self.get_config().connection();
+		{
+			let mut w_conn = self.connection.write();
+			*w_conn = conn.clone();
+		}
+		// Clear the stale sync error/progress so the surface shows the honest
+		// "updating" state while the new node is contacted.
+		self.set_sync_error(false);
+		self.reset_sync_attempts();
+		self.info_sync_progress.store(0, Ordering::Relaxed);
+
+		// Swap the live node client, then kick a fresh sync. Done on a worker
+		// thread: locking the instance can briefly contend with an in-flight
+		// sync, and this is called from the UI thread.
+		let wallet = self.clone();
+		thread::spawn(move || {
+			let has_instance = { wallet.instance.read().is_some() };
+			if wallet.is_open() && has_instance {
+				let (url, secret) = Self::node_url_secret(&wallet.get_config());
+				let instance = { wallet.instance.read().clone().unwrap() };
+				let mut wallet_lock = instance.lock();
+				if let Ok(lc) = wallet_lock.lc_provider() {
+					if let Ok(backend) = lc.wallet_inst() {
+						let client = backend.w2n_client();
+						client.set_node_url(&url);
+						client.set_node_api_secret(secret);
+					}
+				}
+			}
+			// Resume node polling (may be paused on Android) and wake the sync
+			// thread so the balance refreshes against the new node now.
+			wallet.resume_node_polling();
+			wallet.sync();
+		});
 	}
 
 	/// Get external connection URL applied to [`WalletInstance`]

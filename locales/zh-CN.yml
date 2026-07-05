@@ -366,6 +366,7 @@ goblin:
     node_synced: "节点已同步"
     syncing: "同步中…"
     balance_updating: "余额更新中…"
+    balance_stale: "无法连接节点 · 上次已知余额"
     listening: "正在监听付款"
     block: "区块 %{height}"
     waiting_for_chain: "等待链数据…"

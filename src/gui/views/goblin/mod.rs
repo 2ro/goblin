@@ -1024,11 +1024,15 @@ impl GoblinWalletView {
 					.map(|d| d.info.amount_locked + d.info.amount_awaiting_finalization)
 					.unwrap_or(0);
 				let updating = total == 0 && (in_flight > 0 || wallet.syncing());
+				// Distinguish "still updating" from "can't reach the node" so a
+				// node outage never renders as a silent zero (see balance_hero).
+				let error = wallet.sync_error();
 				w::balance_hero(
 					ui,
 					total,
 					spendable,
 					updating,
+					error,
 					wallet.info_sync_progress(),
 					fiat_line(&data).as_deref(),
 					56.0,
@@ -3430,6 +3434,8 @@ impl GoblinWalletView {
 						ui.add_space(10.0);
 						if !active && row.response.interact(Sense::click()).clicked() {
 							wallet.update_connection(&ConnectionMethod::Integrated);
+							// Apply to the running session now, not on next unlock.
+							wallet.reconnect_node();
 						}
 					}
 					for conn in ConnectionsConfig::ext_conn_list() {
@@ -3472,6 +3478,8 @@ impl GoblinWalletView {
 								conn.id,
 								conn.url.clone(),
 							));
+							// Apply to the running session now, not on next unlock.
+							wallet.reconnect_node();
 						}
 					}
 				});
@@ -3513,9 +3521,11 @@ impl GoblinWalletView {
 						}
 					};
 					let conn = ExternalConnection::new(url, None, secret);
+					ConnectionsConfig::add_ext_conn(conn.clone());
 					wallet
 						.update_connection(&ConnectionMethod::External(conn.id, conn.url.clone()));
-					ConnectionsConfig::add_ext_conn(conn);
+					// Apply to the running session now, not on next unlock.
+					wallet.reconnect_node();
 					self.node_url_input.clear();
 					self.node_secret_input.clear();
 				}

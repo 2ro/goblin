@@ -366,6 +366,7 @@ goblin:
     node_synced: "Node synced"
     syncing: "Syncing…"
     balance_updating: "Balance updating…"
+    balance_stale: "Can't reach node · last known balance"
     listening: "Listening for payments"
     block: "Block %{height}"
     waiting_for_chain: "Waiting for chain…"
