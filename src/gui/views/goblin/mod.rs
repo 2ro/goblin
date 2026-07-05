@@ -1775,24 +1775,12 @@ impl GoblinWalletView {
 									};
 									let amount =
 										format!("{}{}{}", sign, w::amount_str(item.amount), w::TSU);
-									let status_word = if item.canceled {
-										t!("goblin.activity.canceled").to_string()
-									} else {
-										t!("goblin.activity.pending").to_string()
-									};
-									// Note truncates; the tail (date/time when
-									// confirmed, else the status word) stays in full.
-									let note = item.note.as_deref().unwrap_or("");
-									let tail = if item.confirmed {
-										View::format_time(item.time)
-									} else {
-										status_word.clone()
-									};
+									let (note, time) = Self::activity_note_time(item);
 									if w::activity_row(
 										ui,
 										&item.title,
-										note,
-										&tail,
+										&note,
+										&time,
 										item.npub.as_deref().unwrap_or(""),
 										&amount,
 										item.incoming,
@@ -1862,6 +1850,39 @@ impl GoblinWalletView {
 			}
 		}
 		close
+	}
+
+	/// List-row timestamp: date + HH:MM, no seconds. The tap-in detail view keeps
+	/// the full timestamp to the second (see [`View::format_time`]).
+	fn list_time(ts: i64) -> String {
+		let utc_offset = chrono::Local::now().offset().local_minus_utc();
+		chrono::DateTime::from_timestamp(ts + utc_offset as i64, 0)
+			.map(|t| t.format("%d/%m/%Y %H:%M").to_string())
+			.unwrap_or_default()
+	}
+
+	/// The (left message, right timestamp) an [`ActivityItem`] shows in a row. The
+	/// timestamp (no seconds) is only set for a confirmed tx; otherwise the status
+	/// word (canceled/pending) folds into the message so a row with no time still
+	/// reads its state without an empty right-side time slot.
+	fn activity_note_time(item: &ActivityItem) -> (String, String) {
+		let status_word = if item.canceled {
+			t!("goblin.activity.canceled").to_string()
+		} else {
+			t!("goblin.activity.pending").to_string()
+		};
+		let time = if item.confirmed {
+			Self::list_time(item.time)
+		} else {
+			String::new()
+		};
+		let note = match (item.note.as_deref(), item.confirmed) {
+			(Some(n), false) => format!("{n} · {status_word}"),
+			(None, false) => status_word,
+			(Some(n), true) => n.to_string(),
+			(None, true) => String::new(),
+		};
+		(note, time)
 	}
 
 	/// Friendly day-grouping label for the activity feed.
@@ -1982,25 +2003,13 @@ impl GoblinWalletView {
 			"− "
 		};
 		let amount = format!("{}{}{}", sign, w::amount_str(item.amount), w::TSU);
-		let status_word = if item.canceled {
-			t!("goblin.activity.canceled").to_string()
-		} else {
-			t!("goblin.activity.pending").to_string()
-		};
-		// Note truncates; the tail (date/time when confirmed, else the status
-		// word) is pinned right and kept in full.
-		let note = item.note.as_deref().unwrap_or("");
-		let tail = if item.confirmed {
-			View::format_time(item.time)
-		} else {
-			status_word.clone()
-		};
+		let (note, time) = Self::activity_note_time(item);
 		let tex = self.handle_tex(ui.ctx(), wallet, &item.title);
 		if w::activity_row(
 			ui,
 			&item.title,
-			note,
-			&tail,
+			&note,
+			&time,
 			item.npub.as_deref().unwrap_or(""),
 			&amount,
 			item.incoming,

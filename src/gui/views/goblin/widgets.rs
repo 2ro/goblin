@@ -615,13 +615,15 @@ pub fn balance_hero(
 	}
 }
 
-/// An activity row: avatar, title, subtitle, signed amount.
+/// An activity row: avatar, a left title/message column that truncates, and a
+/// right column with the signed amount over the date/time. `time` is the
+/// right-side timestamp (empty draws no time line — e.g. a canceled tx).
 /// Returns the row click response.
 pub fn activity_row(
 	ui: &mut Ui,
 	title: &str,
 	note: &str,
-	tail: &str,
+	time: &str,
 	id: &str,
 	amount: &str,
 	incoming: bool,
@@ -662,29 +664,56 @@ pub fn activity_row(
 			avatar_any(ui, title, id, 40.0, tex);
 		}
 		ui.add_space(12.0);
-		// Reserve the amount as its own right-hand column FIRST. Placing it
-		// before the text means the title/subtitle column is bounded to the
-		// remaining width and truncates cleanly, instead of stretching under
-		// the amount and colliding with it. Centered against the whole stack,
-		// the amount lands between the title and subtitle lines.
+		// Right column FIRST so the left title/message column is bounded to the
+		// remaining width and truncates cleanly. The amount sits on top with the
+		// date/time right-aligned directly beneath it; a row with no timestamp
+		// (a canceled tx) draws no time line at all.
 		ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-			if !amount.is_empty() {
-				// A canceled tx delivered no funds: mute the amount so it never
-				// reads as a completed green credit (or a real debit).
-				ui.label(
-					RichText::new(amount)
-						.font(FontId::new(15.0, fonts::mono_semibold()))
-						.color(if canceled {
-							t.text_dim
-						} else if incoming {
-							t.pos
-						} else {
-							t.text
-						}),
+			let amt_ink = if canceled {
+				t.text_dim
+			} else if incoming {
+				t.pos
+			} else {
+				t.text
+			};
+			let amt_font = FontId::new(15.0, fonts::mono_semibold());
+			let time_font = FontId::new(13.0, fonts::regular());
+			let amt_g = (!amount.is_empty()).then(|| {
+				ui.painter()
+					.layout_no_wrap(amount.to_string(), amt_font, amt_ink)
+			});
+			let time_g = (!time.is_empty()).then(|| {
+				ui.painter()
+					.layout_no_wrap(time.to_string(), time_font, t.text_dim)
+			});
+			let col_w = amt_g
+				.as_ref()
+				.map(|g| g.size().x)
+				.unwrap_or(0.0)
+				.max(time_g.as_ref().map(|g| g.size().x).unwrap_or(0.0));
+			if col_w > 0.0 {
+				let amt_h = amt_g.as_ref().map(|g| g.size().y).unwrap_or(0.0);
+				let time_h = time_g.as_ref().map(|g| g.size().y).unwrap_or(0.0);
+				let col_h = amt_h + if time_h > 0.0 { 2.0 + time_h } else { 0.0 };
+				ui.allocate_ui_with_layout(
+					Vec2::new(col_w, col_h),
+					Layout::top_down(Align::Max),
+					|ui| {
+						ui.spacing_mut().item_spacing.y = 2.0;
+						if let Some(g) = amt_g {
+							let (r, _) = ui.allocate_exact_size(g.size(), Sense::hover());
+							ui.painter().galley(r.min, g, amt_ink);
+						}
+						if let Some(g) = time_g {
+							let (r, _) = ui.allocate_exact_size(g.size(), Sense::hover());
+							ui.painter().galley(r.min, g, t.text_dim);
+						}
+					},
 				);
 				ui.add_space(10.0);
 			}
-			// Remaining width to the left holds the title + subtitle stack.
+			// Remaining width to the left: the counterparty/title on top, the
+			// message pinned left and truncated with an ellipsis beneath it.
 			ui.vertical(|ui| {
 				ui.add_space(2.0);
 				ui.add(
@@ -695,7 +724,16 @@ pub fn activity_row(
 					)
 					.truncate(),
 				);
-				activity_subtitle(ui, note, tail, t.text_dim);
+				if !note.is_empty() {
+					ui.add(
+						egui::Label::new(
+							RichText::new(note)
+								.font(FontId::new(13.0, fonts::regular()))
+								.color(t.text_dim),
+						)
+						.truncate(),
+					);
+				}
 			});
 		});
 	});
@@ -704,40 +742,6 @@ pub fn activity_row(
 	ui.painter()
 		.hline(rect.left()..=rect.right(), line_y, Stroke::new(1.0, t.line));
 	resp
-}
-
-/// Single-line subtitle for an activity row.
-///
-/// The `tail` (date/time, or a short status word) is pinned to the right and
-/// never clipped; the `note` takes whatever width is left and gets the
-/// ellipsis when it runs out of room. When only one part is present it is
-/// left-aligned under the title, truncating on its own (e.g. a long npub in
-/// the contact picker).
-fn activity_subtitle(ui: &mut Ui, note: &str, tail: &str, color: Color32) {
-	let dim = |s: &str| {
-		RichText::new(s.to_string())
-			.font(FontId::new(13.0, fonts::regular()))
-			.color(color)
-	};
-	match (note.is_empty(), tail.is_empty()) {
-		(true, true) => {}
-		(false, true) => {
-			ui.add(egui::Label::new(dim(note)).truncate());
-		}
-		(true, false) => {
-			ui.add(egui::Label::new(dim(tail)).truncate());
-		}
-		(false, false) => {
-			ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-				ui.spacing_mut().item_spacing.x = 4.0;
-				// Rightmost, full: the date/time (with seconds) is never clipped.
-				ui.add(egui::Label::new(dim(tail)));
-				ui.add(egui::Label::new(dim("·")));
-				// Leftmost, fills the gap: the note truncates with an ellipsis.
-				ui.add(egui::Label::new(dim(note)).truncate());
-			});
-		}
-	}
 }
 
 /// Section header used above grouped lists.
