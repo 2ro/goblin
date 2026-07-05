@@ -978,28 +978,25 @@ impl GoblinWalletView {
 								ui,
 								&header_handle,
 								&header_hex,
-								36.0,
+								40.0,
 								header_tex.as_ref(),
 							)
 							.clicked()
 							{
 								self.tab = Tab::Me;
 							}
-							// Scan-to-pay, left of the avatar per the refs.
-							ui.add_space(10.0);
+							// Scan-to-pay, left of the avatar. No frame: a bold white QR
+							// glyph sized and centered to mirror the Pay-page header
+							// treatment next to the avatar (was a tacky filled circle).
+							ui.add_space(12.0);
 							let (rect, resp) =
-								ui.allocate_exact_size(Vec2::splat(36.0), Sense::click());
-							ui.painter().circle_filled(
-								rect.center(),
-								18.0,
-								theme::tokens().surface2,
-							);
+								ui.allocate_exact_size(Vec2::splat(44.0), Sense::click());
 							ui.painter().text(
 								rect.center(),
 								egui::Align2::CENTER_CENTER,
 								QR_CODE,
-								FontId::new(17.0, fonts::regular()),
-								theme::tokens().surface_text,
+								FontId::new(38.0, fonts::regular()),
+								theme::tokens().text,
 							);
 							let resp = resp.on_hover_cursor(egui::CursorIcon::PointingHand);
 							if resp.clicked() {
