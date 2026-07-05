@@ -154,10 +154,17 @@ pub struct NewsItem {
 	pub d: String,
 	/// Event `created_at` (seconds); newest per `d` wins, newest overall shows.
 	pub created_at: i64,
-	/// The post `title` tag.
+	/// The post `title` tag. May carry a trailing `[xx]` language marker, which
+	/// the Home panel strips for display (see `data::news_display_title`).
 	pub title: String,
 	/// Plain-text summary (the `summary` tag, or a stripped content fallback).
 	pub summary: String,
+	/// Article language as a lower-case ISO 639-1 code, taken from an event
+	/// language tag (`l` / `lang`) when present. `None` falls back to the
+	/// title-suffix marker, then to English. `#[serde(default)]` so posts cached
+	/// before this field existed still deserialize.
+	#[serde(default)]
+	pub lang: Option<String>,
 }
 
 /// Current unix time in seconds.

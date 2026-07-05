@@ -1603,12 +1603,36 @@ async fn handle_news(svc: &Arc<NostrService>, news_pk: PublicKey, event: Event) 
 		first_tag_value(&event, "summary").as_deref(),
 		&event.content,
 	);
+	let lang = news_lang_tag(&event);
 	svc.store.save_news(NewsItem {
 		d,
 		created_at: event.created_at.as_secs() as i64,
 		title,
 		summary,
+		lang,
 	});
+}
+
+/// Detect an article's language from an event tag, if it carries one. Accepts
+/// both the NIP-32-style label `["l", "<code>", "ISO-639-1"]` and the bare
+/// `["l", "<code>"]` / `["lang", "<code>"]` shapes; in every case the code is
+/// the tag's second element. Returns a lower-case ISO 639-1 two-letter code, or
+/// `None` (no tag / not a two-letter code) so the data layer falls back to the
+/// title-suffix marker, then to English.
+fn news_lang_tag(event: &Event) -> Option<String> {
+	event.tags.iter().find_map(|t| {
+		let parts = t.as_slice();
+		let key = parts.first().map(|s| s.as_str())?;
+		if key != "l" && key != "lang" {
+			return None;
+		}
+		let code = parts.get(1)?.trim().to_lowercase();
+		if code.len() == 2 && code.chars().all(|c| c.is_ascii_alphabetic()) {
+			Some(code)
+		} else {
+			None
+		}
+	})
 }
 
 /// The panel's summary line: the `summary` tag when present, otherwise the first

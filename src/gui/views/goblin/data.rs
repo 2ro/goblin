@@ -379,20 +379,125 @@ pub fn search_contacts(wallet: &Wallet, query: &str, limit: usize) -> Vec<(Strin
 	hits
 }
 
-/// The latest cached news post for the Home panel, or `None` (panel hides).
-/// `GOBLIN_FAKE_NEWS=1` injects a fixed item in debug builds so the panel can be
-/// screenshotted without a live relay feed.
+/// The news post to show in the Home panel for the wallet's active language, or
+/// `None` (panel hides). Selection is language-aware: the newest article whose
+/// detected language matches the app locale, falling back to the newest English
+/// article. The returned item's title has any `[xx]` language marker stripped
+/// for display. `GOBLIN_FAKE_NEWS=1` injects a fixed multilingual set in debug
+/// builds so the panel can be screenshotted without a live relay feed.
 pub fn news_latest(wallet: &Wallet) -> Option<NewsItem> {
+	let items = news_pool(wallet);
+	let mut item = select_news(&items, &news_locale_code())?;
+	item.title = news_display_title(&item.title);
+	Some(item)
+}
+
+/// The candidate news set (all cached posts), or a fixed multilingual sample
+/// under `GOBLIN_FAKE_NEWS` in debug builds. Kept separate from selection so the
+/// selection logic stays a pure, unit-testable function.
+fn news_pool(wallet: &Wallet) -> Vec<NewsItem> {
 	#[cfg(debug_assertions)]
 	if std::env::var("GOBLIN_FAKE_NEWS").is_ok() {
-		return Some(NewsItem {
-			d: "fake".to_string(),
-			created_at: 0,
-			title: "Goblin Build 135".to_string(),
-			summary: "Tor transport is live. Read more: https://docs.goblin.st".to_string(),
-		});
+		return vec![
+			NewsItem {
+				d: "welcome-en".to_string(),
+				created_at: 100,
+				title: "Welcome to Goblin".to_string(),
+				summary: "Private grin payments over Tor. Read more: https://docs.goblin.st"
+					.to_string(),
+				lang: None,
+			},
+			NewsItem {
+				d: "welcome-de".to_string(),
+				created_at: 100,
+				title: "Willkommen bei Goblin [de]".to_string(),
+				summary: "Private Grin-Zahlungen über Tor. Mehr dazu: https://docs.goblin.st"
+					.to_string(),
+				lang: None,
+			},
+		];
 	}
-	wallet.nostr_service()?.store.latest_news()
+	wallet
+		.nostr_service()
+		.map(|s| s.store.all_news())
+		.unwrap_or_default()
+}
+
+/// The app's active locale folded to the ISO 639-1 code used to match news
+/// articles. The shipped locales are `en/de/fr/ru/tr/zh-CN`; only `zh-CN` needs
+/// folding to its 639-1 primary `zh`, and every other locale already is a
+/// two-letter primary. Region and separator (`-`/`_`) are dropped.
+fn news_locale_code() -> String {
+	let loc = rust_i18n::locale().to_string().to_lowercase();
+	loc.split(['-', '_']).next().unwrap_or("en").to_string()
+}
+
+/// Detect an article's language as a lower-case ISO 639-1 code. Priority: the
+/// stored event language tag, then a trailing `[xx]` marker on the title, else
+/// English (`None`). Pure — the unit tests exercise it directly.
+pub fn news_language(item: &NewsItem) -> Option<String> {
+	if let Some(l) = &item.lang {
+		let l = l.trim().to_lowercase();
+		if is_lang_code(&l) {
+			return Some(l);
+		}
+	}
+	title_lang_marker(&item.title)
+}
+
+/// The trailing `[xx]` marker on a title (case-insensitive, `xx` = two ASCII
+/// letters), as a lower-case code, or `None`. Only a marker at the very end of
+/// the (trimmed) title counts, so a `[link]` mid-sentence is never mistaken for
+/// a language.
+fn title_lang_marker(title: &str) -> Option<String> {
+	let t = title.trim();
+	let inner = t.strip_suffix(']')?.rsplit_once('[')?.1;
+	let code = inner.trim().to_lowercase();
+	if is_lang_code(&code) {
+		Some(code)
+	} else {
+		None
+	}
+}
+
+/// A displayable title with any trailing `[xx]` language marker removed.
+pub fn news_display_title(title: &str) -> String {
+	match title_lang_marker(title) {
+		Some(_) => {
+			let t = title.trim_end();
+			// Drop the `[xx]` token and the whitespace that preceded it.
+			match t.rfind('[') {
+				Some(idx) => t[..idx].trim_end().to_string(),
+				None => t.to_string(),
+			}
+		}
+		None => title.to_string(),
+	}
+}
+
+/// True for a two-letter ASCII-alphabetic language code.
+fn is_lang_code(s: &str) -> bool {
+	s.len() == 2 && s.chars().all(|c| c.is_ascii_alphabetic())
+}
+
+/// Select the news article to show for `target` (an ISO 639-1 code): the newest
+/// article in that language, else the newest English article (English = an
+/// explicit `en` OR no detected language). Pure so it is unit-testable without a
+/// wallet/store. Ties on `created_at` resolve to the last such article.
+pub fn select_news(items: &[NewsItem], target: &str) -> Option<NewsItem> {
+	let target = if target.is_empty() { "en" } else { target };
+	let lang_of = |it: &NewsItem| news_language(it).unwrap_or_else(|| "en".to_string());
+	items
+		.iter()
+		.filter(|it| lang_of(it) == target)
+		.max_by_key(|it| it.created_at)
+		.or_else(|| {
+			items
+				.iter()
+				.filter(|it| lang_of(it) == "en")
+				.max_by_key(|it| it.created_at)
+		})
+		.cloned()
 }
 
 /// Split a plain-text summary into (segment, is_url) runs so http(s) URLs render
@@ -465,5 +570,106 @@ mod tests {
 			split_urls("plain text"),
 			vec![("plain text".to_string(), false)]
 		);
+	}
+
+	fn news(d: &str, created_at: i64, title: &str, lang: Option<&str>) -> NewsItem {
+		NewsItem {
+			d: d.to_string(),
+			created_at,
+			title: title.to_string(),
+			summary: String::new(),
+			lang: lang.map(|s| s.to_string()),
+		}
+	}
+
+	#[test]
+	fn language_from_event_tag_wins() {
+		// A stored event language tag is authoritative, even if the title has no
+		// marker (bare `["l","de"]`) or a differing marker.
+		let it = news("a", 1, "Neuigkeiten", Some("de"));
+		assert_eq!(news_language(&it).as_deref(), Some("de"));
+		// NIP-32-style tag is stored the same way (code already extracted upstream).
+		let it = news("b", 1, "News", Some("FR"));
+		assert_eq!(news_language(&it).as_deref(), Some("fr"));
+		// A non-code tag value is ignored, falling through to the title (English).
+		let it = news("c", 1, "News", Some("english"));
+		assert_eq!(news_language(&it), None);
+	}
+
+	#[test]
+	fn language_from_title_suffix_marker() {
+		let it = news("a", 1, "2026-07-05 Welcome to Goblin [de]", None);
+		assert_eq!(news_language(&it).as_deref(), Some("de"));
+		// Case-insensitive.
+		let it = news("b", 1, "Bonjour [FR]", None);
+		assert_eq!(news_language(&it).as_deref(), Some("fr"));
+		// Only a marker at the very end counts; a bracketed word mid-title does not.
+		let it = news("c", 1, "Read the [guide] today", None);
+		assert_eq!(news_language(&it), None);
+	}
+
+	#[test]
+	fn no_marker_means_english() {
+		let it = news("a", 1, "Welcome to Goblin", None);
+		assert_eq!(news_language(&it), None);
+		// A non-two-letter bracket suffix is not a language marker.
+		let it = news("b", 1, "Build 137 [beta]", None);
+		assert_eq!(news_language(&it), None);
+	}
+
+	#[test]
+	fn display_title_strips_marker() {
+		assert_eq!(
+			news_display_title("2026-07-05 Welcome to Goblin [de]"),
+			"2026-07-05 Welcome to Goblin"
+		);
+		assert_eq!(news_display_title("Bonjour [FR]"), "Bonjour");
+		// No marker: unchanged.
+		assert_eq!(news_display_title("Welcome to Goblin"), "Welcome to Goblin");
+		// Non-language bracket suffix: left intact.
+		assert_eq!(news_display_title("Build 137 [beta]"), "Build 137 [beta]");
+	}
+
+	#[test]
+	fn select_matches_locale_then_falls_back_to_english() {
+		let pool = vec![
+			news("en", 100, "Welcome to Goblin", None),
+			news("de", 90, "Willkommen bei Goblin [de]", None),
+			news("fr", 80, "Bonjour", Some("fr")),
+		];
+		// German locale → the German article.
+		assert_eq!(select_news(&pool, "de").unwrap().d, "de");
+		// French locale (via event tag) → the French article.
+		assert_eq!(select_news(&pool, "fr").unwrap().d, "fr");
+		// English locale → the English (unmarked) article.
+		assert_eq!(select_news(&pool, "en").unwrap().d, "en");
+		// A locale with no article → fall back to the newest English article.
+		assert_eq!(select_news(&pool, "ru").unwrap().d, "en");
+	}
+
+	#[test]
+	fn select_picks_newest_within_language_slice() {
+		let pool = vec![
+			news("de-old", 50, "Alt [de]", None),
+			news("de-new", 150, "Neu [de]", None),
+			news("en", 200, "Newest overall", None),
+		];
+		// Within German, the newest German article wins — NOT the newer English one.
+		assert_eq!(select_news(&pool, "de").unwrap().d, "de-new");
+	}
+
+	#[test]
+	fn locale_folding_maps_zh_cn_to_zh() {
+		rust_i18n::set_locale("zh-CN");
+		assert_eq!(news_locale_code(), "zh");
+		rust_i18n::set_locale("de");
+		assert_eq!(news_locale_code(), "de");
+		rust_i18n::set_locale("en");
+		assert_eq!(news_locale_code(), "en");
+	}
+
+	#[test]
+	fn empty_pool_selects_nothing() {
+		assert!(select_news(&[], "de").is_none());
 	}
 }
