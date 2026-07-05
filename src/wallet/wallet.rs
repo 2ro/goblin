@@ -760,6 +760,16 @@ impl Wallet {
 		self.nostr_service().map(|s| s.public_key().to_hex())
 	}
 
+	/// Verify a candidate wallet password against the active nostr identity
+	/// (cheap, in-memory NIP-49 unlock). Lets the identity password modal reject a
+	/// wrong password up front — before spawning an add/switch worker — the way the
+	/// wallet-open modal does. `false` when nostr is not running.
+	pub fn verify_nostr_password(&self, password: &str) -> bool {
+		self.nostr_service()
+			.map(|s| s.identity.read().unlock(password).is_ok())
+			.unwrap_or(false)
+	}
+
 	/// Add a nostr identity to this wallet WITHOUT switching to it: generate a
 	/// fresh random nsec (`import` is `None`) or import an existing one (`import`
 	/// is `Some(nsec)`). The new key is encrypted under the wallet password like

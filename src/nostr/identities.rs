@@ -63,9 +63,11 @@ pub struct HeldEntry {
 	/// `"identity.json"` for the legacy identity #1, else
 	/// `"identities/<hex>/identity.json"`.
 	pub path: String,
-	/// A short human label (its @name, or "Primary" / a fallback). Plaintext by
-	/// design (this index carries no secret); the npub/name are recoverable from
-	/// the referenced file anyway.
+	/// A short human label: the identity's claimed name (local part of its NIP-05)
+	/// when it has one, else empty. NOT rendered — the UI derives its display from
+	/// the name or a truncated npub — kept only as a convenience field in the
+	/// index. Plaintext by design (this index carries no secret). Never a
+	/// placeholder word.
 	pub label: String,
 }
 
@@ -322,15 +324,17 @@ pub enum HeldError {
 	Io(String),
 }
 
-/// A short display label for an identity: its @name when claimed, else "Primary".
-/// Never includes secret material.
+/// A convenience label for an identity: the local part of its claimed NIP-05
+/// name when it has one, else EMPTY (never a placeholder word — an unnamed
+/// identity is shown by its truncated npub in the UI, not by a label). Never
+/// includes secret material.
 fn label_for(id: &NostrIdentity) -> String {
 	id.nip05
 		.as_deref()
 		.and_then(|n| n.split('@').next())
 		.filter(|s| !s.is_empty())
 		.map(|s| s.to_string())
-		.unwrap_or_else(|| "Primary".to_string())
+		.unwrap_or_default()
 }
 
 /// The catch-up `since` (unix seconds) for the identity we are bringing up. We
@@ -493,7 +497,7 @@ mod tests {
 			identities: vec![HeldEntry {
 				pubkey: legacy_hex.clone(),
 				path: "identity.json".to_string(),
-				label: "Primary".to_string(),
+				label: String::new(),
 			}],
 		};
 		idx.save(&dir).unwrap();
@@ -519,6 +523,32 @@ mod tests {
 			assert!(id.unlock("new").is_ok(), "must open under the new password");
 			assert!(id.unlock("old").is_err(), "must not open under the old one");
 		}
+		let _ = std::fs::remove_dir_all(&dir);
+	}
+
+	#[test]
+	fn imported_nsec_adds_as_held_identity_and_unlocks() {
+		// The multi-identity import path: a bare nsec becomes a held identity via
+		// the same NIP-49 encrypted store, keyed by its own pubkey, openable under
+		// the wallet password. (Regression guard for the add-import flow.)
+		use nostr_sdk::{Keys, ToBech32};
+		let dir = tmpdir("import");
+		let (legacy, _) = NostrIdentity::create_random("pw").unwrap();
+		legacy.save(&dir).unwrap();
+		let (mut idx, _) = HeldIdentities::load_or_migrate(&dir, &legacy).unwrap();
+
+		// A distinct external key, as an nsec string.
+		let ext = Keys::generate();
+		let nsec = ext.secret_key().to_bech32().unwrap();
+		let (imported, _) = NostrIdentity::create_imported(&nsec, "pw").unwrap();
+		let hex = idx.add(&dir, &imported).unwrap();
+
+		// Held, active pointer unchanged (add never switches), file openable.
+		assert_eq!(idx.len(), 2);
+		assert_eq!(idx.active, legacy.pubkey_hex().unwrap());
+		let stored = idx.entry(&hex).unwrap().load(&dir).unwrap();
+		assert_eq!(stored.source, crate::nostr::IdentitySource::Imported);
+		assert_eq!(stored.unlock("pw").unwrap().public_key(), ext.public_key());
 		let _ = std::fs::remove_dir_all(&dir);
 	}
 
