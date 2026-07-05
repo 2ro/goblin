@@ -367,6 +367,7 @@ goblin:
     syncing: "Synchronisiere…"
     balance_updating: "Guthaben wird aktualisiert…"
     balance_stale: "Knoten nicht erreichbar · letzter bekannter Saldo"
+    fiat_unavailable: "Kurs nicht verfügbar"
     listening: "Wartet auf Zahlungen"
     block: "Block %{height}"
     waiting_for_chain: "Warte auf Chain…"

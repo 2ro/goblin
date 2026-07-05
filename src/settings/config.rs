@@ -101,15 +101,6 @@ pub struct AppConfig {
 	/// Last-known-good Nym IPR exit recipient (the `<id>.<enc>@<gw>` string), so a
 	/// warm reconnect can try the exit that worked last time before auto-selecting.
 	nym_last_ipr: Option<String>,
-
-	/// Last successfully fetched GRIN rate, so the amount preview can paint an
-	/// instant (stale-marked) fiat value on cold start instead of a blank until the
-	/// first mixnet fetch lands.
-	last_rate: Option<f64>,
-	/// The `vs_currency` the cached [`last_rate`] was priced against.
-	last_rate_vs: Option<String>,
-	/// Unix-seconds timestamp the cached [`last_rate`] was fetched at.
-	last_rate_at: Option<i64>,
 }
 
 /// What the amount preview is paired to: nothing, a fiat currency, or bitcoin.
@@ -223,9 +214,6 @@ impl Default for AppConfig {
 			app_update: None,
 			nym_entry_gateway: None,
 			nym_last_ipr: None,
-			last_rate: None,
-			last_rate_vs: None,
-			last_rate_at: None,
 		}
 	}
 }
@@ -535,29 +523,6 @@ impl AppConfig {
 		w_config.save();
 	}
 
-	/// Get the cached GRIN rate as `(vs_currency, rate, fetched_at)`, if one was
-	/// ever persisted. Callers decide whether it is fresh enough to use.
-	pub fn last_rate() -> Option<(String, f64, i64)> {
-		let r_config = Settings::app_config_to_read();
-		match (
-			r_config.last_rate_vs.clone(),
-			r_config.last_rate,
-			r_config.last_rate_at,
-		) {
-			(Some(vs), Some(rate), Some(at)) => Some((vs, rate, at)),
-			_ => None,
-		}
-	}
-
-	/// Persist the most recent GRIN rate for `vs`, fetched at `at` (unix secs).
-	pub fn set_last_rate(vs: &str, rate: f64, at: i64) {
-		let mut w_config = Settings::app_config_to_update();
-		w_config.last_rate_vs = Some(vs.to_string());
-		w_config.last_rate = Some(rate);
-		w_config.last_rate_at = Some(at);
-		w_config.save();
-	}
-
 	/// Check if proxy for network requests is needed.
 	pub fn use_proxy() -> bool {
 		let r_config = Settings::app_config_to_read();
@@ -658,5 +623,25 @@ impl AppConfig {
 			}
 		}
 		w_config.save();
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::AppConfig;
+
+	/// An old config carrying the now-removed price-cache fields (last_rate /
+	/// last_rate_vs / last_rate_at) must still load: serde ignores unknown keys,
+	/// so no migration is needed and the dead fields are simply dropped on the
+	/// next save.
+	#[test]
+	fn loads_config_with_removed_price_cache_fields() {
+		let mut toml = toml::to_string(&AppConfig::default()).expect("serialize default");
+		toml.push_str("\nlast_rate = 1.23\nlast_rate_vs = \"usd\"\nlast_rate_at = 1700000000\n");
+		let parsed = toml::from_str::<AppConfig>(&toml);
+		assert!(
+			parsed.is_ok(),
+			"old config with removed price-cache fields should still load"
+		);
 	}
 }

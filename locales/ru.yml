@@ -367,6 +367,7 @@ goblin:
     syncing: "Синхронизация…"
     balance_updating: "Баланс обновляется…"
     balance_stale: "Узел недоступен · последний известный баланс"
+    fiat_unavailable: "Курс недоступен"
     listening: "Ожидание платежей"
     block: "Блок %{height}"
     waiting_for_chain: "Ожидание цепочки…"

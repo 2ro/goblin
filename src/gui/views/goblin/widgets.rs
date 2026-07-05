@@ -497,6 +497,18 @@ pub fn balance_subline(total: u64, updating: bool, error: bool) -> BalanceSublin
 	}
 }
 
+/// What the fiat subline should render under the balance. `None` (pairing off)
+/// draws no line at all; otherwise the line is honest about its state and never
+/// paints a stale rate as if current.
+pub enum FiatLine {
+	/// A ready "≈ … · 1ツ = …" line built from a fresh rate.
+	Text(String),
+	/// A live fetch is in flight; show a subtle placeholder, not a number.
+	Loading,
+	/// The rate could not be fetched; say so rather than show an old value.
+	Unavailable,
+}
+
 pub fn balance_hero(
 	ui: &mut Ui,
 	total: u64,
@@ -504,7 +516,7 @@ pub fn balance_hero(
 	updating: bool,
 	error: bool,
 	sync_pct: u8,
-	fiat: Option<&str>,
+	fiat: Option<FiatLine>,
 	size: f32,
 ) {
 	let t = theme::tokens();
@@ -579,10 +591,23 @@ pub fn balance_hero(
 		BalanceSubline::None => {}
 	}
 	if let Some(fiat) = fiat {
+		// Loading and Unavailable both render a subtle dim line — never a stale
+		// number. While loading, nudge egui to re-poll so the rate pops in once the
+		// live fetch lands even if the view is otherwise idle (bounded to the time
+		// the balance is actually on screen — not a background timer).
+		let text = match fiat {
+			FiatLine::Text(s) => s,
+			FiatLine::Loading => {
+				ui.ctx()
+					.request_repaint_after(std::time::Duration::from_millis(300));
+				"≈ …".to_string()
+			}
+			FiatLine::Unavailable => t!("goblin.home.fiat_unavailable").to_string(),
+		};
 		ui.add_space(4.0);
 		ui.vertical_centered(|ui| {
 			ui.label(
-				RichText::new(fiat)
+				RichText::new(text)
 					.font(FontId::new(13.0, fonts::regular()))
 					.color(t.text_dim),
 			);

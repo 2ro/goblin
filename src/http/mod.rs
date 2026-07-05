@@ -19,4 +19,4 @@ mod release;
 pub use release::*;
 
 pub(crate) mod price;
-pub use price::grin_rate;
+pub use price::{RateState, grin_rate};

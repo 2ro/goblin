@@ -1034,7 +1034,7 @@ impl GoblinWalletView {
 					updating,
 					error,
 					wallet.info_sync_progress(),
-					fiat_line(&data).as_deref(),
+					fiat_line(&data),
 					56.0,
 				);
 				ui.add_space(20.0);
@@ -1258,7 +1258,7 @@ impl GoblinWalletView {
 			w::amount_text_centered(ui, &display, 76.0);
 		}
 		if let Ok(grin) = display.parse::<f64>() {
-			if let Some(preview) = pairing_preview(grin) {
+			if let Some(preview) = pairing_preview(grin, ui.ctx()) {
 				ui.add_space(6.0);
 				ui.vertical_centered(|ui| {
 					ui.label(
@@ -5218,20 +5218,29 @@ fn fmt_thousands(n: u64) -> String {
 	out
 }
 
-fn fiat_line(data: &Option<WalletData>) -> Option<String> {
+fn fiat_line(data: &Option<WalletData>) -> Option<w::FiatLine> {
+	use crate::http::RateState;
 	let p = crate::AppConfig::pairing();
 	let vs = p.vs_currency()?;
-	let rate = crate::http::grin_rate(vs)?;
-	let spendable = data
-		.as_ref()
-		.map(|d| d.info.amount_currently_spendable)
-		.unwrap_or(0);
-	let grin = spendable as f64 / 1_000_000_000.0;
-	Some(format!(
-		"≈ {}  ·  1ツ = {}",
-		fmt_pairing(grin * rate, p),
-		fmt_pairing(rate, p)
-	))
+	// Asking for the rate here (while the balance is on screen) is what kicks a
+	// live refetch when the in-session rate has aged out; an idle wallet never
+	// reaches this path.
+	Some(match crate::http::grin_rate(vs) {
+		RateState::Fresh(rate) => {
+			let spendable = data
+				.as_ref()
+				.map(|d| d.info.amount_currently_spendable)
+				.unwrap_or(0);
+			let grin = spendable as f64 / 1_000_000_000.0;
+			w::FiatLine::Text(format!(
+				"≈ {}  ·  1ツ = {}",
+				fmt_pairing(grin * rate, p),
+				fmt_pairing(rate, p)
+			))
+		}
+		RateState::Loading => w::FiatLine::Loading,
+		RateState::Unavailable => w::FiatLine::Unavailable,
+	})
 }
 
 /// Format a value already in the pairing's unit (dollars, BTC, …) with the
@@ -5256,11 +5265,20 @@ fn fmt_pairing(value: f64, p: crate::settings::Pairing) -> String {
 
 /// The "≈ …" amount preview for the current pairing, or `None` when off / no
 /// rate yet. Shared by the Pay screen, the send flow, and the balance hero.
-fn pairing_preview(grin: f64) -> Option<String> {
+fn pairing_preview(grin: f64, ctx: &egui::Context) -> Option<String> {
+	use crate::http::RateState;
 	let p = crate::AppConfig::pairing();
 	let vs = p.vs_currency()?;
-	let rate = crate::http::grin_rate(vs)?;
-	Some(format!("≈ {}", fmt_pairing(grin * rate, p)))
+	match crate::http::grin_rate(vs) {
+		RateState::Fresh(rate) => Some(format!("≈ {}", fmt_pairing(grin * rate, p))),
+		// No stale fallback: show nothing until a fresh rate lands. Nudge a repaint
+		// while loading so the preview appears once the live fetch returns.
+		RateState::Loading => {
+			ctx.request_repaint_after(std::time::Duration::from_millis(300));
+			None
+		}
+		RateState::Unavailable => None,
+	}
 }
 
 /// Convert a bech32 npub to hex for short display fallbacks.

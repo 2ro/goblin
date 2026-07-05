@@ -367,6 +367,7 @@ goblin:
     syncing: "Eşitleniyor…"
     balance_updating: "Bakiye güncelleniyor…"
     balance_stale: "Düğüme ulaşılamıyor · son bilinen bakiye"
+    fiat_unavailable: "Kur mevcut değil"
     listening: "Ödemeler bekleniyor"
     block: "Blok %{height}"
     waiting_for_chain: "Zincir bekleniyor…"

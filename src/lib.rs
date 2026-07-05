@@ -129,9 +129,6 @@ pub fn start(options: NativeOptions, app_creator: eframe::AppCreator) -> eframe:
 	// traffic egresses through Tor; the Grin node stays on the clear internet
 	// exactly as before (its lazy warm-on-activity polling is untouched).
 	tor::warm_up();
-	// Seed the price cache from disk so the amount preview can paint an instant
-	// (stale-marked) fiat value while the first live fetch is still in flight.
-	crate::http::price::seed_from_disk();
 	// Setup translations.
 	setup_i18n();
 	// Start integrated node if needed.

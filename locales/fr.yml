@@ -367,6 +367,7 @@ goblin:
     syncing: "Synchronisation…"
     balance_updating: "Solde en cours de mise à jour…"
     balance_stale: "Nœud injoignable · dernier solde connu"
+    fiat_unavailable: "Taux indisponible"
     listening: "En attente de paiements"
     block: "Bloc %{height}"
     waiting_for_chain: "En attente de la chaîne…"

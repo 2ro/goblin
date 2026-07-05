@@ -1046,7 +1046,7 @@ impl SendFlow {
 			w::amount_text_centered(ui, &display, 64.0);
 		}
 		if let Ok(grin) = display.parse::<f64>() {
-			if let Some(preview) = super::pairing_preview(grin) {
+			if let Some(preview) = super::pairing_preview(grin, ui.ctx()) {
 				ui.add_space(6.0);
 				ui.vertical_centered(|ui| {
 					ui.label(
