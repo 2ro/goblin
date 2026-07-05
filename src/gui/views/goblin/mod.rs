@@ -79,6 +79,8 @@ pub struct GoblinWalletView {
 	import_nsec: Option<ImportState>,
 	/// Inline "back up identity to a file" flow state.
 	backup: Option<BackupState>,
+	/// Identity switcher (one wallet, many nostr identities) page state.
+	identity_switch: IdentitySwitchState,
 	/// Inline "change name authority" editor state.
 	name_authority: Option<NameAuthorityState>,
 	/// Amount being entered on the Pay tab.
@@ -142,6 +144,8 @@ enum SettingsPage {
 	Slatepack,
 	Privacy,
 	Advanced,
+	/// The identity switcher: one wallet, one balance, many nostr identities.
+	Identities,
 }
 
 /// Inline state for the Advanced (wallet-recovery) settings page: the
@@ -206,6 +210,7 @@ impl Default for GoblinWalletView {
 			rotate: None,
 			import_nsec: None,
 			backup: None,
+			identity_switch: IdentitySwitchState::default(),
 			name_authority: None,
 			pay_amount: String::new(),
 			pay_shake: None,
@@ -282,6 +287,31 @@ impl Default for ImportState {
 			result: std::sync::Arc::new(std::sync::Mutex::new(None)),
 		}
 	}
+}
+
+/// Identity switcher page state: the shared wallet password (kept only while the
+/// page is open, cleared on leave), the add-identity sub-form, and the last
+/// switch/add result. Holds no secret key material.
+#[derive(Default)]
+struct IdentitySwitchState {
+	/// Wallet password, used to unlock a target on switch and to encrypt a new
+	/// identity on add. Cleared when the page closes.
+	password: String,
+	/// Add-identity sub-form is open.
+	adding: bool,
+	/// Add mode is import-an-nsec (else generate a fresh one).
+	import: bool,
+	/// Pasted nsec when importing.
+	nsec: String,
+	/// A background switch/add is running.
+	busy: bool,
+	/// Transient error to show (wrong password, invalid nsec, at capacity).
+	error: String,
+	/// Result slot for the background switch/add worker: Ok(npub) or Err(message).
+	result: std::sync::Arc<std::sync::Mutex<Option<Result<String, String>>>>,
+	/// True while the last completed action was a switch (drives the syncing
+	/// banner), false for a plain add.
+	awaiting_sync: bool,
 }
 
 /// Inline "change name authority" (federation) editor state.
@@ -396,6 +426,11 @@ impl GoblinWalletView {
 			return false;
 		}
 		if self.tab == Tab::Me && self.settings_page != SettingsPage::Main {
+			// Don't leave the wallet password sitting in memory after leaving the
+			// identity switcher.
+			if self.settings_page == SettingsPage::Identities {
+				self.identity_switch = IdentitySwitchState::default();
+			}
 			self.settings_page = SettingsPage::Main;
 			return false;
 		}
@@ -431,6 +466,7 @@ impl GoblinWalletView {
 			self.request_amount = None;
 			self.settings_page = SettingsPage::Main;
 			self.advanced = AdvancedState::default();
+			self.identity_switch = IdentitySwitchState::default();
 		}
 
 		// A pending payment deep link (`goblin:` / `nostr:` pay URI, routed here
@@ -2435,6 +2471,7 @@ impl GoblinWalletView {
 			SettingsPage::Slatepack => return self.slatepack_ui(ui, wallet, cb),
 			SettingsPage::Privacy => return self.privacy_ui(ui),
 			SettingsPage::Advanced => return self.advanced_ui(ui, wallet, cb),
+			SettingsPage::Identities => return self.identities_ui(ui, wallet, cb),
 			SettingsPage::Main => {}
 		}
 		ui.add_space(8.0);
@@ -2480,6 +2517,10 @@ impl GoblinWalletView {
 			.as_deref()
 			.and_then(|_| self.handle_tex(ui.ctx(), wallet, &handle));
 
+		// Set inside the (deeply nested) card closure when the identity-switcher
+		// glyph is tapped; applied after the card so the closures don't need a
+		// mutable borrow of `self`.
+		let mut open_identities = false;
 		w::card(ui, |ui| {
 			ui.set_min_width(ui.available_width());
 			ui.horizontal(|ui| {
@@ -2537,12 +2578,32 @@ impl GoblinWalletView {
 							.request_repaint_after(std::time::Duration::from_millis(600));
 					}
 				});
-				// Update-available badge, pinned to the right of the profile
-				// panel. Shown only when the release check found a newer build
-				// (reuses the AppConfig::app_update state the wallet list uses);
-				// tapping it opens the release download page.
-				if let Some(update) = crate::AppConfig::app_update() {
-					ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+				// Trailing (top-right) controls of the identity row: the identity
+				// SWITCHER (one wallet, many nostr identities) and, when present,
+				// the update-available badge. Right-aligned into the space to the
+				// right of the name/avatar; the switcher sits in the far corner.
+				ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+					let (rect, resp) = ui.allocate_exact_size(Vec2::splat(36.0), Sense::click());
+					ui.painter().circle_filled(rect.center(), 18.0, t.surface2);
+					ui.painter().text(
+						rect.center(),
+						egui::Align2::CENTER_CENTER,
+						crate::gui::icons::ARROWS_LEFT_RIGHT,
+						FontId::new(17.0, fonts::regular()),
+						theme::ink_for(t.surface2),
+					);
+					if resp
+						.on_hover_cursor(egui::CursorIcon::PointingHand)
+						.on_hover_text(t!("goblin.identities.switch_hint").to_string())
+						.clicked()
+					{
+						open_identities = true;
+					}
+					// Update-available badge to the LEFT of the switcher. Shown only
+					// when the release check found a newer build; tapping it opens
+					// the release download page.
+					if let Some(update) = crate::AppConfig::app_update() {
+						ui.add_space(6.0);
 						let (rect, resp) =
 							ui.allocate_exact_size(Vec2::splat(36.0), Sense::click());
 						ui.painter().circle_filled(rect.center(), 18.0, t.accent);
@@ -2560,10 +2621,14 @@ impl GoblinWalletView {
 						{
 							open_url(ui, &update.url);
 						}
-					});
-				}
+					}
+				});
 			});
 		});
+		if open_identities {
+			self.settings_page = SettingsPage::Identities;
+			self.identity_switch = IdentitySwitchState::default();
+		}
 
 		ui.add_space(16.0);
 		// Mark the scroll boundary: rows clipping under the pinned profile
@@ -4657,6 +4722,366 @@ impl GoblinWalletView {
 		if close {
 			self.import_nsec = None;
 		}
+	}
+
+	/// The identity switcher page: one wallet, one grin balance, many nostr
+	/// identities. Lists the held identities (tap to make one active), and adds a
+	/// new one (generate a fresh nsec or import an existing one). Switching runs a
+	/// catch-up so payments that arrived while an identity was dormant land in the
+	/// single shared balance; the syncing / "you were paid while away" state shows
+	/// here. The wallet password (entered once on this page) unlocks a target on
+	/// switch and encrypts a new identity on add — every held nsec is stored the
+	/// same way: its own NIP-49 ncryptsec under the wallet password.
+	fn identities_ui(&mut self, ui: &mut egui::Ui, wallet: &Wallet, cb: &dyn PlatformCallbacks) {
+		let t = theme::tokens();
+		if self.sub_header(ui, &t!("goblin.identities.title")) {
+			self.settings_page = SettingsPage::Main;
+			self.identity_switch = IdentitySwitchState::default();
+			return;
+		}
+		// Poll the background switch/add worker.
+		if self.identity_switch.busy
+			&& let Some(res) = self.identity_switch.result.lock().unwrap().take()
+		{
+			self.identity_switch.busy = false;
+			match res {
+				Ok(_) => {
+					self.identity_switch.error.clear();
+					self.identity_switch.adding = false;
+					self.identity_switch.import = false;
+					self.identity_switch.nsec.clear();
+				}
+				Err(e) => {
+					self.identity_switch.error = e;
+					self.identity_switch.awaiting_sync = false;
+				}
+			}
+		}
+
+		let identities = wallet.nostr_identities();
+		let service = wallet.nostr_service();
+		let syncing = service
+			.as_ref()
+			.map(|s| s.is_switch_syncing())
+			.unwrap_or(false);
+		let paid = service.as_ref().map(|s| s.switch_received()).unwrap_or(0);
+
+		ScrollArea::vertical()
+			.auto_shrink([false; 2])
+			.scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
+			.show(ui, |ui| {
+				ui.label(
+					RichText::new(t!("goblin.identities.blurb"))
+						.font(FontId::new(13.5, fonts::regular()))
+						.color(t.text_dim),
+				);
+				ui.add_space(8.0);
+				ui.label(
+					RichText::new(t!("goblin.identities.privacy_note"))
+						.font(FontId::new(12.0, fonts::regular()))
+						.color(t.text_mute),
+				);
+				ui.add_space(14.0);
+
+				// Syncing / "you were paid while away" banner after a switch.
+				if self.identity_switch.awaiting_sync {
+					let (icon, line, color) = if syncing {
+						(
+							crate::gui::icons::ARROWS_CLOCKWISE,
+							t!("goblin.identities.syncing").to_string(),
+							t.surface_text_dim,
+						)
+					} else if paid > 0 {
+						let msg = if crate::AppConfig::hide_amounts() {
+							t!("goblin.identities.paid_while_away").to_string()
+						} else {
+							t!("goblin.identities.paid_while_away_n", n => paid.to_string())
+								.to_string()
+						};
+						(crate::gui::icons::CHECK_CIRCLE, msg, t.pos)
+					} else {
+						(
+							crate::gui::icons::CHECK_CIRCLE,
+							t!("goblin.identities.caught_up").to_string(),
+							t.surface_text_dim,
+						)
+					};
+					w::card(ui, |ui| {
+						ui.set_min_width(ui.available_width());
+						ui.horizontal(|ui| {
+							if syncing {
+								View::small_loading_spinner(ui);
+							} else {
+								ui.label(
+									RichText::new(icon)
+										.font(FontId::new(16.0, fonts::regular()))
+										.color(color),
+								);
+							}
+							ui.add_space(8.0);
+							ui.label(
+								RichText::new(line)
+									.font(FontId::new(13.5, fonts::semibold()))
+									.color(color),
+							);
+						});
+					});
+					if syncing {
+						ui.ctx()
+							.request_repaint_after(std::time::Duration::from_millis(500));
+					}
+					ui.add_space(12.0);
+				}
+
+				// The shared wallet password (unlocks a target on switch, encrypts a
+				// new identity on add).
+				w::field_well(ui, |ui| {
+					TextEdit::new(egui::Id::from("identity_switch_pass"))
+						.focus(false)
+						.hint_text(t!("goblin.settings.wallet_password"))
+						.password()
+						.text_color(t.surface_text)
+						.body()
+						.ui(ui, &mut self.identity_switch.password, cb);
+				});
+				ui.add_space(12.0);
+
+				// Held identities. Tap a non-active one to switch to it.
+				w::kicker(ui, &t!("goblin.identities.held"));
+				ui.add_space(8.0);
+				let busy = self.identity_switch.busy;
+				let mut switch_to: Option<String> = None;
+				for id in &identities {
+					let display = id
+						.name
+						.clone()
+						.map(|n| format!("@{n}"))
+						.unwrap_or_else(|| id.label.clone());
+					let row = w::card(ui, |ui| {
+						ui.set_min_width(ui.available_width());
+						ui.horizontal(|ui| {
+							w::avatar_any(ui, &display, &id.pubkey_hex, 40.0, None);
+							ui.add_space(12.0);
+							ui.vertical(|ui| {
+								ui.label(
+									RichText::new(&display)
+										.font(FontId::new(15.0, fonts::semibold()))
+										.color(t.surface_text),
+								);
+								ui.label(
+									RichText::new(data::short_npub(&id.pubkey_hex))
+										.font(FontId::new(12.0, fonts::regular()))
+										.color(t.surface_text_mute),
+								);
+							});
+							ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+								if id.active {
+									ui.label(
+										RichText::new(crate::gui::icons::CHECK_CIRCLE)
+											.font(FontId::new(18.0, fonts::regular()))
+											.color(t.pos),
+									);
+								} else {
+									ui.label(
+										RichText::new(crate::gui::icons::ARROWS_LEFT_RIGHT)
+											.font(FontId::new(16.0, fonts::regular()))
+											.color(t.surface_text_dim),
+									);
+								}
+							});
+						})
+						.response
+						.rect
+					});
+					if !id.active && !busy {
+						let hit = ui.interact(
+							row,
+							egui::Id::new(("id_switch", id.pubkey_hex.as_str())),
+							Sense::click(),
+						);
+						if hit
+							.on_hover_cursor(egui::CursorIcon::PointingHand)
+							.clicked()
+						{
+							switch_to = Some(id.pubkey_hex.clone());
+						}
+					}
+					ui.add_space(6.0);
+				}
+
+				if let Some(target) = switch_to {
+					if self.identity_switch.password.is_empty() {
+						self.identity_switch.error =
+							t!("goblin.identities.need_password").to_string();
+					} else {
+						self.identity_switch.error.clear();
+						self.identity_switch.busy = true;
+						self.identity_switch.awaiting_sync = true;
+						let password = self.identity_switch.password.clone();
+						let slot = self.identity_switch.result.clone();
+						let w = wallet.clone();
+						std::thread::spawn(move || {
+							let r = w.switch_nostr_identity(target, password);
+							*slot.lock().unwrap() = Some(r);
+						});
+					}
+				}
+
+				ui.add_space(8.0);
+
+				// Add-identity section.
+				if !self.identity_switch.adding {
+					if w::big_action(ui, &t!("goblin.identities.add"), false).clicked() {
+						self.identity_switch.adding = true;
+						self.identity_switch.error.clear();
+					}
+				} else {
+					w::card(ui, |ui| {
+						ui.set_min_width(ui.available_width());
+						ui.label(
+							RichText::new(t!("goblin.identities.add_title"))
+								.font(FontId::new(15.0, fonts::semibold()))
+								.color(t.surface_text),
+						);
+						ui.add_space(8.0);
+						// Generate vs import toggle.
+						ui.horizontal(|ui| {
+							if w::big_action_on_card_ink(
+								ui,
+								&t!("goblin.identities.generate"),
+								if self.identity_switch.import {
+									t.surface_text
+								} else {
+									t.pos
+								},
+							)
+							.clicked()
+							{
+								self.identity_switch.import = false;
+							}
+							ui.add_space(8.0);
+							if w::big_action_on_card_ink(
+								ui,
+								&t!("goblin.identities.import"),
+								if self.identity_switch.import {
+									t.pos
+								} else {
+									t.surface_text
+								},
+							)
+							.clicked()
+							{
+								self.identity_switch.import = true;
+							}
+						});
+						if self.identity_switch.import {
+							ui.add_space(8.0);
+							w::field_well(ui, |ui| {
+								TextEdit::new(egui::Id::from("identity_add_nsec"))
+									.focus(false)
+									.hint_text(t!("goblin.identities.nsec_hint"))
+									.password()
+									.text_color(t.surface_text)
+									.body()
+									.ui(ui, &mut self.identity_switch.nsec, cb);
+							});
+						}
+						ui.add_space(10.0);
+						let import = self.identity_switch.import;
+						let nsec_ok =
+							!import || self.identity_switch.nsec.trim().starts_with("nsec1");
+						let armed = !self.identity_switch.password.is_empty()
+							&& nsec_ok && !self.identity_switch.busy;
+						ui.horizontal(|ui| {
+							let half = (ui.available_width() - 10.0) / 2.0;
+							ui.scope_builder(
+								egui::UiBuilder::new().max_rect(egui::Rect::from_min_size(
+									ui.cursor().min,
+									Vec2::new(half, 44.0),
+								)),
+								|ui| {
+									if w::big_action_on_card(ui, &t!("goblin.settings.cancel"))
+										.clicked()
+									{
+										self.identity_switch.adding = false;
+										self.identity_switch.import = false;
+										self.identity_switch.nsec.clear();
+										self.identity_switch.error.clear();
+									}
+								},
+							);
+							ui.add_space(10.0);
+							ui.scope_builder(
+								egui::UiBuilder::new().max_rect(egui::Rect::from_min_size(
+									ui.cursor().min,
+									Vec2::new(half, 44.0),
+								)),
+								|ui| {
+									ui.add_enabled_ui(armed, |ui| {
+										if w::big_action(
+											ui,
+											&t!("goblin.identities.add_switch"),
+											false,
+										)
+										.clicked()
+										{
+											self.identity_switch.error.clear();
+											self.identity_switch.busy = true;
+											self.identity_switch.awaiting_sync = true;
+											let import_nsec = if import {
+												Some(self.identity_switch.nsec.trim().to_string())
+											} else {
+												None
+											};
+											let password = self.identity_switch.password.clone();
+											let slot = self.identity_switch.result.clone();
+											let w = wallet.clone();
+											std::thread::spawn(move || {
+												// Add the identity, then switch to it so
+												// the user lands on the one they created.
+												let r = match w.add_nostr_identity(
+													import_nsec,
+													password.clone(),
+												) {
+													Ok(npub) => {
+														let hex = hex_of(&npub);
+														w.switch_nostr_identity(hex, password)
+													}
+													Err(e) => Err(e),
+												};
+												*slot.lock().unwrap() = Some(r);
+											});
+										}
+									});
+								},
+							);
+						});
+					});
+				}
+
+				if self.identity_switch.busy {
+					ui.add_space(10.0);
+					ui.horizontal(|ui| {
+						View::small_loading_spinner(ui);
+						ui.add_space(8.0);
+						ui.label(
+							RichText::new(t!("goblin.identities.working"))
+								.font(FontId::new(13.0, fonts::regular()))
+								.color(t.surface_text_dim),
+						);
+					});
+					ui.ctx().request_repaint();
+				}
+				if !self.identity_switch.error.is_empty() {
+					ui.add_space(8.0);
+					ui.label(
+						RichText::new(&self.identity_switch.error)
+							.font(FontId::new(12.5, fonts::regular()))
+							.color(t.neg),
+					);
+				}
+				ui.add_space(24.0);
+			});
 	}
 
 	/// Inline username-claim widget (availability check + registration).
