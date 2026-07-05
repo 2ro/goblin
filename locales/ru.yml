@@ -693,7 +693,8 @@ goblin:
     generate: "Создать новую"
     import: "Импорт nsec"
     nsec_hint: "Вставьте nsec"
-    add_switch: "Добавить и переключить"
+    add_confirm: "Добавить"
+    pass_prompt: "Пароль кошелька шифрует и разблокирует каждую личность. Введите его, чтобы продолжить."
     working: "Обработка…"
   onboarding:
     intro:

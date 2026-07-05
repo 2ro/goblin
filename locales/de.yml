@@ -693,7 +693,8 @@ goblin:
     generate: "Neu erzeugen"
     import: "Nsec importieren"
     nsec_hint: "Nsec einfügen"
-    add_switch: "Hinzufügen und wechseln"
+    add_confirm: "Hinzufügen"
+    pass_prompt: "Dein Wallet-Passwort verschlüsselt und entsperrt jede Identität. Gib es ein, um fortzufahren."
     working: "Arbeite…"
   onboarding:
     intro:

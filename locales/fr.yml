@@ -693,7 +693,8 @@ goblin:
     generate: "En générer une"
     import: "Importer un nsec"
     nsec_hint: "Coller un nsec"
-    add_switch: "Ajouter et basculer"
+    add_confirm: "Ajouter"
+    pass_prompt: "Le mot de passe de votre portefeuille chiffre et déverrouille chaque identité. Saisissez-le pour continuer."
     working: "En cours…"
   onboarding:
     intro:

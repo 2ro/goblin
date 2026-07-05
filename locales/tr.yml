@@ -693,7 +693,8 @@ goblin:
     generate: "Yeni oluştur"
     import: "Nsec içe aktar"
     nsec_hint: "Bir nsec yapıştır"
-    add_switch: "Ekle ve geç"
+    add_confirm: "Ekle"
+    pass_prompt: "Cüzdan parolan her kimliği şifreler ve açar. Devam etmek için gir."
     working: "Çalışıyor…"
   onboarding:
     intro:

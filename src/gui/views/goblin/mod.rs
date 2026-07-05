@@ -24,12 +24,13 @@ pub mod widgets;
 use eframe::epaint::{CornerRadius, FontId, Stroke};
 use egui::{Align, Color32, Layout, Margin, RichText, ScrollArea, Sense, Vec2};
 
+use crate::gui::Colors;
 use crate::gui::icons::{
 	ARROW_DOWN, ARROW_LEFT, CHECK, CLOCK, COPY, PROHIBIT, QR_CODE, SHARE, USER_CIRCLE, WALLET,
 };
 use crate::gui::platform::PlatformCallbacks;
 use crate::gui::theme::{self, fonts};
-use crate::gui::views::{Content, TextEdit, View};
+use crate::gui::views::{Content, Modal, TextEdit, View};
 use crate::wallet::Wallet;
 use crate::wallet::types::WalletData;
 
@@ -315,23 +316,40 @@ impl Default for ImportState {
 	}
 }
 
-/// Identity switcher page state: the shared wallet password (kept only while the
-/// page is open, cleared on leave), the add-identity sub-form, and the last
-/// switch/add result. Holds no secret key material.
+/// Id of the wallet-password modal used to unlock a switch or encrypt an add,
+/// mirroring the wallet-open password modal.
+const IDENTITY_PASS_MODAL: &str = "goblin_identity_pass_modal";
+
+/// Which identity action the wallet-password modal is unlocking for.
+#[derive(Clone)]
+enum PendingIdentityAction {
+	/// Switch the active identity to this held one (pubkey hex).
+	Switch(String),
+	/// Add a new identity: generate a fresh key (`None`) or import an nsec.
+	Add(Option<String>),
+}
+
+/// Identity switcher page state: the add-identity sub-form, the wallet-password
+/// modal buffer (the unlock step for BOTH switching and adding — there is no
+/// inline password field on the page), and the last switch/add result. Holds no
+/// secret key material at rest.
 #[derive(Default)]
 struct IdentitySwitchState {
-	/// Wallet password, used to unlock a target on switch and to encrypt a new
-	/// identity on add. Cleared when the page closes.
-	password: String,
 	/// Add-identity sub-form is open.
 	adding: bool,
 	/// Add mode is import-an-nsec (else generate a fresh one).
 	import: bool,
 	/// Pasted nsec when importing.
 	nsec: String,
+	/// The action the password modal is currently gating (switch or add).
+	pending: Option<PendingIdentityAction>,
+	/// Password typed into the modal; cleared as soon as it is consumed.
+	pass: String,
+	/// The modal password didn't unlock — show the wrong-password line.
+	wrong_pass: bool,
 	/// A background switch/add is running.
 	busy: bool,
-	/// Transient error to show (wrong password, invalid nsec, at capacity).
+	/// Transient error to show (invalid nsec, already held, at capacity).
 	error: String,
 	/// Result slot for the background switch/add worker: Ok(npub) or Err(message).
 	result: std::sync::Arc<std::sync::Mutex<Option<Result<String, String>>>>,
@@ -1607,9 +1625,12 @@ impl GoblinWalletView {
 									let seed = owner
 										.map(|i| i.pubkey_hex.clone())
 										.or_else(|| owning_hex.clone());
+									// The claimed name (no leading @, no domain — the project
+									// convention), else the truncated npub. Never a
+									// placeholder word.
 									let id_label = owner
 										.map(|i| {
-											i.nip05
+											i.name
 												.clone()
 												.unwrap_or_else(|| data::short_npub(&i.pubkey_hex))
 										})
@@ -4850,6 +4871,14 @@ impl GoblinWalletView {
 			}
 		}
 
+		// Wallet-password modal — the unlock step for BOTH switching and adding,
+		// mirroring the wallet-open password modal (dimmed backdrop, same buttons).
+		if Modal::opened() == Some(IDENTITY_PASS_MODAL) {
+			Modal::ui(ui.ctx(), cb, |ui, modal, cb| {
+				self.identity_pass_modal_content(ui, modal, wallet, cb);
+			});
+		}
+
 		let identities = wallet.nostr_identities();
 		let service = wallet.nostr_service();
 		let syncing = service
@@ -4925,46 +4954,38 @@ impl GoblinWalletView {
 					ui.add_space(12.0);
 				}
 
-				// The shared wallet password (unlocks a target on switch, encrypts a
-				// new identity on add).
-				w::field_well(ui, |ui| {
-					TextEdit::new(egui::Id::from("identity_switch_pass"))
-						.focus(false)
-						.hint_text(t!("goblin.settings.wallet_password"))
-						.password()
-						.text_color(t.surface_text)
-						.body()
-						.ui(ui, &mut self.identity_switch.password, cb);
-				});
-				ui.add_space(12.0);
-
-				// Held identities. Tap a non-active one to switch to it.
+				// Held identities. Tap a non-active one to switch to it (the
+				// wallet-password modal opens to unlock and decrypt its nsec).
 				w::kicker(ui, &t!("goblin.identities.held"));
 				ui.add_space(8.0);
 				let busy = self.identity_switch.busy;
 				let mut switch_to: Option<String> = None;
 				for id in &identities {
-					let display = id
-						.name
-						.clone()
-						.map(|n| format!("@{n}"))
-						.unwrap_or_else(|| id.label.clone());
+					// A claimed name (no leading @, per the project convention), else
+					// the truncated npub. Never a placeholder word.
+					let short = data::short_npub(&id.pubkey_hex);
+					let title = id.name.clone().unwrap_or_else(|| short.clone());
+					let named = id.name.is_some();
 					let row = w::card(ui, |ui| {
 						ui.set_min_width(ui.available_width());
 						ui.horizontal(|ui| {
-							w::avatar_any(ui, &display, &id.pubkey_hex, 40.0, None);
+							w::avatar_any(ui, &title, &id.pubkey_hex, 40.0, None);
 							ui.add_space(12.0);
 							ui.vertical(|ui| {
 								ui.label(
-									RichText::new(&display)
+									RichText::new(&title)
 										.font(FontId::new(15.0, fonts::semibold()))
 										.color(t.surface_text),
 								);
-								ui.label(
-									RichText::new(data::short_npub(&id.pubkey_hex))
-										.font(FontId::new(12.0, fonts::regular()))
-										.color(t.surface_text_mute),
-								);
+								// Show the npub underneath only when the title is a name,
+								// so an unnamed identity isn't the npub twice.
+								if named {
+									ui.label(
+										RichText::new(&short)
+											.font(FontId::new(12.0, fonts::regular()))
+											.color(t.surface_text_mute),
+									);
+								}
 							});
 							ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
 								if id.active {
@@ -5001,22 +5022,16 @@ impl GoblinWalletView {
 					ui.add_space(6.0);
 				}
 
+				// Tapping a held identity opens the password modal to unlock and
+				// switch to it (only the active nsec is ever decrypted).
 				if let Some(target) = switch_to {
-					if self.identity_switch.password.is_empty() {
-						self.identity_switch.error =
-							t!("goblin.identities.need_password").to_string();
-					} else {
-						self.identity_switch.error.clear();
-						self.identity_switch.busy = true;
-						self.identity_switch.awaiting_sync = true;
-						let password = self.identity_switch.password.clone();
-						let slot = self.identity_switch.result.clone();
-						let w = wallet.clone();
-						std::thread::spawn(move || {
-							let r = w.switch_nostr_identity(target, password);
-							*slot.lock().unwrap() = Some(r);
-						});
-					}
+					self.identity_switch.error.clear();
+					self.identity_switch.pass.clear();
+					self.identity_switch.wrong_pass = false;
+					self.identity_switch.pending = Some(PendingIdentityAction::Switch(target));
+					Modal::new(IDENTITY_PASS_MODAL)
+						.title(t!("goblin.identities.title"))
+						.show();
 				}
 
 				ui.add_space(8.0);
@@ -5080,10 +5095,11 @@ impl GoblinWalletView {
 						}
 						ui.add_space(10.0);
 						let import = self.identity_switch.import;
-						let nsec_ok =
-							!import || self.identity_switch.nsec.trim().starts_with("nsec1");
-						let armed = !self.identity_switch.password.is_empty()
-							&& nsec_ok && !self.identity_switch.busy;
+						// Generate is always ready; import needs a plausible nsec. The
+						// password is entered in the modal (opened on Add), not here.
+						let armed = (!import
+							|| self.identity_switch.nsec.trim().starts_with("nsec1"))
+							&& !self.identity_switch.busy;
 						ui.horizontal(|ui| {
 							let half = (ui.available_width() - 10.0) / 2.0;
 							ui.scope_builder(
@@ -5112,37 +5128,27 @@ impl GoblinWalletView {
 									ui.add_enabled_ui(armed, |ui| {
 										if w::big_action(
 											ui,
-											&t!("goblin.identities.add_switch"),
+											&t!("goblin.identities.add_confirm"),
 											false,
 										)
 										.clicked()
 										{
-											self.identity_switch.error.clear();
-											self.identity_switch.busy = true;
-											self.identity_switch.awaiting_sync = true;
+											// Open the password modal to encrypt+store the
+											// new identity. It is added WITHOUT switching;
+											// the user activates it later via tap → modal.
 											let import_nsec = if import {
 												Some(self.identity_switch.nsec.trim().to_string())
 											} else {
 												None
 											};
-											let password = self.identity_switch.password.clone();
-											let slot = self.identity_switch.result.clone();
-											let w = wallet.clone();
-											std::thread::spawn(move || {
-												// Add the identity, then switch to it so
-												// the user lands on the one they created.
-												let r = match w.add_nostr_identity(
-													import_nsec,
-													password.clone(),
-												) {
-													Ok(npub) => {
-														let hex = hex_of(&npub);
-														w.switch_nostr_identity(hex, password)
-													}
-													Err(e) => Err(e),
-												};
-												*slot.lock().unwrap() = Some(r);
-											});
+											self.identity_switch.error.clear();
+											self.identity_switch.pass.clear();
+											self.identity_switch.wrong_pass = false;
+											self.identity_switch.pending =
+												Some(PendingIdentityAction::Add(import_nsec));
+											Modal::new(IDENTITY_PASS_MODAL)
+												.title(t!("goblin.identities.add_title"))
+												.show();
 										}
 									});
 								},
@@ -5174,6 +5180,105 @@ impl GoblinWalletView {
 				}
 				ui.add_space(24.0);
 			});
+	}
+
+	/// Content of the wallet-password modal that gates BOTH switching to a held
+	/// identity (unlock + decrypt its nsec) and adding a new one (encrypt + store).
+	/// Mirrors the wallet-open password modal (open.rs): explanation, masked field,
+	/// wrong-password line, Cancel/Continue. A correct password is verified
+	/// synchronously — like the wallet-open modal — before the add/switch worker is
+	/// spawned, so a wrong password stays in the modal instead of failing later.
+	fn identity_pass_modal_content(
+		&mut self,
+		ui: &mut egui::Ui,
+		modal: &Modal,
+		wallet: &Wallet,
+		cb: &dyn PlatformCallbacks,
+	) {
+		let mut go = false;
+		let mut cancel = false;
+		ui.vertical_centered(|ui| {
+			ui.add_space(6.0);
+			ui.label(
+				RichText::new(t!("goblin.identities.pass_prompt"))
+					.size(16.0)
+					.color(Colors::gray()),
+			);
+			ui.add_space(10.0);
+			let mut field = TextEdit::new(egui::Id::from(modal.id).with("id_pass")).password();
+			field.ui(ui, &mut self.identity_switch.pass, cb);
+			if field.enter_pressed {
+				go = true;
+			}
+			if self.identity_switch.pass.is_empty() {
+				self.identity_switch.wrong_pass = false;
+			} else if self.identity_switch.wrong_pass {
+				ui.add_space(10.0);
+				ui.label(
+					RichText::new(t!("goblin.advanced.wrong_password"))
+						.size(16.0)
+						.color(Colors::red()),
+				);
+			}
+			ui.add_space(12.0);
+		});
+		ui.scope(|ui| {
+			ui.spacing_mut().item_spacing = egui::Vec2::new(8.0, 0.0);
+			ui.columns(2, |columns| {
+				columns[0].vertical_centered_justified(|ui| {
+					View::button(
+						ui,
+						t!("modal.cancel"),
+						Colors::white_or_black(false),
+						|| {
+							cancel = true;
+						},
+					);
+				});
+				columns[1].vertical_centered_justified(|ui| {
+					View::button(ui, t!("continue"), Colors::white_or_black(false), || {
+						go = true;
+					});
+				});
+			});
+			ui.add_space(6.0);
+		});
+		if cancel {
+			self.identity_switch.pass.clear();
+			self.identity_switch.pending = None;
+			self.identity_switch.wrong_pass = false;
+			Modal::close();
+		}
+		if go && !self.identity_switch.pass.is_empty() {
+			if !wallet.verify_nostr_password(&self.identity_switch.pass) {
+				self.identity_switch.wrong_pass = true;
+			} else if let Some(action) = self.identity_switch.pending.take() {
+				let password = std::mem::take(&mut self.identity_switch.pass);
+				self.identity_switch.wrong_pass = false;
+				self.identity_switch.error.clear();
+				self.identity_switch.busy = true;
+				let slot = self.identity_switch.result.clone();
+				let w = wallet.clone();
+				match action {
+					PendingIdentityAction::Switch(hex) => {
+						self.identity_switch.awaiting_sync = true;
+						std::thread::spawn(move || {
+							let r = w.switch_nostr_identity(hex, password);
+							*slot.lock().unwrap() = Some(r);
+						});
+					}
+					PendingIdentityAction::Add(import_nsec) => {
+						// Add only — never auto-switch into the new identity.
+						self.identity_switch.awaiting_sync = false;
+						std::thread::spawn(move || {
+							let r = w.add_nostr_identity(import_nsec, password);
+							*slot.lock().unwrap() = Some(r);
+						});
+					}
+				}
+				Modal::close();
+			}
+		}
 	}
 
 	/// Inline username-claim widget (availability check + registration).

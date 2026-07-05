@@ -693,7 +693,8 @@ goblin:
     generate: "新建"
     import: "导入 nsec"
     nsec_hint: "粘贴 nsec"
-    add_switch: "添加并切换"
+    add_confirm: "添加"
+    pass_prompt: "钱包密码用于加密和解锁每个身份。输入以继续。"
     working: "处理中…"
   onboarding:
     intro:
