@@ -794,6 +794,7 @@ goblin:
     row_note: "Not"
     row_proof: "Ödeme kanıtı"
     row_proof_val: "Dahil"
+    row_proof_shared: "Kanıt paylaşılır"
     row_they_pay: "Onlar öder"
     row_they_pay_val: "Yalnızca onaylarlarsa"
     row_delivery: "Teslimat"

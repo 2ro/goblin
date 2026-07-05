@@ -794,6 +794,7 @@ goblin:
     row_note: "Note"
     row_proof: "Payment proof"
     row_proof_val: "Included"
+    row_proof_shared: "Proof shared with"
     row_they_pay: "They pay"
     row_they_pay_val: "Only if they approve"
     row_delivery: "Delivery"

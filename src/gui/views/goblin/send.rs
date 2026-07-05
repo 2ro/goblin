@@ -1231,6 +1231,23 @@ impl SendFlow {
 				&t!("goblin.send.row_proof"),
 				&t!("goblin.send.row_proof_val"),
 			);
+			// Make the proof's hidden delivery target visible and consented: when
+			// a `notify` npub rode in on the scanned URI, the wallet gift-wraps
+			// the full signed proof (with the buyer's sender address + kernel) to
+			// that key at finalize. Show exactly where it goes so it is a seen,
+			// chosen recipient rather than a silent watcher: if you scanned it,
+			// you asked for it. Display only; nothing here changes what is sent.
+			if let Some(notify) = self.notify.as_deref() {
+				// Truncate the bech32 npub for a single-line row (npub1abc…wxyz).
+				// `notify` is a validated npub (ASCII, well over 18 chars), so the
+				// byte slices land on char boundaries.
+				let short = if notify.len() > 18 {
+					format!("{}…{}", &notify[..12], &notify[notify.len() - 6..])
+				} else {
+					notify.to_string()
+				};
+				w::info_row(ui, &t!("goblin.send.row_proof_shared"), &short);
+			}
 		}
 		if self.request {
 			w::info_row(
