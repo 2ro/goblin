@@ -790,6 +790,8 @@ goblin:
     row_from: "付款方"
     row_to: "收款方"
     row_note: "备注"
+    row_proof: "支付证明"
+    row_proof_val: "已包含"
     row_they_pay: "对方支付"
     row_they_pay_val: "仅当对方同意时"
     row_delivery: "传输"

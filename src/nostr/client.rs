@@ -593,6 +593,89 @@ impl NostrService {
 			.await
 	}
 
+	/// Publish the plain "payment sent" receipt (frozen contract 4.3.1): a
+	/// buyer-signed, UNENCRYPTED kind-17 to our app relays that flips the order
+	/// page to "payment detected, confirming". It is buyer-signed and unverified,
+	/// so the market NEVER treats it as "paid" (only the watcher's 4.4 event
+	/// does). The proof and kernel excess are DELIBERATELY omitted here: a Grin
+	/// payment proof carries the buyer's own slatepack address, and publishing it
+	/// in the clear would leak the buyer's wallet address to the world.
+	pub async fn publish_receipt_sent(&self, order: &str, amount: u64) -> Result<(), String> {
+		let client = {
+			let r_client = self.client.read();
+			r_client.clone().ok_or("nostr client is not running")?
+		};
+		let tags = vec![
+			Tag::custom(TagKind::custom("payment-request"), [order.to_string()]),
+			Tag::custom(
+				TagKind::custom("payment"),
+				["grin".to_string(), order.to_string(), String::new()],
+			),
+			Tag::custom(TagKind::custom("amount"), [amount.to_string()]),
+			Tag::custom(TagKind::custom("status"), ["sent".to_string()]),
+			Tag::custom(
+				TagKind::custom(protocol::GOBLIN_TAG),
+				[protocol::PROTOCOL_VERSION.to_string()],
+			),
+		];
+		let builder = EventBuilder::new(Kind::Custom(17), "Payment sent").tags(tags);
+		let event = client
+			.sign_event_builder(builder)
+			.await
+			.map_err(|e| format!("receipt sign failed: {e}"))?;
+		let urls: Vec<String> = self.relays();
+		match tokio::time::timeout(SEND_TIMEOUT, client.send_event_to(&urls, &event)).await {
+			Ok(Ok(_)) => Ok(()),
+			Ok(Err(e)) => Err(format!("receipt publish failed: {e}")),
+			Err(_) => Err("receipt publish timeout".to_string()),
+		}
+	}
+
+	/// Gift-wrap the full proof delivery (frozen contract 4.3.2) to the watcher's
+	/// npub: a kind-17 rumor whose content is the Grin payment proof JSON verbatim,
+	/// tagged with the invoice number, the amount, and the kernel excess. Encrypted
+	/// end to end, so the proof (which contains the buyer's sender address) never
+	/// goes out in the clear; only the addressed watcher can read it.
+	pub async fn deliver_proof_wrap(
+		&self,
+		notify_npub: &str,
+		order: &str,
+		amount: u64,
+		kernel_hex: &str,
+		proof_json: &str,
+	) -> Result<(), String> {
+		let client = {
+			let r_client = self.client.read();
+			r_client.clone().ok_or("nostr client is not running")?
+		};
+		let receiver =
+			PublicKey::from_bech32(notify_npub).map_err(|e| format!("invalid notify npub: {e}"))?;
+		let tags = vec![
+			Tag::custom(TagKind::custom("payment-request"), [order.to_string()]),
+			Tag::custom(TagKind::custom("amount"), [amount.to_string()]),
+			Tag::custom(TagKind::custom("kernel"), [kernel_hex.to_string()]),
+			Tag::custom(TagKind::custom("status"), ["proof".to_string()]),
+			Tag::custom(
+				TagKind::custom(protocol::GOBLIN_TAG),
+				[protocol::PROTOCOL_VERSION.to_string()],
+			),
+		];
+		let wrap = wrapv3::wrap_kind(
+			&self.keys,
+			&receiver,
+			Kind::Custom(17),
+			proof_json.to_string(),
+			tags,
+		)?;
+		let urls: Vec<String> = self.relays();
+		connect_relays(&client, &urls).await;
+		match tokio::time::timeout(SEND_TIMEOUT, client.send_event_to(&urls, &wrap)).await {
+			Ok(Ok(_)) => Ok(()),
+			Ok(Err(e)) => Err(format!("proof delivery failed: {e}")),
+			Err(_) => Err("proof delivery timeout".to_string()),
+		}
+	}
+
 	/// Dispatch one gift-wrapped DM over the negotiated encryption: when the
 	/// recipient advertises `nip44_v3` the wrap is built by [`wrapv3::wrap`],
 	/// otherwise it goes through the unchanged nostr-sdk v2 path (best mutual
@@ -1449,11 +1532,95 @@ fn expiry_locks_outputs(direction: NostrTxDirection, status: NostrSendStatus) ->
 	)
 }
 
+/// Produce and deliver the proof-on-request artifacts for a finalized SEND
+/// (frozen contract 4.3): the plain "payment sent" receipt to the app relays and
+/// the encrypted proof delivery to the watcher. Idempotent and safe to retry: a
+/// duplicate plain receipt is harmless (the market dedupes by invoice) and the
+/// watcher dedupes its own inputs, so it is driven from both the finalize task
+/// and the reconcile pass. Returns true when every REQUIRED delivery for this
+/// context landed, so the caller can set `proof_delivered` and stop retrying.
+async fn deliver_proof(svc: &Arc<NostrService>, wallet: &Wallet, meta: &TxNostrMeta) -> bool {
+	let Some(order) = meta.proof_order.clone() else {
+		// No order handle => no `payment-request` routing key the market can match.
+		// Nothing deliverable; treat as done so we don't retry a dead context.
+		warn!(
+			"nostr: proof mode without order handle for {}, skipping delivery",
+			meta.slate_id
+		);
+		return true;
+	};
+	let amount = meta.proof_amount.unwrap_or(0);
+
+	// 1. Plain receipt (instant page feedback). Always attempted in proof mode.
+	let receipt_ok = match svc.publish_receipt_sent(&order, amount).await {
+		Ok(()) => true,
+		Err(e) => {
+			warn!(
+				"nostr: proof receipt publish failed for {}: {e}",
+				meta.slate_id
+			);
+			false
+		}
+	};
+
+	// 2. Encrypted proof delivery: only when a watcher target AND a real proof
+	// exist. If `notify` is absent (4.1), the plain receipt alone is the whole
+	// job and there is nothing to encrypt.
+	let wrap_ok = match &meta.proof_notify {
+		None => true,
+		Some(notify) => {
+			let Ok(slate_id) = uuid::Uuid::parse_str(&meta.slate_id) else {
+				return false;
+			};
+			match wallet.payment_proof_delivery(slate_id) {
+				Some((json, kernel_hex)) => {
+					match svc
+						.deliver_proof_wrap(notify, &order, amount, &kernel_hex, &json)
+						.await
+					{
+						Ok(()) => true,
+						Err(e) => {
+							warn!("nostr: proof delivery failed for {}: {e}", meta.slate_id);
+							false
+						}
+					}
+				}
+				None => {
+					warn!(
+						"nostr: no payment proof retrievable yet for {}",
+						meta.slate_id
+					);
+					false
+				}
+			}
+		}
+	};
+
+	receipt_ok && wrap_ok
+}
+
 /// Re-dispatch our pending outgoing messages (crash/offline recovery).
 async fn reconcile(svc: &Arc<NostrService>, wallet: &Wallet) {
 	let now = unix_time();
 	for meta in svc.store.all_tx_meta() {
 		if now - meta.created_at > RESEND_WINDOW_SECS {
+			continue;
+		}
+		// Proof-on-request delivery retry (frozen contract 4.3, W4): a finalized
+		// send in proof mode whose delivery events have not all landed yet. Retried
+		// on every reconcile pass until `proof_delivered` flips, exactly like the
+		// S2 replies above it.
+		if meta.direction == NostrTxDirection::Sent
+			&& meta.status == NostrSendStatus::Finalized
+			&& meta.proof_mode
+			&& !meta.proof_delivered
+		{
+			if deliver_proof(svc, wallet, &meta).await {
+				let mut updated = meta.clone();
+				updated.proof_delivered = true;
+				updated.updated_at = unix_time();
+				svc.store.save_tx_meta(&updated);
+			}
 			continue;
 		}
 		let resend_state = match (meta.direction, meta.status) {
@@ -1915,6 +2082,11 @@ async fn handle_wrap(svc: &Arc<NostrService>, wallet: &Wallet, event: Event) {
 						received_rumor_id: Some(rumor_id.clone()),
 						created_at: now,
 						updated_at: now,
+						proof_mode: false,
+						proof_order: None,
+						proof_notify: None,
+						proof_amount: None,
+						proof_delivered: false,
 					});
 					// Commit dedup markers now the receive is durable, BEFORE
 					// the reply + sync tail. A crash there must not let this
@@ -2011,6 +2183,21 @@ async fn handle_wrap(svc: &Arc<NostrService>, wallet: &Wallet, event: Event) {
 					if let Some(mut contact) = svc.store.contact(&sender_hex) {
 						contact.last_paid_at = Some(unix_time());
 						svc.store.save_contact(&contact);
+					}
+					// Proof-on-request delivery (frozen contract 4.3): this finalized
+					// SEND (our own payment) now holds a real, receiver-signed Grin
+					// payment proof. If it was sent in proof mode, publish the plain
+					// receipt + the encrypted proof delivery. On partial failure we
+					// leave proof_delivered=false so the reconcile pass retries.
+					if let Some(mut m) = svc.store.tx_meta(&slate.id.to_string()) {
+						if m.direction == NostrTxDirection::Sent
+							&& m.proof_mode && !m.proof_delivered
+							&& deliver_proof(svc, wallet, &m).await
+						{
+							m.proof_delivered = true;
+							m.updated_at = unix_time();
+							svc.store.save_tx_meta(&m);
+						}
 					}
 					wallet.sync();
 				}

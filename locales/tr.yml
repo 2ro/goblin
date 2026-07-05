@@ -790,6 +790,8 @@ goblin:
     row_from: "Gönderen"
     row_to: "Alıcı"
     row_note: "Not"
+    row_proof: "Ödeme kanıtı"
+    row_proof_val: "Dahil"
     row_they_pay: "Onlar öder"
     row_they_pay_val: "Yalnızca onaylarlarsa"
     row_delivery: "Teslimat"

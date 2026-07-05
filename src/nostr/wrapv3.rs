@@ -73,9 +73,31 @@ pub fn wrap(
 	content: String,
 	rumor_extra_tags: Vec<Tag>,
 ) -> Result<Event, String> {
-	// Rumor: kind 14, receiver p-tag first, then the extra tags — the same
-	// shape `EventBuilder::private_msg_rumor` builds. Never signed (NIP-59).
-	let mut rumor: UnsignedEvent = EventBuilder::new(Kind::PrivateDirectMessage, content)
+	wrap_kind(
+		sender,
+		receiver,
+		Kind::PrivateDirectMessage,
+		content,
+		rumor_extra_tags,
+	)
+}
+
+/// Build a NIP-59 gift wrap around a rumor of an ARBITRARY `rumor_kind`,
+/// encrypted with NIP-44 v3. `wrap` is the kind-14 private-message case; the
+/// proof-on-request delivery (frozen contract 4.3.2) uses this with a kind-17
+/// rumor to hand the watcher the full proof JSON privately. The watcher unwraps
+/// with the same `unwrap` below (it reuses the wallet's crypto), so v3 here is
+/// consistent end to end.
+pub fn wrap_kind(
+	sender: &Keys,
+	receiver: &PublicKey,
+	rumor_kind: Kind,
+	content: String,
+	rumor_extra_tags: Vec<Tag>,
+) -> Result<Event, String> {
+	// Rumor: receiver p-tag first, then the extra tags, the same shape
+	// `EventBuilder::private_msg_rumor` builds. Never signed (NIP-59).
+	let mut rumor: UnsignedEvent = EventBuilder::new(rumor_kind, content)
 		.tag(Tag::public_key(*receiver))
 		.tags(rumor_extra_tags)
 		.build(sender.public_key());

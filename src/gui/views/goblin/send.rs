@@ -145,6 +145,13 @@ pub struct SendFlow {
 	fee_requested_for: Option<u64>,
 	/// Draft note held while the editor modal is open, so Cancel discards it.
 	note_draft: String,
+	/// Proof-on-request context parsed from the pay URI (frozen contract 4.1).
+	/// `proof` is the merchant's grin1 proof address (presence => proof mode),
+	/// `order` the opaque invoice handle, `notify` the watcher npub. All `None`
+	/// for a normal send, so person-to-person payments carry nothing extra.
+	proof: Option<String>,
+	order: Option<String>,
+	notify: Option<String>,
 }
 
 impl Default for SendFlow {
@@ -171,6 +178,9 @@ impl Default for SendFlow {
 			receipt_npub: None,
 			fee_requested_for: None,
 			note_draft: String::new(),
+			proof: None,
+			order: None,
+			notify: None,
 		}
 	}
 }
@@ -229,6 +239,15 @@ impl SendFlow {
 	/// handler so both spell the same destination. `now` seeds the search-box
 	/// debounce.
 	fn apply_scan(&mut self, text: &str, wallet: &Wallet, now: f64) {
+		// Proof-on-request context (frozen contract 4.1) rides alongside the
+		// recipient/amount/memo routing and is independent of whether we land on
+		// Review or Search, so pull it from the same pure parse. `order` is a
+		// non-editable routing key, never shown as the memo. Absent params leave
+		// proof mode off, so a normal payment is byte-identical to before.
+		let pay = crate::nostr::payuri::parse(text);
+		self.proof = pay.proof;
+		self.order = pay.order;
+		self.notify = pay.notify;
 		match recognize_scan(text) {
 			// GoblinPay checkout / full pay link: recipient key AND amount are
 			// both known, so skip discovery and open review directly, prefilled.
@@ -1202,6 +1221,17 @@ impl SendFlow {
 				&format!("\u{201C}{}\u{201D}", self.note.trim()),
 			);
 		}
+		// Proof-on-request indicator (frozen contract W3): a small, informational
+		// row shown only when this payment will return a receiver-signed Grin
+		// payment proof. Seeing it is the whole interaction: nothing to accept or
+		// configure. Absent for every ordinary send.
+		if self.proof.is_some() && !self.request {
+			w::info_row(
+				ui,
+				&t!("goblin.send.row_proof"),
+				&t!("goblin.send.row_proof_val"),
+			);
+		}
 		if self.request {
 			w::info_row(
 				ui,
@@ -1324,6 +1354,9 @@ impl SendFlow {
 					recipient.npub.clone(),
 					note,
 					recipient.relay_hints.clone(),
+					self.proof.clone(),
+					self.order.clone(),
+					self.notify.clone(),
 				));
 			}
 		}

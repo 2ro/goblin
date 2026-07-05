@@ -433,7 +433,20 @@ pub enum WalletTask {
 	/// * amount
 	/// * receiver public key (hex)
 	/// * optional note (subject line)
-	NostrSend(u64, String, Option<String>, Vec<String>),
+	/// * relay hints
+	/// * optional proof address (grin1/tgrin1): proof-on-request turns ON when
+	///   present (frozen contract W2); threaded as `payment_proof_recipient_address`
+	/// * optional order handle (the `order=` URI param, echoed into delivery events)
+	/// * optional watcher npub (the `notify=` URI param, gift-wrap target)
+	NostrSend(
+		u64,
+		String,
+		Option<String>,
+		Vec<String>,
+		Option<String>,
+		Option<String>,
+		Option<String>,
+	),
 	/// Re-dispatch the pending nostr message for transaction.
 	/// * tx id
 	NostrResend(u32),

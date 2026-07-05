@@ -790,6 +790,8 @@ goblin:
     row_from: "От"
     row_to: "Кому"
     row_note: "Заметка"
+    row_proof: "Подтверждение платежа"
+    row_proof_val: "Включено"
     row_they_pay: "Они платят"
     row_they_pay_val: "Только если они одобрят"
     row_delivery: "Доставка"

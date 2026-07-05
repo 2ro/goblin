@@ -790,6 +790,8 @@ goblin:
     row_from: "From"
     row_to: "To"
     row_note: "Note"
+    row_proof: "Payment proof"
+    row_proof_val: "Included"
     row_they_pay: "They pay"
     row_they_pay_val: "Only if they approve"
     row_delivery: "Delivery"

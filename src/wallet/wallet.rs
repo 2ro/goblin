@@ -1871,6 +1871,23 @@ impl Wallet {
 		Ok(proof)
 	}
 
+	/// Retrieve a finalized send's payment proof as the `(json, kernel_excess_hex)`
+	/// pair the proof-on-request delivery needs (frozen contract 4.3.2). `json` is
+	/// the owner API's verbatim serialization of the proof
+	/// (`{amount, excess, recipient_address, recipient_sig, sender_address,
+	/// sender_sig}`); `kernel_excess_hex` is a convenience copy of the excess so
+	/// the watcher can query the chain before parsing the proof. `None` when no
+	/// proof exists yet (e.g. a proof-less send, or called before finalize).
+	pub fn payment_proof_delivery(&self, slate_id: Uuid) -> Option<(String, String)> {
+		let proof = self
+			.get_payment_proof(None, Some(slate_id))
+			.ok()
+			.flatten()?;
+		let json = serde_json::to_string(&proof).ok()?;
+		let kernel_hex = proof.excess.to_hex();
+		Some((json, kernel_hex))
+	}
+
 	/// Verify payment proof.
 	fn verify_payment_proof(&self, proof: &PaymentProof) -> Result<(u32, bool, bool), Error> {
 		let r_inst = self.instance.as_ref().read();
@@ -2422,19 +2439,31 @@ async fn handle_task(w: &Wallet, t: WalletTask) {
 				w.on_tx_error(*id, Some(e));
 			}
 		},
-		WalletTask::NostrSend(a, receiver, note, relay_hints) => {
+		WalletTask::NostrSend(a, receiver, note, relay_hints, proof, order, notify) => {
 			let Some(service) = w.nostr_service() else {
 				error!("nostr send: service not available");
 				return;
 			};
 			w.send_creating.store(true, Ordering::Relaxed);
 			service.set_send_phase(crate::nostr::send_phase::WORKING);
-			match w.send(*a, None) {
+			// Proof-on-request (frozen contract W2): when the payment context
+			// carries a `proof=` slatepack address, re-parse it authoritatively
+			// here (a second, fail-closed gate after the URI parser's shape check)
+			// and thread it as the native `payment_proof_recipient_address`. Absent
+			// or unparseable → `None`, a normal proof-less send. This is the ONLY
+			// path that sets a proof recipient over Nostr.
+			let proof_addr: Option<SlatepackAddress> = proof
+				.as_deref()
+				.and_then(|p| SlatepackAddress::try_from(p.trim()).ok());
+			let proof_mode = proof_addr.is_some();
+			match w.send(*a, proof_addr) {
 				Ok(s) => {
 					sync_wallet_data(&w, false);
 					let now = crate::nostr::unix_time();
 					// Record intent BEFORE the network dispatch so a crash
-					// is recovered by the service reconcile pass.
+					// is recovered by the service reconcile pass. The proof context
+					// (order handle + watcher npub + amount) is persisted now so a
+					// crash between send and finalize loses nothing.
 					service.store.save_tx_meta(&crate::nostr::TxNostrMeta {
 						ver: 1,
 						slate_id: s.id.to_string(),
@@ -2446,6 +2475,11 @@ async fn handle_task(w: &Wallet, t: WalletTask) {
 						received_rumor_id: None,
 						created_at: now,
 						updated_at: now,
+						proof_mode,
+						proof_order: if proof_mode { order.clone() } else { None },
+						proof_notify: if proof_mode { notify.clone() } else { None },
+						proof_amount: if proof_mode { Some(*a) } else { None },
+						proof_delivered: false,
 					});
 					let tx = w.retrieve_tx_by_id(None, Some(s.id));
 					w.send_creating.store(false, Ordering::Relaxed);
@@ -2553,6 +2587,13 @@ async fn handle_task(w: &Wallet, t: WalletTask) {
 						received_rumor_id: None,
 						created_at: now,
 						updated_at: now,
+						// Grin's invoice flow carries no payment proofs (Fact 3), so a
+						// request we issued never enters proof mode.
+						proof_mode: false,
+						proof_order: None,
+						proof_notify: None,
+						proof_amount: None,
+						proof_delivered: false,
 					});
 					let tx = w.retrieve_tx_by_id(None, Some(s.id));
 					w.invoice_creating.store(false, Ordering::Relaxed);
@@ -2798,6 +2839,11 @@ async fn handle_task(w: &Wallet, t: WalletTask) {
 							received_rumor_id: Some(request.rumor_id.clone()),
 							created_at: now,
 							updated_at: now,
+							proof_mode: false,
+							proof_order: None,
+							proof_notify: None,
+							proof_amount: None,
+							proof_delivered: false,
 						});
 						match service
 							.send_payment_dm(&request.npub, &text, None, &[])
@@ -2842,6 +2888,11 @@ async fn handle_task(w: &Wallet, t: WalletTask) {
 								received_rumor_id: Some(request.rumor_id.clone()),
 								created_at: now,
 								updated_at: now,
+								proof_mode: false,
+								proof_order: None,
+								proof_notify: None,
+								proof_amount: None,
+								proof_delivered: false,
 							});
 							match service
 								.send_payment_dm(&request.npub, &text, None, &[])

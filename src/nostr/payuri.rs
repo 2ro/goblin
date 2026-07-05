@@ -42,6 +42,10 @@ use grin_core::core::amount_from_hr_string;
 const MAX_URI_LEN: usize = 4096;
 /// Memo byte cap (post control-strip), display / tx-message only.
 const MAX_MEMO_BYTES: usize = 256;
+/// Order-handle byte cap (post percent-decode + control-strip). The order
+/// param is an opaque routing key (magick's `MM-<hex>` invoice number), never
+/// free text, so it is capped tight per the frozen contract (section 4.1).
+const MAX_ORDER_BYTES: usize = 64;
 
 /// Schemes that unlock amount/memo parsing. `goblin:` is Goblin's registered
 /// deep-link scheme (web "Open in Goblin" buttons, so the OS opens the wallet);
@@ -58,6 +62,21 @@ pub struct PayUri {
 	pub recipient: String,
 	pub amount: Option<String>,
 	pub memo: Option<String>,
+	/// Proof-on-request: the merchant's Grin slatepack (`grin1`/`tgrin1`) proof
+	/// address. Presence turns proof mode ON for this one transaction; the value
+	/// is threaded verbatim as `payment_proof_recipient_address` on the send.
+	/// Fail-closed: an unparseable value is dropped to `None` (a proof-less
+	/// send), never blocking the payment. Frozen contract section 4.1.
+	pub proof: Option<String>,
+	/// The opaque order handle (magick's `MM-<hex>` invoice number) the wallet
+	/// echoes verbatim into the delivery events' `payment-request` tag. Distinct
+	/// from `memo`: `order` is a non-editable routing key, `memo` is editable
+	/// display text. Dropped if empty after sanitization.
+	pub order: Option<String>,
+	/// The watcher's Nostr pubkey (`npub…`) the wallet gift-wraps the full proof
+	/// delivery to. Dropped if it is not a valid npub; absence simply means no
+	/// encrypted delivery target (the plain receipt still publishes).
+	pub notify: Option<String>,
 }
 
 impl PayUri {
@@ -67,6 +86,9 @@ impl PayUri {
 			recipient,
 			amount: None,
 			memo: None,
+			proof: None,
+			order: None,
+			notify: None,
 		}
 	}
 }
@@ -101,6 +123,9 @@ pub fn parse(scanned: &str) -> PayUri {
 
 	let mut amount = None;
 	let mut memo = None;
+	let mut proof = None;
+	let mut order = None;
+	let mut notify = None;
 	if let Some(query) = query {
 		for pair in query.split('&') {
 			let Some((key, val)) = pair.split_once('=') else {
@@ -111,6 +136,12 @@ pub fn parse(scanned: &str) -> PayUri {
 				// second `amount=` can't override a validated one.
 				"amount" if amount.is_none() => amount = validate_amount(val),
 				"memo" if memo.is_none() => memo = validate_memo(val),
+				// Proof-on-request params (frozen contract section 4.1). Each is
+				// fail-closed: an invalid value is dropped to `None`, degrading to
+				// a normal proof-less payment rather than blocking the send.
+				"proof" if proof.is_none() => proof = validate_proof(val),
+				"order" if order.is_none() => order = validate_order(val),
+				"notify" if notify.is_none() => notify = validate_notify(val),
 				// Unknown params are ignored for forward-compat.
 				_ => {}
 			}
@@ -121,6 +152,9 @@ pub fn parse(scanned: &str) -> PayUri {
 		recipient,
 		amount,
 		memo,
+		proof,
+		order,
+		notify,
 	}
 }
 
@@ -174,6 +208,81 @@ fn validate_memo(raw: &str) -> Option<String> {
 	let text = truncate_on_char_boundary(text, MAX_MEMO_BYTES);
 	let text = text.trim().to_string();
 	if text.is_empty() { None } else { Some(text) }
+}
+
+/// Validate a `proof` value: percent-decode, then accept it ONLY if it has the
+/// shape of a Grin slatepack address (`grin1…`/`tgrin1…`, bech32 charset, long
+/// enough to be a real key). This is a fail-closed SHAPE check; the send path
+/// re-parses it authoritatively via `SlatepackAddress::try_from` and drops it
+/// again if that fails, so an almost-valid string can never turn into a bad
+/// proof recipient. Returns the clean decoded address on success.
+fn validate_proof(raw: &str) -> Option<String> {
+	let decoded = String::from_utf8_lossy(&percent_decode(raw)).into_owned();
+	let decoded = decoded.trim();
+	if looks_like_slatepack_address(decoded) {
+		Some(decoded.to_string())
+	} else {
+		None
+	}
+}
+
+/// Loose shape test for a Grin slatepack address: a `grin1`/`tgrin1` bech32
+/// human-readable prefix followed by a bech32-charset data part of plausible
+/// length. Mirrors magick's `isValidGoblinPayAddress` grin1 arm; authoritative
+/// decode happens at send time.
+fn looks_like_slatepack_address(s: &str) -> bool {
+	let lower = s.to_ascii_lowercase();
+	let data = if let Some(d) = lower.strip_prefix("tgrin1") {
+		d
+	} else if let Some(d) = lower.strip_prefix("grin1") {
+		d
+	} else {
+		return false;
+	};
+	// bech32 data charset excludes `1`, `b`, `i`, `o`; a real key is well over
+	// 20 data chars. We only guard obvious garbage here.
+	data.len() >= 20
+		&& data
+			.chars()
+			.all(|c| c.is_ascii_alphanumeric() && !matches!(c, '1' | 'b' | 'i' | 'o'))
+}
+
+/// Validate an `order` value: percent-decode, strip ASCII control chars (it is a
+/// routing key, never display text or a path), hard-cap at [`MAX_ORDER_BYTES`]
+/// on a UTF-8 boundary, trim. Empty → `None`. The wallet echoes this verbatim
+/// into the `payment-request` tag of every delivery event, so it must survive
+/// the round trip unchanged.
+fn validate_order(raw: &str) -> Option<String> {
+	let decoded = percent_decode(raw);
+	let cleaned: Vec<u8> = decoded
+		.into_iter()
+		.filter(|&b| b >= 0x20 && b != 0x7f)
+		.collect();
+	let text = String::from_utf8_lossy(&cleaned).into_owned();
+	let text = truncate_on_char_boundary(text, MAX_ORDER_BYTES);
+	let text = text.trim().to_string();
+	if text.is_empty() { None } else { Some(text) }
+}
+
+/// Validate a `notify` value: percent-decode, then accept it ONLY if it has the
+/// shape of an `npub` (bech32 `npub1…`). Fail-closed SHAPE check; the delivery
+/// path re-decodes it authoritatively via `PublicKey::from_bech32` and drops it
+/// again on failure. Returns the clean decoded npub on success.
+fn validate_notify(raw: &str) -> Option<String> {
+	let decoded = String::from_utf8_lossy(&percent_decode(raw)).into_owned();
+	let decoded = decoded.trim();
+	let lower = decoded.to_ascii_lowercase();
+	if let Some(data) = lower.strip_prefix("npub1") {
+		// A bech32-encoded 32-byte key is ~59 data chars; guard obvious garbage.
+		if data.len() >= 50
+			&& data
+				.chars()
+				.all(|c| c.is_ascii_alphanumeric() && !matches!(c, '1' | 'b' | 'i' | 'o'))
+		{
+			return Some(decoded.to_string());
+		}
+	}
+	None
 }
 
 /// Truncate a string to at most `max` bytes without splitting a UTF-8 char.
@@ -442,5 +551,125 @@ mod tests {
 		));
 		assert_eq!(smallest.amount.as_deref(), Some("0.000000001"));
 		assert_eq!(smallest.memo.as_deref(), Some("MM-ABC123"));
+	}
+
+	// --- proof-on-request params (frozen contract section 4.1) --------------
+
+	/// A shape-valid grin1 slatepack address (charset excludes 1/b/i/o).
+	const GRIN1: &str = "grin1qqvqzqzpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqsz";
+	/// A shape-valid npub (the Goblin news key).
+	const NPUB: &str = "npub15gsytqvs5c78u83yv2agl4twjkk6qgem7gtwe2agu7s90tkelxys0xxely";
+
+	#[test]
+	fn parses_all_three_proof_params() {
+		let uri = format!(
+			"nostr:{NPROFILE}?amount=1.5&memo=Coffee&proof={GRIN1}&order=MM-ABC123&notify={NPUB}"
+		);
+		let out = parse(&uri);
+		assert_eq!(out.recipient, NPROFILE);
+		assert_eq!(out.amount.as_deref(), Some("1.5"));
+		assert_eq!(out.memo.as_deref(), Some("Coffee"));
+		assert_eq!(out.proof.as_deref(), Some(GRIN1));
+		assert_eq!(out.order.as_deref(), Some("MM-ABC123"));
+		assert_eq!(out.notify.as_deref(), Some(NPUB));
+	}
+
+	#[test]
+	fn goblin_scheme_carries_proof_params() {
+		// The clickable `goblin:` deep link must parse identically to `nostr:`.
+		let query = format!("amount=2&proof={GRIN1}&order=MM-1&notify={NPUB}");
+		let nostr = parse(&format!("nostr:{NPROFILE}?{query}"));
+		let goblin = parse(&format!("goblin:{NPROFILE}?{query}"));
+		assert_eq!(goblin, nostr);
+		assert_eq!(goblin.proof.as_deref(), Some(GRIN1));
+	}
+
+	#[test]
+	fn proof_absent_leaves_none() {
+		// A normal magick / p2p payment carries no proof params: all three None.
+		let out = parse(&format!("nostr:{NPROFILE}?amount=1&memo=MM-1"));
+		assert_eq!(out.proof, None);
+		assert_eq!(out.order, None);
+		assert_eq!(out.notify, None);
+	}
+
+	#[test]
+	fn tgrin1_proof_accepted() {
+		let tgrin1 = format!("t{GRIN1}");
+		let out = parse(&format!("nostr:{NPROFILE}?proof={tgrin1}"));
+		assert_eq!(out.proof.as_deref(), Some(tgrin1.as_str()));
+	}
+
+	#[test]
+	fn bad_proof_dropped_fail_closed() {
+		// Not a slatepack address (wrong hrp, too short, or plain garbage) → the
+		// param is dropped and the payment degrades to a normal proof-less send.
+		for bad in [
+			"npub1abcdef",
+			"grin1",      // hrp only, no data
+			"grin1short", // data too short
+			"bc1qxyz",    // wrong network
+			"notanaddress",
+			"",
+		] {
+			let out = parse(&format!("nostr:{NPROFILE}?amount=1&proof={bad}"));
+			assert_eq!(out.proof, None, "expected {bad:?} proof to be dropped");
+			// Dropping proof never blocks the rest of the payment.
+			assert_eq!(out.amount.as_deref(), Some("1"));
+		}
+	}
+
+	#[test]
+	fn order_is_control_stripped_and_capped() {
+		// Percent-encoded control chars are removed; a routing key survives verbatim.
+		let out = parse(&format!("nostr:{NPROFILE}?order=MM-A%00B%0AC"));
+		assert_eq!(out.order.as_deref(), Some("MM-ABC"));
+		// Over-cap orders truncate at 64 bytes.
+		let long = "M".repeat(200);
+		let out = parse(&format!("nostr:{NPROFILE}?order={long}"));
+		assert_eq!(out.order.as_deref().map(|s| s.len()), Some(64));
+	}
+
+	#[test]
+	fn empty_order_dropped() {
+		assert_eq!(parse(&format!("nostr:{NPROFILE}?order=")).order, None);
+		// Whitespace-only after decode is also empty.
+		assert_eq!(parse(&format!("nostr:{NPROFILE}?order=%20%20")).order, None);
+	}
+
+	#[test]
+	fn bad_notify_dropped_fail_closed() {
+		for bad in [
+			"nprofile1abc",
+			"npub1",
+			"hex0123",
+			"grin1qqqqqqqqqqqqqqqqqqqqqq",
+			"",
+		] {
+			let out = parse(&format!("nostr:{NPROFILE}?amount=1&notify={bad}"));
+			assert_eq!(out.notify, None, "expected {bad:?} notify to be dropped");
+			assert_eq!(out.amount.as_deref(), Some("1"));
+		}
+	}
+
+	#[test]
+	fn proof_params_first_occurrence_wins() {
+		let out = parse(&format!(
+			"nostr:{NPROFILE}?order=MM-1&order=MM-EVIL&proof={GRIN1}&proof=grin1short"
+		));
+		assert_eq!(out.order.as_deref(), Some("MM-1"));
+		assert_eq!(out.proof.as_deref(), Some(GRIN1));
+	}
+
+	#[test]
+	fn old_wallet_forward_compat_unaffected() {
+		// The pre-existing recipient/amount/memo contract is unchanged when the
+		// new params ride alongside (a shipped old wallet just ignores them).
+		let out = parse(&format!(
+			"nostr:{NPROFILE}?amount=1.5&memo=MM-1&proof={GRIN1}&order=MM-1&notify={NPUB}"
+		));
+		assert_eq!(out.recipient, NPROFILE);
+		assert_eq!(out.amount.as_deref(), Some("1.5"));
+		assert_eq!(out.memo.as_deref(), Some("MM-1"));
 	}
 }

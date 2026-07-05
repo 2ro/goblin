@@ -81,6 +81,31 @@ pub struct TxNostrMeta {
 	pub received_rumor_id: Option<String>,
 	pub created_at: i64,
 	pub updated_at: i64,
+	/// Proof-on-request (frozen contract section 4.3): a proof address was
+	/// threaded into this send, so on finalize the wallet must produce and
+	/// deliver a real Grin payment proof. `false` for every ordinary send, so a
+	/// person-to-person payment carries and delivers nothing extra.
+	#[serde(default)]
+	pub proof_mode: bool,
+	/// The opaque order handle (the `order=` URI param, magick's `MM-<hex>`
+	/// invoice number). Echoed verbatim into the delivery events'
+	/// `payment-request` tag. The wallet never learns magick's internal orderId.
+	#[serde(default)]
+	pub proof_order: Option<String>,
+	/// The watcher's npub (the `notify=` URI param): the gift-wrap target for the
+	/// full proof delivery. `None` = no encrypted delivery target (plain receipt
+	/// still publishes).
+	#[serde(default)]
+	pub proof_notify: Option<String>,
+	/// The payment amount in integer nanogrin, persisted so the crash-safe
+	/// reconcile pass can rebuild the delivery-event `amount` tag without the
+	/// slate.
+	#[serde(default)]
+	pub proof_amount: Option<u64>,
+	/// Set once BOTH delivery events (plain receipt + gift-wrapped proof) have
+	/// been accepted by a relay. Until then the reconcile pass retries them.
+	#[serde(default)]
+	pub proof_delivered: bool,
 }
 
 /// A contact: another nostr user we can pay.

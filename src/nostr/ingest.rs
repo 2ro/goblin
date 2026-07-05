@@ -167,6 +167,11 @@ mod tests {
 			received_rumor_id: None,
 			created_at: unix_time(),
 			updated_at: unix_time(),
+			proof_mode: false,
+			proof_order: None,
+			proof_notify: None,
+			proof_amount: None,
+			proof_delivered: false,
 		}
 	}
 
