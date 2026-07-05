@@ -836,7 +836,7 @@ impl WalletsContent {
 			// Show button to see update information.
 			View::item_button(ui, CornerRadius::default(), NOTEPAD, None, || {
 				self.changelog_content = Some(ChangelogContent::new(update.changelog.clone()));
-				let title = format!("Grim {}", update.version);
+				let title = format!("Goblin {}", update.version);
 				Modal::new(ChangelogContent::MODAL_ID)
 					.position(ModalPosition::Center)
 					.title(title)

@@ -26,11 +26,11 @@ pub struct ChangelogContent {
 }
 
 /// Endpoint for GitHub repository.
-const GITHUB_URL: &'static str = "https://github.com/GetGrin/grim";
+const GITHUB_URL: &'static str = "https://github.com/2ro/goblin";
 /// Endpoint for Telegram releases channel.
-const TELEGRAM_URL: &'static str = "https://t.me/grim_releases";
-/// Endpoint for git repository.
-const GIT_URL: &'static str = "https://code.gri.mw/GUI/grim";
+const TELEGRAM_URL: &'static str = "https://t.me/goblinfamily";
+/// Endpoint for project website.
+const GIT_URL: &'static str = "https://goblin.st";
 
 impl ChangelogContent {
 	/// Create new content instance.
