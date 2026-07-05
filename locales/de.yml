@@ -416,6 +416,7 @@ goblin:
     to: "An"
     from: "Von"
     nostr: "nostr"
+    identity: "Identität"
     fee_none: "Keine"
     network_fee: "Netzwerkgebühr"
     privacy: "Privatsphäre"

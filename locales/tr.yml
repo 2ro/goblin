@@ -416,6 +416,7 @@ goblin:
     to: "Alıcı"
     from: "Gönderen"
     nostr: "nostr"
+    identity: "Kimlik"
     fee_none: "Yok"
     network_fee: "Ağ ücreti"
     privacy: "Gizlilik"

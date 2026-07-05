@@ -71,6 +71,9 @@ pub struct HeldIdentitySummary {
 	pub npub: String,
 	/// Claimed @name without the domain, if this identity has one.
 	pub name: Option<String>,
+	/// Full NIP-05 identifier ("user@domain") when this identity has a claimed
+	/// name, for the transaction detail view.
+	pub nip05: Option<String>,
 	/// Short human label (its @name, or "Primary").
 	pub label: String,
 	/// Whether this is the currently active identity.
@@ -744,6 +747,7 @@ impl Wallet {
 					pubkey_hex: entry.pubkey.clone(),
 					npub: identity.npub.clone(),
 					name,
+					nip05: identity.nip05.clone(),
 					label: entry.label.clone(),
 					active: entry.pubkey == index.active,
 				})

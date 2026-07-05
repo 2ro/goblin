@@ -1554,6 +1554,47 @@ impl GoblinWalletView {
 									};
 									w::info_row(ui, &t!("goblin.receipt.to"), &to);
 									w::info_row(ui, &t!("goblin.receipt.from"), &from);
+									// Which of the wallet's held nostr identities was active
+									// when this payment was received/sent — the "front door"
+									// it used. Uses the identity recorded on the tx
+									// (recipient_pubkey), falling back to the primary for
+									// pre-feature rows. NIP-05 name when claimed, else a
+									// truncated npub.
+									let owning_hex = d
+										.slate_id
+										.as_deref()
+										.and_then(|sid| {
+											wallet
+												.nostr_service()
+												.and_then(|s| s.store.tx_meta(sid))
+										})
+										.map(|m| m.recipient_pubkey)
+										.filter(|h| !h.is_empty());
+									let id_label = match owning_hex {
+										Some(hex) => wallet
+											.nostr_identities()
+											.iter()
+											.find(|i| i.pubkey_hex == hex)
+											.map(|i| {
+												i.nip05.clone().unwrap_or_else(|| {
+													data::short_npub(&i.pubkey_hex)
+												})
+											})
+											.unwrap_or_else(|| data::short_npub(&hex)),
+										// Legacy/primary row: the first held identity.
+										None => wallet
+											.nostr_identities()
+											.first()
+											.map(|i| {
+												i.nip05.clone().unwrap_or_else(|| {
+													data::short_npub(&i.pubkey_hex)
+												})
+											})
+											.unwrap_or_default(),
+									};
+									if !id_label.is_empty() {
+										w::info_row(ui, &t!("goblin.receipt.identity"), &id_label);
+									}
 								}
 								if let Some(npub) = &d.npub {
 									w::info_row(

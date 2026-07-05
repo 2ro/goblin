@@ -416,6 +416,7 @@ goblin:
     to: "收款方"
     from: "付款方"
     nostr: "nostr"
+    identity: "身份"
     fee_none: "无"
     network_fee: "网络费用"
     privacy: "隐私"

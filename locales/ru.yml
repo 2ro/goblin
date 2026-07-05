@@ -416,6 +416,7 @@ goblin:
     to: "Кому"
     from: "От"
     nostr: "nostr"
+    identity: "Личность"
     fee_none: "Нет"
     network_fee: "Сетевая комиссия"
     privacy: "Приватность"
