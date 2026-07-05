@@ -17,6 +17,7 @@ Goblin is a fork of the **Grim** egui GRIN wallet: it keeps Grim's full GRIN nod
 - **In-app identity** — a nostr payment key that is deliberately *not* part of your seed, so you can rotate it any time to stay unlinkable without touching your funds. An optional human-readable `name` comes from the goblin.st identity service.
 - **Private by construction** — GRIN's address-less, confidential chain; your payments and identity (nostr relays, NIP-05 lookups, price) are routed through [Tor](https://www.torproject.org), so who-pays-whom never touches the clear net. The GRIN node connection — block sync and broadcasting your transaction — is direct: public chain data, the same for everyone, and not tied to your identity. Keys, names and history stay on your device.
 - **Configurable amount pairing** — show balances against a world currency, Bitcoin, or sats (rates fetched over Tor), or turn the preview off.
+- **News on Home** - the latest post from the official Goblin news key (a [kind 30023](https://nostrbook.dev/kinds/30023) long-form article) appears on the Home screen; it stays hidden when there is nothing to show, and only ever shows the newest article.
 - **Cross-platform** — Linux, macOS, Windows, Android, built in pure Rust on [egui](https://github.com/emilk/egui).
 
 ## How a payment travels
