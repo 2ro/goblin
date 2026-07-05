@@ -182,6 +182,11 @@ nokhwa = { version = "0.10.10", default-features = false, features = ["input-msm
 
 [target.'cfg(target_os = "macos")'.dependencies]
 nokhwa = { version = "0.10.10", default-features = false, features = ["input-avfoundation", "output-threaded"] }
+## Objective-C runtime shim for the macOS `goblin:` deep-link bridge (src/lib.rs,
+## mac_deeplink). Already in the macOS build graph via nokhwa/cocoa/metal/wgpu, so
+## this pulls no new crate — it just lets us name it directly. Not compiled on any
+## other platform.
+objc = "0.2"
 
 [target.'cfg(not(target_os = "android"))'.dependencies]
 env_logger = "0.11.3"

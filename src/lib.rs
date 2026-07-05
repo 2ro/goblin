@@ -138,6 +138,13 @@ pub fn start(options: NativeOptions, app_creator: eframe::AppCreator) -> eframe:
 	if AppConfig::autostart_node() {
 		Node::start();
 	}
+	// macOS delivers `goblin:` link clicks as a kAEGetURL Apple Event, not on argv
+	// and not through any path winit/eframe surface. Install a handler for it here,
+	// BEFORE the event loop starts, so both a cold launch (event queued at start-up)
+	// and a warm click (app already running) route the URL into the same argv entry
+	// (`on_data`). No-op / not compiled on every other platform.
+	#[cfg(target_os = "macos")]
+	mac_deeplink::install();
 	// Launch graphical interface.
 	eframe::run_native("Goblin", options, app_creator)
 }
@@ -387,6 +394,99 @@ pub fn consume_incoming_data() -> Option<String> {
 pub fn on_data(data: String) {
 	let mut w_data = INCOMING_DATA.write();
 	*w_data = Some(data);
+}
+
+/// macOS-only bridge that turns a `goblin:` URL click into an [`on_data`] call.
+///
+/// On Linux/Windows the OS hands the URL to the app on argv (cold) or through the
+/// single-instance socket (warm); on Android it arrives as an Intent. macOS uses
+/// neither: it dispatches scheme clicks as a Carbon/Apple Event (`kAEGetURL`) that
+/// winit + eframe never surface, so the click would otherwise vanish. We install a
+/// handler for that event straight on the shared `NSAppleEventManager`, extract the
+/// URL string, and feed it to [`on_data`] — the exact same entry point argv uses,
+/// so the Goblin surface's per-frame router lands the pay URI on the prefilled
+/// review screen just as a scanned QR or a Linux argv link does.
+///
+/// This talks to the Objective-C runtime through the classic `objc` crate, which is
+/// already in the macOS build graph (nokhwa/cocoa/metal/wgpu all pull it), so it
+/// adds no new dependency and only a few KB of handler code. The Apple Event route
+/// deliberately avoids the `NSApplicationDelegate` that winit owns — registering our
+/// own `kAEGetURL` handler neither subclasses nor swizzles winit's delegate.
+#[cfg(target_os = "macos")]
+mod mac_deeplink {
+	use objc::declare::ClassDecl;
+	use objc::runtime::{Object, Sel};
+	use objc::{class, msg_send, sel};
+	use std::ffi::CStr;
+	use std::os::raw::c_char;
+	use std::sync::Once;
+
+	// Four-char codes (OSType) for the URL-open Apple Event.
+	const K_INTERNET_EVENT_CLASS: u32 = 0x4755_524c; // 'GURL'
+	const K_AE_GET_URL: u32 = 0x4755_524c; // 'GURL'
+	const KEY_DIRECT_OBJECT: u32 = 0x2d2d_2d2d; // '----'
+
+	/// `- (void)handleGetURLEvent:(NSAppleEventDescriptor *)event
+	///                withReplyEvent:(NSAppleEventDescriptor *)reply`.
+	extern "C" fn handle_get_url(
+		_this: &Object,
+		_cmd: Sel,
+		event: *mut Object,
+		_reply: *mut Object,
+	) {
+		if event.is_null() {
+			return;
+		}
+		unsafe {
+			// [[event paramDescriptorForKeyword:keyDirectObject] stringValue] -> NSString*.
+			let desc: *mut Object = msg_send![event, paramDescriptorForKeyword: KEY_DIRECT_OBJECT];
+			if desc.is_null() {
+				return;
+			}
+			let url: *mut Object = msg_send![desc, stringValue];
+			if url.is_null() {
+				return;
+			}
+			let utf8: *const c_char = msg_send![url, UTF8String];
+			if utf8.is_null() {
+				return;
+			}
+			let s = CStr::from_ptr(utf8).to_string_lossy().into_owned();
+			if !s.is_empty() {
+				crate::on_data(s);
+			}
+		}
+	}
+
+	/// Register the `kAEGetURL` handler on the shared `NSAppleEventManager`. Idempotent
+	/// (the handler class is built once); call before the event loop starts.
+	pub fn install() {
+		static ONCE: Once = Once::new();
+		ONCE.call_once(|| unsafe {
+			// Build a tiny NSObject subclass carrying the handler method.
+			let superclass = class!(NSObject);
+			let mut decl = match ClassDecl::new("GoblinAppleEventHandler", superclass) {
+				Some(d) => d,
+				None => return,
+			};
+			decl.add_method(
+				sel!(handleGetURLEvent:withReplyEvent:),
+				handle_get_url as extern "C" fn(&Object, Sel, *mut Object, *mut Object),
+			);
+			let cls = decl.register();
+
+			// One instance, intentionally leaked: it must outlive every event for the
+			// whole process lifetime, and the app never unregisters.
+			let handler: *mut Object = msg_send![cls, new];
+			let manager: *mut Object =
+				msg_send![class!(NSAppleEventManager), sharedAppleEventManager];
+			let _: () = msg_send![manager,
+				setEventHandler: handler
+				andSelector: sel!(handleGetURLEvent:withReplyEvent:)
+				forEventClass: K_INTERNET_EVENT_CLASS
+				andEventID: K_AE_GET_URL];
+		});
+	}
 }
 
 /// Unix-seconds timestamp of the most recent GUI frame. Background workers read
