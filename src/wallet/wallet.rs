@@ -2539,6 +2539,7 @@ async fn handle_task(w: &Wallet, t: WalletTask) {
 						proof_notify: if proof_mode { notify.clone() } else { None },
 						proof_amount: if proof_mode { Some(*a) } else { None },
 						proof_delivered: false,
+						receipt_sent: false,
 					});
 					let tx = w.retrieve_tx_by_id(None, Some(s.id));
 					w.send_creating.store(false, Ordering::Relaxed);
@@ -2548,9 +2549,34 @@ async fn handle_task(w: &Wallet, t: WalletTask) {
 							.await
 						{
 							Ok(event_id) => {
+								// Proof-on-request (frozen contract 4.3.1): publish the
+								// plain "payment sent" receipt HERE at S1 dispatch, the
+								// same moment the payment envelope was accepted by a relay
+								// and the wallet UI flips to "sent", not at finalize. This
+								// closes the buyer's double-send window: an offline merchant
+								// leaves finalize hours away, and until this receipt lands
+								// the order page still shows a scannable QR for a payment
+								// already made. The encrypted PROOF stays at finalize (it
+								// does not exist before then). On failure we leave
+								// receipt_sent=false so the reconcile pass retries it.
+								let mut receipt_sent = false;
+								if crate::nostr::receipt_due_at_dispatch(
+									proof_mode,
+									order.as_deref(),
+								) {
+									let ord = order.as_deref().unwrap_or_default();
+									match service.publish_receipt_sent(ord, *a).await {
+										Ok(()) => receipt_sent = true,
+										Err(e) => log::warn!(
+											"nostr: dispatch receipt publish failed for {}: {e}",
+											s.id
+										),
+									}
+								}
 								if let Some(mut meta) = service.store.tx_meta(&s.id.to_string()) {
 									meta.status = crate::nostr::NostrSendStatus::AwaitingS2;
 									meta.sent_event_id = Some(event_id);
+									meta.receipt_sent = receipt_sent;
 									meta.updated_at = crate::nostr::unix_time();
 									service.store.save_tx_meta(&meta);
 								}
@@ -2653,6 +2679,7 @@ async fn handle_task(w: &Wallet, t: WalletTask) {
 						proof_notify: None,
 						proof_amount: None,
 						proof_delivered: false,
+						receipt_sent: false,
 					});
 					let tx = w.retrieve_tx_by_id(None, Some(s.id));
 					w.invoice_creating.store(false, Ordering::Relaxed);
@@ -2903,6 +2930,7 @@ async fn handle_task(w: &Wallet, t: WalletTask) {
 							proof_notify: None,
 							proof_amount: None,
 							proof_delivered: false,
+							receipt_sent: false,
 						});
 						match service
 							.send_payment_dm(&request.npub, &text, None, &[])
@@ -2952,6 +2980,7 @@ async fn handle_task(w: &Wallet, t: WalletTask) {
 								proof_notify: None,
 								proof_amount: None,
 								proof_delivered: false,
+								receipt_sent: false,
 							});
 							match service
 								.send_payment_dm(&request.npub, &text, None, &[])

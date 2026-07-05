@@ -102,10 +102,22 @@ pub struct TxNostrMeta {
 	/// slate.
 	#[serde(default)]
 	pub proof_amount: Option<u64>,
-	/// Set once BOTH delivery events (plain receipt + gift-wrapped proof) have
-	/// been accepted by a relay. Until then the reconcile pass retries them.
+	/// Set once the encrypted proof delivery (frozen contract 4.3.2) has been
+	/// accepted by a relay. The plain receipt is tracked separately by
+	/// `receipt_sent`, since the two now publish at different lifecycle points
+	/// (receipt at dispatch, proof at finalize). Until then the reconcile pass
+	/// retries the proof delivery.
 	#[serde(default)]
 	pub proof_delivered: bool,
+	/// Set once the plain "payment sent" receipt (frozen contract 4.3.1) has been
+	/// accepted by a relay. Published at S1 DISPATCH, the moment the payment
+	/// envelope is accepted and the wallet UI flips to "sent", NOT at finalize,
+	/// so the buyer's order page loses its scannable QR the instant they pay and
+	/// the double-send window closes. One receipt per tx: this flag is the guard
+	/// against a duplicate at finalize. `false` for every ordinary (non-order)
+	/// send, which publishes no receipt at all.
+	#[serde(default)]
+	pub receipt_sent: bool,
 }
 
 /// A contact: another nostr user we can pay.
@@ -190,6 +202,16 @@ pub struct NewsItem {
 	/// before this field existed still deserialize.
 	#[serde(default)]
 	pub lang: Option<String>,
+}
+
+/// Whether the plain "payment sent" receipt (frozen contract 4.3.1) is due at
+/// S1 dispatch for this send. True only for an order-carrying send in proof
+/// mode: a person-to-person send (no `order=` context) publishes no receipt at
+/// all, at any lifecycle point. The receipt is the buyer's routing key back to
+/// the market (the `payment-request` tag echoes the order handle), so without an
+/// order handle there is nothing the market could match and nothing to publish.
+pub fn receipt_due_at_dispatch(proof_mode: bool, order: Option<&str>) -> bool {
+	proof_mode && order.is_some_and(|o| !o.trim().is_empty())
 }
 
 /// Current unix time in seconds.

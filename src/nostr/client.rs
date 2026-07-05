@@ -1532,71 +1532,103 @@ fn expiry_locks_outputs(direction: NostrTxDirection, status: NostrSendStatus) ->
 	)
 }
 
-/// Produce and deliver the proof-on-request artifacts for a finalized SEND
-/// (frozen contract 4.3): the plain "payment sent" receipt to the app relays and
-/// the encrypted proof delivery to the watcher. Idempotent and safe to retry: a
-/// duplicate plain receipt is harmless (the market dedupes by invoice) and the
-/// watcher dedupes its own inputs, so it is driven from both the finalize task
-/// and the reconcile pass. Returns true when every REQUIRED delivery for this
-/// context landed, so the caller can set `proof_delivered` and stop retrying.
-async fn deliver_proof(svc: &Arc<NostrService>, wallet: &Wallet, meta: &TxNostrMeta) -> bool {
+/// Whether the plain "payment sent" receipt (frozen contract 4.3.1) still owes a
+/// (re)publish for this tx. True for a proof-mode SEND whose payment envelope has
+/// been accepted by a relay (status past `Created`, the UI has flipped to
+/// "sent") but whose receipt has not landed yet. This is the crash/offline retry
+/// gate: the receipt normally publishes inline at dispatch, and this catches the
+/// case where that publish failed or the process crashed after dispatch. Once
+/// `receipt_sent` flips, it is never republished: the one-receipt-per-tx guard.
+fn receipt_retry_due(meta: &TxNostrMeta) -> bool {
+	meta.direction == NostrTxDirection::Sent
+		&& meta.proof_mode
+		&& !meta.receipt_sent
+		&& matches!(
+			meta.status,
+			NostrSendStatus::AwaitingS2 | NostrSendStatus::Finalized
+		)
+}
+
+/// Whether the encrypted proof delivery (frozen contract 4.3.2) still owes a
+/// (re)publish for this tx. True only for a FINALIZED proof-mode SEND whose proof
+/// delivery has not landed: the proof does not exist before finalize, so unlike
+/// the receipt it is never attempted at dispatch.
+fn proof_delivery_due(meta: &TxNostrMeta) -> bool {
+	meta.direction == NostrTxDirection::Sent
+		&& meta.status == NostrSendStatus::Finalized
+		&& meta.proof_mode
+		&& !meta.proof_delivered
+}
+
+/// Publish the plain "payment sent" receipt for a dispatched proof-mode send and,
+/// on success, flip `receipt_sent` so it is never republished. Retry-safe: driven
+/// from the reconcile pass whenever [`receipt_retry_due`] holds.
+async fn deliver_receipt(svc: &Arc<NostrService>, meta: &TxNostrMeta) {
 	let Some(order) = meta.proof_order.clone() else {
-		// No order handle => no `payment-request` routing key the market can match.
-		// Nothing deliverable; treat as done so we don't retry a dead context.
+		return;
+	};
+	let amount = meta.proof_amount.unwrap_or(0);
+	match svc.publish_receipt_sent(&order, amount).await {
+		Ok(()) => {
+			let mut updated = meta.clone();
+			updated.receipt_sent = true;
+			updated.updated_at = unix_time();
+			svc.store.save_tx_meta(&updated);
+		}
+		Err(e) => warn!(
+			"nostr: reconcile receipt publish failed for {}: {e}",
+			meta.slate_id
+		),
+	}
+}
+
+/// Deliver the encrypted proof-on-request artifact for a finalized SEND (frozen
+/// contract 4.3.2): the gift-wrapped proof to the watcher's npub. The plain
+/// "payment sent" receipt is deliberately NOT published here; it already went
+/// out at S1 dispatch (4.3.1), gated by `receipt_sent`, so exactly one receipt
+/// exists per tx and finalize never duplicates it. Idempotent/retry-safe (the
+/// watcher dedupes its inputs), so it is driven from both the finalize task and
+/// the reconcile pass. Returns true when the required delivery for this context
+/// landed, so the caller can set `proof_delivered` and stop retrying.
+async fn deliver_proof(svc: &Arc<NostrService>, wallet: &Wallet, meta: &TxNostrMeta) -> bool {
+	// No watcher target (4.1) => nothing to encrypt. The dispatch receipt was the
+	// whole job; treat as done so the reconcile pass stops retrying.
+	let Some(notify) = meta.proof_notify.clone() else {
+		return true;
+	};
+	let Some(order) = meta.proof_order.clone() else {
+		// No order handle => no `payment-request` routing key the watcher can match.
 		warn!(
-			"nostr: proof mode without order handle for {}, skipping delivery",
+			"nostr: proof mode without order handle for {}, skipping proof delivery",
 			meta.slate_id
 		);
 		return true;
 	};
 	let amount = meta.proof_amount.unwrap_or(0);
-
-	// 1. Plain receipt (instant page feedback). Always attempted in proof mode.
-	let receipt_ok = match svc.publish_receipt_sent(&order, amount).await {
-		Ok(()) => true,
-		Err(e) => {
-			warn!(
-				"nostr: proof receipt publish failed for {}: {e}",
-				meta.slate_id
-			);
-			false
-		}
+	let Ok(slate_id) = uuid::Uuid::parse_str(&meta.slate_id) else {
+		return false;
 	};
-
-	// 2. Encrypted proof delivery: only when a watcher target AND a real proof
-	// exist. If `notify` is absent (4.1), the plain receipt alone is the whole
-	// job and there is nothing to encrypt.
-	let wrap_ok = match &meta.proof_notify {
-		None => true,
-		Some(notify) => {
-			let Ok(slate_id) = uuid::Uuid::parse_str(&meta.slate_id) else {
-				return false;
-			};
-			match wallet.payment_proof_delivery(slate_id) {
-				Some((json, kernel_hex)) => {
-					match svc
-						.deliver_proof_wrap(notify, &order, amount, &kernel_hex, &json)
-						.await
-					{
-						Ok(()) => true,
-						Err(e) => {
-							warn!("nostr: proof delivery failed for {}: {e}", meta.slate_id);
-							false
-						}
-					}
-				}
-				None => {
-					warn!(
-						"nostr: no payment proof retrievable yet for {}",
-						meta.slate_id
-					);
+	match wallet.payment_proof_delivery(slate_id) {
+		Some((json, kernel_hex)) => {
+			match svc
+				.deliver_proof_wrap(&notify, &order, amount, &kernel_hex, &json)
+				.await
+			{
+				Ok(()) => true,
+				Err(e) => {
+					warn!("nostr: proof delivery failed for {}: {e}", meta.slate_id);
 					false
 				}
 			}
 		}
-	};
-
-	receipt_ok && wrap_ok
+		None => {
+			warn!(
+				"nostr: no payment proof retrievable yet for {}",
+				meta.slate_id
+			);
+			false
+		}
+	}
 }
 
 /// Re-dispatch our pending outgoing messages (crash/offline recovery).
@@ -1606,15 +1638,22 @@ async fn reconcile(svc: &Arc<NostrService>, wallet: &Wallet) {
 		if now - meta.created_at > RESEND_WINDOW_SECS {
 			continue;
 		}
-		// Proof-on-request delivery retry (frozen contract 4.3, W4): a finalized
-		// send in proof mode whose delivery events have not all landed yet. Retried
-		// on every reconcile pass until `proof_delivered` flips, exactly like the
-		// S2 replies above it.
-		if meta.direction == NostrTxDirection::Sent
-			&& meta.status == NostrSendStatus::Finalized
-			&& meta.proof_mode
-			&& !meta.proof_delivered
-		{
+		// Receipt retry (frozen contract 4.3.1): the plain "payment sent" receipt
+		// normally publishes inline at dispatch, the moment the UI flips to "sent".
+		// This catches the crash/offline case where that publish failed. Retried
+		// every pass until `receipt_sent` flips, and independent of the proof
+		// delivery below: the receipt closes the buyer's double-send window at
+		// "sent", the proof waits for finalize. A Finalized tx can owe both, so this
+		// does NOT `continue`; it falls through to the proof block.
+		if receipt_retry_due(&meta) {
+			deliver_receipt(svc, &meta).await;
+		}
+		// Proof-on-request delivery retry (frozen contract 4.3.2, W4): a finalized
+		// send in proof mode whose encrypted proof delivery has not landed yet.
+		// Retried on every reconcile pass until `proof_delivered` flips.
+		if proof_delivery_due(&meta) {
+			// Re-read: deliver_receipt above may have flipped receipt_sent on disk.
+			let meta = svc.store.tx_meta(&meta.slate_id).unwrap_or(meta);
 			if deliver_proof(svc, wallet, &meta).await {
 				let mut updated = meta.clone();
 				updated.proof_delivered = true;
@@ -2087,6 +2126,7 @@ async fn handle_wrap(svc: &Arc<NostrService>, wallet: &Wallet, event: Event) {
 						proof_notify: None,
 						proof_amount: None,
 						proof_delivered: false,
+						receipt_sent: false,
 					});
 					// Commit dedup markers now the receive is durable, BEFORE
 					// the reply + sync tail. A crash there must not let this
@@ -2184,16 +2224,15 @@ async fn handle_wrap(svc: &Arc<NostrService>, wallet: &Wallet, event: Event) {
 						contact.last_paid_at = Some(unix_time());
 						svc.store.save_contact(&contact);
 					}
-					// Proof-on-request delivery (frozen contract 4.3): this finalized
+					// Proof-on-request delivery (frozen contract 4.3.2): this finalized
 					// SEND (our own payment) now holds a real, receiver-signed Grin
-					// payment proof. If it was sent in proof mode, publish the plain
-					// receipt + the encrypted proof delivery. On partial failure we
-					// leave proof_delivered=false so the reconcile pass retries.
+					// payment proof. Deliver the ENCRYPTED proof to the watcher here.
+					// The plain "payment sent" receipt is NOT (re)published at finalize:
+					// it already went out at S1 dispatch (4.3.1), gated by receipt_sent,
+					// so there is exactly one receipt per tx. On failure we leave
+					// proof_delivered=false so the reconcile pass retries.
 					if let Some(mut m) = svc.store.tx_meta(&slate.id.to_string()) {
-						if m.direction == NostrTxDirection::Sent
-							&& m.proof_mode && !m.proof_delivered
-							&& deliver_proof(svc, wallet, &m).await
-						{
+						if proof_delivery_due(&m) && deliver_proof(svc, wallet, &m).await {
 							m.proof_delivered = true;
 							m.updated_at = unix_time();
 							svc.store.save_tx_meta(&m);
@@ -2335,5 +2374,85 @@ mod tests {
 		assert!(!expiry_locks_outputs(RequestedByUs, AwaitingI2));
 		assert!(!expiry_locks_outputs(RequestedByUs, Created));
 		assert!(!expiry_locks_outputs(RequestedOfUs, ReceivedNoReply));
+	}
+
+	/// A proof-mode SEND meta at a given lifecycle status, order context present,
+	/// no watcher target (the receipt-only shape). Callers tweak fields per case.
+	fn sample_send_meta(status: NostrSendStatus) -> TxNostrMeta {
+		TxNostrMeta {
+			ver: 1,
+			slate_id: "00000000-0000-0000-0000-000000000000".to_string(),
+			npub: "npub".to_string(),
+			direction: NostrTxDirection::Sent,
+			note: None,
+			status,
+			sent_event_id: None,
+			received_rumor_id: None,
+			created_at: 0,
+			updated_at: 0,
+			proof_mode: true,
+			proof_order: Some("MM-abcd".to_string()),
+			proof_notify: None,
+			proof_amount: Some(1_000),
+			proof_delivered: false,
+			receipt_sent: false,
+		}
+	}
+
+	#[test]
+	fn receipt_at_dispatch_only_with_order_context() {
+		// With order context (proof mode + order handle) the receipt publishes at
+		// dispatch, the moment the UI flips to "sent".
+		assert!(receipt_due_at_dispatch(true, Some("MM-abcd")));
+		// A person-to-person send carries no order: no receipt at all, ever.
+		assert!(!receipt_due_at_dispatch(false, None));
+		assert!(!receipt_due_at_dispatch(false, Some("MM-abcd")));
+		// Proof mode but an empty/blank order handle is not routable → no receipt.
+		assert!(!receipt_due_at_dispatch(true, None));
+		assert!(!receipt_due_at_dispatch(true, Some("")));
+		assert!(!receipt_due_at_dispatch(true, Some("   ")));
+	}
+
+	#[test]
+	fn receipt_retry_gated_by_flag_no_duplicate() {
+		// Dispatched (envelope accepted, UI "sent") but receipt not landed → retry.
+		let m = sample_send_meta(NostrSendStatus::AwaitingS2);
+		assert!(receipt_retry_due(&m));
+		// A finalized send may still owe an un-landed receipt → still retried.
+		let m = sample_send_meta(NostrSendStatus::Finalized);
+		assert!(receipt_retry_due(&m));
+		// Once the receipt has landed, it is NEVER republished: the guard against
+		// a duplicate at finalize (and on every later reconcile pass).
+		let mut m = sample_send_meta(NostrSendStatus::Finalized);
+		m.receipt_sent = true;
+		assert!(!receipt_retry_due(&m));
+		// Not yet dispatched (Created / SendFailed): the UI has not flipped to
+		// "sent", so nothing is published yet.
+		let m = sample_send_meta(NostrSendStatus::Created);
+		assert!(!receipt_retry_due(&m));
+		let m = sample_send_meta(NostrSendStatus::SendFailed);
+		assert!(!receipt_retry_due(&m));
+		// A non-proof (person-to-person) send never publishes a receipt.
+		let mut m = sample_send_meta(NostrSendStatus::AwaitingS2);
+		m.proof_mode = false;
+		assert!(!receipt_retry_due(&m));
+	}
+
+	#[test]
+	fn proof_delivery_only_at_finalize() {
+		// The proof does not exist before finalize, so it is due ONLY once
+		// finalized (never at dispatch/AwaitingS2).
+		let m = sample_send_meta(NostrSendStatus::Finalized);
+		assert!(proof_delivery_due(&m));
+		let m = sample_send_meta(NostrSendStatus::AwaitingS2);
+		assert!(!proof_delivery_due(&m));
+		// Already delivered → not retried.
+		let mut m = sample_send_meta(NostrSendStatus::Finalized);
+		m.proof_delivered = true;
+		assert!(!proof_delivery_due(&m));
+		// Non-proof send delivers nothing.
+		let mut m = sample_send_meta(NostrSendStatus::Finalized);
+		m.proof_mode = false;
+		assert!(!proof_delivery_due(&m));
 	}
 }

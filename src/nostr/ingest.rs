@@ -172,6 +172,7 @@ mod tests {
 			proof_notify: None,
 			proof_amount: None,
 			proof_delivered: false,
+			receipt_sent: false,
 		}
 	}
 
