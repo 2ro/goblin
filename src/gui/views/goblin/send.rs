@@ -210,6 +210,78 @@ impl SendFlow {
 		self.stage = Stage::Recipient;
 	}
 
+	/// Build a send flow from a scanned/deep-linked payment payload and land it
+	/// on the SAME screen a scanned QR would: a full checkout (recipient key +
+	/// amount) opens the prefilled review directly; anything else drops into the
+	/// recipient search with any amount/memo prefilled. Used by the `goblin:` /
+	/// `nostr:` deep-link handler so a web "Open in Goblin" button reaches the
+	/// exact QR-to-review destination. `now` is the egui input time (debounce seed
+	/// for the search path).
+	pub fn from_deeplink(uri: &str, wallet: &Wallet, now: f64) -> Self {
+		let mut flow = Self::default();
+		flow.apply_scan(uri, wallet, now);
+		flow
+	}
+
+	/// Apply a scanned/deep-linked payment payload (npub / `nostr:` / `goblin:`
+	/// URI / @handle, with optional amount+memo), mutating this flow exactly as
+	/// the camera scan path does. Shared by the QR scanner and the deep-link
+	/// handler so both spell the same destination. `now` seeds the search-box
+	/// debounce.
+	fn apply_scan(&mut self, text: &str, wallet: &Wallet, now: f64) {
+		match recognize_scan(text) {
+			// GoblinPay checkout / full pay link: recipient key AND amount are
+			// both known, so skip discovery and open review directly, prefilled.
+			// (Owner-ordered: a merchant checkout shouldn't re-walk the recipient
+			// search.) A cheap LOCAL contact lookup supplies a friendly name when
+			// we already know them; otherwise the short npub — no network
+			// resolution on this path.
+			ScanPrefill::Review {
+				hex,
+				relay_hints,
+				amount,
+				memo,
+			} => {
+				let name = wallet
+					.nostr_service()
+					.and_then(|s| s.store.contact(&hex).map(|c| display_name(&c)))
+					.unwrap_or_else(|| short_npub(&hex));
+				self.recipient = Some(Recipient {
+					name,
+					npub: hex,
+					relay_hints,
+				});
+				self.amount = amount;
+				if let Some(memo) = memo {
+					self.note = memo;
+				}
+				self.error = None;
+				self.stage = Stage::Review;
+			}
+			// Only a recipient (or a name/@handle needing resolution): drop it
+			// into the search box so the picker's debounced lookup resolves +
+			// verifies it like typed input, exactly as before. Any amount/memo
+			// still prefill.
+			ScanPrefill::Search {
+				recipient,
+				amount,
+				memo,
+			} => {
+				self.search = recipient;
+				self.input_changed_at = now;
+				self.lookup_query.clear();
+				self.net_candidate = None;
+				if let Some(amount) = amount {
+					self.amount = amount;
+				}
+				if let Some(memo) = memo {
+					self.note = memo;
+				}
+				self.stage = Stage::Recipient;
+			}
+		}
+	}
+
 	/// Render the flow. Returns true when the flow is finished (close it).
 	pub fn ui(
 		&mut self,
@@ -680,59 +752,10 @@ impl SendFlow {
 			// seed words or slatepack contents into the search box.
 			match &result {
 				QrScanResult::Text(text) => {
-					// Classify the scan. UNTRUSTED input: the parser is pure and
-					// fail-closed, and every path still gates the send on the review
-					// screen (the user confirms) — nothing auto-SENDS.
-					match recognize_scan(text) {
-						// GoblinPay checkout QR: recipient key AND amount are both
-						// known, so skip discovery and open review directly, prefilled.
-						// (Owner-ordered: a merchant checkout shouldn't re-walk the
-						// recipient search.) A cheap LOCAL contact lookup supplies a
-						// friendly name when we already know them; otherwise the short
-						// npub — no network resolution on this path.
-						ScanPrefill::Review {
-							hex,
-							relay_hints,
-							amount,
-							memo,
-						} => {
-							let name = wallet
-								.nostr_service()
-								.and_then(|s| s.store.contact(&hex).map(|c| display_name(&c)))
-								.unwrap_or_else(|| short_npub(&hex));
-							self.recipient = Some(Recipient {
-								name,
-								npub: hex,
-								relay_hints,
-							});
-							self.amount = amount;
-							if let Some(memo) = memo {
-								self.note = memo;
-							}
-							self.error = None;
-							self.stage = Stage::Review;
-						}
-						// Only a recipient (or a name/@handle needing resolution):
-						// drop it into the search box so the picker's debounced lookup
-						// resolves + verifies it like typed input, exactly as before.
-						// Any amount/memo still prefill.
-						ScanPrefill::Search {
-							recipient,
-							amount,
-							memo,
-						} => {
-							self.search = recipient;
-							self.input_changed_at = ui.input(|i| i.time);
-							self.lookup_query.clear();
-							self.net_candidate = None;
-							if let Some(amount) = amount {
-								self.amount = amount;
-							}
-							if let Some(memo) = memo {
-								self.note = memo;
-							}
-						}
-					}
+					// Classify + apply the scan. UNTRUSTED input: the parser is pure
+					// and fail-closed, and every path still gates the send on the
+					// review screen (the user confirms) — nothing auto-SENDS.
+					self.apply_scan(text, wallet, ui.input(|i| i.time));
 				}
 				_ => self.error = Some(t!("goblin.send.scan_not_recipient").to_string()),
 			}
@@ -1630,6 +1653,43 @@ mod tests {
 				assert!(relay_hints.is_empty());
 			}
 			other => panic!("expected Review, got {other:?}"),
+		}
+	}
+
+	#[test]
+	fn goblin_scheme_pay_link_goes_straight_to_review() {
+		// The `goblin:` deep-link scheme (web "Open in Goblin" buttons) must
+		// classify identically to the `nostr:` QR payload: a full pay link
+		// (key + amount) lands on the prefilled review.
+		let uri = format!("goblin:{NPUB}?amount=1.5&memo=MM-ABC123");
+		match recognize_scan(&uri) {
+			ScanPrefill::Review {
+				hex,
+				amount,
+				memo,
+				relay_hints,
+			} => {
+				assert_eq!(hex.len(), 64);
+				assert_eq!(amount, "1.5");
+				assert_eq!(memo.as_deref(), Some("MM-ABC123"));
+				assert!(relay_hints.is_empty());
+			}
+			other => panic!("expected Review, got {other:?}"),
+		}
+	}
+
+	#[test]
+	fn goblin_and_nostr_schemes_classify_equivalently() {
+		// Same recipient + amount + memo under either scheme yields the same
+		// classification and the same extracted values.
+		for scheme in ["goblin", "nostr"] {
+			match recognize_scan(&format!("{scheme}:{NPUB}?amount=2&memo=Hi")) {
+				ScanPrefill::Review { amount, memo, .. } => {
+					assert_eq!(amount, "2");
+					assert_eq!(memo.as_deref(), Some("Hi"));
+				}
+				other => panic!("{scheme}: expected Review, got {other:?}"),
+			}
 		}
 	}
 

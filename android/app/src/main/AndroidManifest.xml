@@ -59,6 +59,16 @@
                 <data android:pathPattern=".*\\.slatepack" />
             </intent-filter>
 
+            <!-- Goblin payment deep link: web "Open in Goblin" buttons and
+                 goblin: QR/links open the wallet straight to the send-review
+                 screen. BROWSABLE so a browser/click can resolve it. -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="goblin" />
+            </intent-filter>
+
             <meta-data android:name="android.app.lib_name" android:value="grim" />
         </activity>
 

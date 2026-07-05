@@ -466,6 +466,17 @@ impl WalletsContent {
 		if !Content::is_dual_panel_mode(ui.ctx()) && Content::is_network_panel_open() {
 			Content::toggle_network_panel();
 		}
+		// Route a Goblin payment deep link (`goblin:` / `nostr:` pay URI) to the
+		// send-review flow instead of the slatepack message handler: stash it for
+		// the Goblin surface to open, and select/open the wallet with NO message
+		// so the surface shows. Same destination as scanning a checkout QR.
+		let data = match data {
+			Some(d) if crate::nostr::payuri::is_pay_uri(&d) => {
+				crate::set_pending_pay_uri(d);
+				None
+			}
+			other => other,
+		};
 		// Pass data to single wallet or show wallets selection.
 		if wallets_size == 1 {
 			let w = self.wallets.list()[0].clone();

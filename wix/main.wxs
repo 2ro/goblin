@@ -59,6 +59,22 @@
                   </Extension>
                 </ProgId>
             </Component>
+
+            <!-- Register the goblin: URL protocol so web "Open in Goblin" pay
+                 buttons launch the wallet with the payment link as argv[1],
+                 which routes to the prefilled send-review screen. -->
+            <Component Id="GoblinUrlProtocol" Guid="a4f1c2e8-9b3d-4e6a-8c7f-2d1b5e9a0c34">
+                <RegistryKey Root="HKCR" Key="goblin">
+                    <RegistryValue Type="string" Value="URL:Goblin Protocol" KeyPath="yes"/>
+                    <RegistryValue Name="URL Protocol" Type="string" Value=""/>
+                    <RegistryKey Key="shell\open\command">
+                        <RegistryValue Type="string" Value="&quot;[#goblin.exe]&quot; &quot;%1&quot;"/>
+                    </RegistryKey>
+                    <RegistryKey Key="DefaultIcon">
+                        <RegistryValue Type="string" Value="[#goblin.exe]"/>
+                    </RegistryKey>
+                </RegistryKey>
+            </Component>
         </DirectoryRef>
 
         <!-- Step 2: Add the shortcut to your installer package -->
@@ -77,6 +93,7 @@
 
         <Feature Id="MainApplication" Title="Goblin" Level="1">
             <ComponentRef Id="goblin.exe" />
+            <ComponentRef Id="GoblinUrlProtocol" />
             <ComponentRef Id="License" />
             <!-- Step 3: Tell WiX to install the shortcut -->
             <ComponentRef Id="ApplicationShortcutDesktop" />

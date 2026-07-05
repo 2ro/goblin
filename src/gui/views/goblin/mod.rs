@@ -432,6 +432,14 @@ impl GoblinWalletView {
 			self.advanced = AdvancedState::default();
 		}
 
+		// A pending payment deep link (`goblin:` / `nostr:` pay URI, routed here
+		// from an OS launch/open) opens a prefilled send-review flow — the exact
+		// destination a scanned checkout QR lands on.
+		if let Some(uri) = crate::take_pending_pay_uri() {
+			let now = ui.input(|i| i.time);
+			self.send = Some(SendFlow::from_deeplink(&uri, wallet, now));
+		}
+
 		// Send flow takes the full surface when active.
 		if let Some(send) = &mut self.send {
 			let done = send.ui(ui, wallet, cb, &mut self.avatars);

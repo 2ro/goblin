@@ -235,6 +235,16 @@ public class MainActivity extends GameActivity {
         String action = intent.getAction();
         // Check if file was open with the application.
         if (action != null && action.equals(Intent.ACTION_VIEW)) {
+            Uri data = intent.getData();
+            String scheme = data != null ? data.getScheme() : null;
+            // Goblin payment deep link (goblin: / nostr:): pass the URI text
+            // straight to native code, which routes it to the send-review flow.
+            // These are NOT files, so they must skip the file-descriptor path.
+            if (scheme != null && (scheme.equalsIgnoreCase("goblin")
+                    || scheme.equalsIgnoreCase("nostr"))) {
+                onData(data.toString());
+                return;
+            }
             Intent i = getIntent();
             i.setData(intent.getData());
             setIntent(i);

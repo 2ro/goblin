@@ -455,6 +455,25 @@ pub fn notify_payment_requested(name: &str, amount: &str) {
 lazy_static! {
 	/// Data provided from deeplink or opened file.
 	pub static ref INCOMING_DATA: Arc<RwLock<Option<String>>> = Arc::new(RwLock::new(None));
+	/// A pending `goblin:` / `nostr:` payment deep link, waiting for the Goblin
+	/// wallet surface to open its send-review flow. Separate from
+	/// [`INCOMING_DATA`] (slatepack messages / opened files): a payment link is
+	/// routed here so it lands on the prefilled review screen rather than the
+	/// slatepack message handler. Consumed by the Goblin view once a wallet is
+	/// open and showing.
+	static ref PENDING_PAY_URI: Arc<RwLock<Option<String>>> = Arc::new(RwLock::new(None));
+}
+
+/// Stash a payment deep link for the Goblin surface to open (see
+/// [`take_pending_pay_uri`]). The most recent link wins.
+pub fn set_pending_pay_uri(uri: String) {
+	*PENDING_PAY_URI.write() = Some(uri);
+}
+
+/// Take (and clear) a pending payment deep link, if any. The Goblin wallet view
+/// polls this each frame and opens a prefilled send-review flow for it.
+pub fn take_pending_pay_uri() -> Option<String> {
+	PENDING_PAY_URI.write().take()
 }
 
 /// Callback from Java code with passed data.

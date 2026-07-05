@@ -12,12 +12,16 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Pay-URI parser for scanned payment QRs.
+//! Pay-URI parser for scanned payment QRs and payment deep links.
 //!
-//! A GoblinPay checkout QR extends the plain `nostr:` URI with an optional
-//! amount (and memo):
+//! A GoblinPay checkout QR (or an "Open in Goblin" web button) carries an
+//! optional amount (and memo) on the recipient, under either the `goblin:`
+//! scheme (Goblin's own registered deep-link scheme, so the OS routes it to the
+//! wallet) or the plain `nostr:` scheme (what a QR/social payload spells). Both
+//! are the SAME payload — only the scheme differs:
 //!
 //! ```text
+//! goblin:<nprofile-or-npub>?amount=<decimal GRIN>&memo=<percent-encoded>
 //! nostr:<nprofile-or-npub>?amount=<decimal GRIN>&memo=<percent-encoded>
 //! ```
 //!
@@ -38,6 +42,11 @@ use grin_core::core::amount_from_hr_string;
 const MAX_URI_LEN: usize = 4096;
 /// Memo byte cap (post control-strip), display / tx-message only.
 const MAX_MEMO_BYTES: usize = 256;
+
+/// Schemes that unlock amount/memo parsing. `goblin:` is Goblin's registered
+/// deep-link scheme (web "Open in Goblin" buttons, so the OS opens the wallet);
+/// `nostr:` is the equivalent QR/social payload. Both spell the same payment.
+const PAY_SCHEMES: [&str; 2] = ["goblin:", "nostr:"];
 
 /// A parsed pay-URI. `recipient` is fed to the existing resolver as-is (the
 /// bech32/name that used to go straight into the search box). `amount` is the
@@ -74,11 +83,11 @@ pub fn parse(scanned: &str) -> PayUri {
 		return PayUri::bare(String::new());
 	}
 
-	// Strict scheme: only the `nostr:` prefix (case-insensitive) unlocks
+	// Strict scheme: only a `goblin:`/`nostr:` prefix (case-insensitive) unlocks
 	// amount/memo parsing, matching the scanner's existing strip logic. Any
 	// other payload (a bare npub, or some other scheme) is returned verbatim,
 	// exactly as the scanner treated it before pay-URIs existed.
-	let rest = match strip_nostr_prefix(text) {
+	let rest = match strip_pay_scheme(text) {
 		Some(rest) => rest,
 		None => return PayUri::bare(text.to_string()),
 	};
@@ -115,15 +124,27 @@ pub fn parse(scanned: &str) -> PayUri {
 	}
 }
 
-/// Strip a case-insensitive `nostr:` scheme prefix, returning the remainder.
-/// Byte-safe against a leading multibyte char (no `[..6]` slice panic).
-fn strip_nostr_prefix(text: &str) -> Option<&str> {
-	let head = text.get(..6)?;
-	if head.eq_ignore_ascii_case("nostr:") {
-		Some(&text[6..])
-	} else {
-		None
+/// Strip a case-insensitive payment scheme prefix (`goblin:` or `nostr:`),
+/// returning the remainder. Byte-safe against a leading multibyte char (the
+/// `text.get(..n)` guards against a `[..n]` slice panic).
+fn strip_pay_scheme(text: &str) -> Option<&str> {
+	for scheme in PAY_SCHEMES {
+		let n = scheme.len();
+		if let Some(head) = text.get(..n) {
+			if head.eq_ignore_ascii_case(scheme) {
+				return Some(&text[n..]);
+			}
+		}
 	}
+	None
+}
+
+/// True when `scanned` (once trimmed) carries a Goblin payment scheme
+/// (`goblin:` or `nostr:`) — i.e. a payment deep link rather than a slatepack
+/// message or opened file. Used to route an incoming argv/intent payload to the
+/// send-review flow instead of the slatepack message handler.
+pub fn is_pay_uri(scanned: &str) -> bool {
+	strip_pay_scheme(scanned.trim()).is_some()
 }
 
 /// Validate an `amount` value: percent-decode, then accept it ONLY if the
@@ -229,6 +250,46 @@ mod tests {
 		let out = parse(&format!("NOSTR:{NPROFILE}?amount=2"));
 		assert_eq!(out.recipient, NPROFILE);
 		assert_eq!(out.amount.as_deref(), Some("2"));
+	}
+
+	#[test]
+	fn goblin_scheme_equivalent_to_nostr() {
+		// The `goblin:` deep-link scheme is the same payload as `nostr:` — it
+		// MUST parse to the identical recipient / amount / memo. This is the
+		// contract behind the web "Open in Goblin" buttons.
+		let nostr = parse(&format!("nostr:{NPROFILE}?amount=1.5&memo=Coffee"));
+		let goblin = parse(&format!("goblin:{NPROFILE}?amount=1.5&memo=Coffee"));
+		assert_eq!(goblin, nostr);
+		assert_eq!(goblin.recipient, NPROFILE);
+		assert_eq!(goblin.amount.as_deref(), Some("1.5"));
+		assert_eq!(goblin.memo.as_deref(), Some("Coffee"));
+	}
+
+	#[test]
+	fn goblin_scheme_case_insensitive() {
+		let out = parse(&format!("GOBLIN:{NPROFILE}?amount=2"));
+		assert_eq!(out.recipient, NPROFILE);
+		assert_eq!(out.amount.as_deref(), Some("2"));
+	}
+
+	#[test]
+	fn bare_goblin_nprofile_unchanged() {
+		let out = parse(&format!("goblin:{NPROFILE}"));
+		assert_eq!(out.recipient, NPROFILE);
+		assert_eq!(out.amount, None);
+		assert_eq!(out.memo, None);
+	}
+
+	#[test]
+	fn is_pay_uri_recognizes_both_schemes() {
+		assert!(is_pay_uri(&format!("goblin:{NPROFILE}?amount=1")));
+		assert!(is_pay_uri(&format!("nostr:{NPROFILE}")));
+		assert!(is_pay_uri(&format!("  GOBLIN:{NPROFILE}  ")));
+		// A slatepack message / bare key / other scheme is NOT a pay URI.
+		assert!(!is_pay_uri("BEGINSLATEPACK. abc DEFG. ENDSLATEPACK."));
+		assert!(!is_pay_uri("npub1abcdef"));
+		assert!(!is_pay_uri("bitcoin:bc1qxyz?amount=1"));
+		assert!(!is_pay_uri(""));
 	}
 
 	#[test]
