@@ -2144,7 +2144,13 @@ async fn handle_wrap(svc: &Arc<NostrService>, wallet: &Wallet, event: Event) {
 					{
 						let name =
 							crate::gui::views::goblin::data::contact_title(&svc.store, &sender_hex);
-						let amount = amount_to_hr_string(slate.amount, true);
+						// Honor the "hide amounts" setting: keep the numeric grin
+						// out of the received-payment alert when the user opted in.
+						let amount = if crate::AppConfig::hide_amounts() {
+							"•••".to_string()
+						} else {
+							amount_to_hr_string(slate.amount, true)
+						};
 						crate::notify_payment_received(&name, &amount);
 					}
 					match svc

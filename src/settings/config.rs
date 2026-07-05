@@ -94,6 +94,10 @@ pub struct AppConfig {
 	/// Application update information.
 	app_update: Option<AppUpdate>,
 
+	/// Hide received grin amounts in payment notifications/alerts. Default false
+	/// so existing configs (and new wallets) keep showing the amount.
+	hide_amounts: Option<bool>,
+
 	/// Last-known-good Nym ENTRY gateway (base58 identity). Only the gateway
 	/// CHOICE is remembered — the mixnet keys stay ephemeral — so a warm reconnect
 	/// can skip re-picking a (possibly dead) random first hop.
@@ -212,6 +216,7 @@ impl Default for AppConfig {
 			// update check — payments, relays and identity still stay mixnet-only.
 			check_updates: Some(true),
 			app_update: None,
+			hide_amounts: None,
 			nym_entry_gateway: None,
 			nym_last_ipr: None,
 		}
@@ -622,6 +627,19 @@ impl AppConfig {
 				}
 			}
 		}
+		w_config.save();
+	}
+
+	/// Whether received grin amounts are hidden in payment notifications/alerts.
+	pub fn hide_amounts() -> bool {
+		let r_config = Settings::app_config_to_read();
+		r_config.hide_amounts.unwrap_or(false)
+	}
+
+	/// Set whether received grin amounts are hidden in notifications/alerts.
+	pub fn set_hide_amounts(hide: bool) {
+		let mut w_config = Settings::app_config_to_update();
+		w_config.hide_amounts = Some(hide);
 		w_config.save();
 	}
 }

@@ -138,6 +138,7 @@ enum SettingsPage {
 	Relays,
 	Nips,
 	Pairing,
+	Language,
 	Slatepack,
 	Privacy,
 	Advanced,
@@ -2430,6 +2431,7 @@ impl GoblinWalletView {
 			SettingsPage::Relays => return self.relays_ui(ui, wallet, cb),
 			SettingsPage::Nips => return self.nips_ui(ui),
 			SettingsPage::Pairing => return self.pairing_settings_ui(ui),
+			SettingsPage::Language => return self.language_settings_ui(ui),
 			SettingsPage::Slatepack => return self.slatepack_ui(ui, wallet, cb),
 			SettingsPage::Privacy => return self.privacy_ui(ui),
 			SettingsPage::Advanced => return self.advanced_ui(ui, wallet, cb),
@@ -2535,6 +2537,31 @@ impl GoblinWalletView {
 							.request_repaint_after(std::time::Duration::from_millis(600));
 					}
 				});
+				// Update-available badge, pinned to the right of the profile
+				// panel. Shown only when the release check found a newer build
+				// (reuses the AppConfig::app_update state the wallet list uses);
+				// tapping it opens the release download page.
+				if let Some(update) = crate::AppConfig::app_update() {
+					ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+						let (rect, resp) =
+							ui.allocate_exact_size(Vec2::splat(36.0), Sense::click());
+						ui.painter().circle_filled(rect.center(), 18.0, t.accent);
+						ui.painter().text(
+							rect.center(),
+							egui::Align2::CENTER_CENTER,
+							crate::gui::icons::CLOUD_ARROW_DOWN,
+							FontId::new(18.0, fonts::regular()),
+							t.accent_ink,
+						);
+						if resp
+							.on_hover_cursor(egui::CursorIcon::PointingHand)
+							.on_hover_text(t!("goblin.settings.update_available").to_string())
+							.clicked()
+						{
+							open_url(ui, &update.url);
+						}
+					});
+				}
 			});
 		});
 
@@ -2759,6 +2786,16 @@ impl GoblinWalletView {
 					) {
 						open_pairing = true;
 					}
+					// Hide received amounts in payment notifications/alerts. Same
+					// switch widget as the incoming-requests toggle below.
+					if let Some(v) = settings_row_toggle(
+						ui,
+						&t!("goblin.settings.hide_amounts"),
+						&t!("goblin.settings.hide_amounts_sub"),
+						crate::AppConfig::hide_amounts(),
+					) {
+						crate::AppConfig::set_hide_amounts(v);
+					}
 				});
 				if open_pairing {
 					self.settings_page = SettingsPage::Pairing;
@@ -2790,6 +2827,7 @@ impl GoblinWalletView {
 				ui.add_space(16.0);
 				w::kicker(ui, &t!("goblin.settings.appearance"));
 				ui.add_space(8.0);
+				let mut open_language = false;
 				w::card(ui, |ui| {
 					let theme_label = match crate::AppConfig::theme() {
 						crate::gui::theme::ThemeKind::Light => t!("goblin.settings.theme_light"),
@@ -2799,7 +2837,21 @@ impl GoblinWalletView {
 					if settings_row_btn(ui, &t!("goblin.settings.theme"), &theme_label) {
 						cycle_theme(ui.ctx());
 					}
+					// Language sits beside theme under Appearance; the value is the
+					// active language in its own name (e.g. "Deutsch").
+					let current = crate::AppConfig::locale()
+						.unwrap_or_else(|| rust_i18n::locale().to_string());
+					if settings_row_nav(
+						ui,
+						&t!("goblin.settings.language"),
+						&t!("lang_name", locale = current.as_str()),
+					) {
+						open_language = true;
+					}
 				});
+				if open_language {
+					self.settings_page = SettingsPage::Language;
+				}
 
 				ui.add_space(16.0);
 				w::kicker(ui, &t!("goblin.settings.archive"));
@@ -2995,6 +3047,50 @@ impl GoblinWalletView {
 						.font(FontId::new(12.0, fonts::regular()))
 						.color(t.text_dim),
 				);
+				ui.add_space(16.0);
+			});
+	}
+
+	/// Language picker: the six shipped locales, each in its own name. Tapping one
+	/// switches the active locale and persists it (mirrors the GRIM interface
+	/// settings, but in Goblin's row style like the pairing picker).
+	fn language_settings_ui(&mut self, ui: &mut egui::Ui) {
+		let t = theme::tokens();
+		if self.sub_header(ui, &t!("goblin.settings.language")) {
+			self.settings_page = SettingsPage::Main;
+			return;
+		}
+		let current = crate::AppConfig::locale().unwrap_or_else(|| rust_i18n::locale().to_string());
+		ScrollArea::vertical()
+			.auto_shrink([false; 2])
+			.scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
+			.show(ui, |ui| {
+				settings_group(ui, &t!("goblin.settings.language"), |ui| {
+					for locale in rust_i18n::available_locales!() {
+						let active = current == locale;
+						let row = ui.horizontal(|ui| {
+							ui.label(
+								RichText::new(t!("lang_name", locale = locale))
+									.font(FontId::new(15.0, fonts::medium()))
+									.color(t.surface_text),
+							);
+							ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+								if active {
+									ui.label(
+										RichText::new(crate::gui::icons::CHECK)
+											.font(FontId::new(16.0, fonts::regular()))
+											.color(t.pos),
+									);
+								}
+							});
+						});
+						ui.add_space(10.0);
+						if !active && row.response.interact(Sense::click()).clicked() {
+							rust_i18n::set_locale(locale);
+							crate::AppConfig::save_locale(locale);
+						}
+					}
+				});
 				ui.add_space(16.0);
 			});
 	}
