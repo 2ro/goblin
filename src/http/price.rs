@@ -241,10 +241,10 @@ async fn fetch_rate(vs: &str) -> Option<f64> {
 		"https://api.coingecko.com/api/v3/simple/price?ids=grin&vs_currencies={}",
 		vs
 	);
-	// CoinGecko rejects requests without a User-Agent (403). A static,
-	// non-identifying UA is fine over Tor.
-	let headers = vec![("User-Agent".to_string(), "goblin-wallet".to_string())];
-	let body = tor::http_request("GET", url, None, headers).await?;
+	// CoinGecko rejects requests without a User-Agent (403); the Tor client sets a
+	// browser-like default UA on every request, so we pass no extra headers here
+	// (passing one again would send the header twice).
+	let body = tor::http_request("GET", url, None, vec![]).await?;
 	let parsed: Option<f64> = serde_json::from_str::<serde_json::Value>(&body)
 		.ok()
 		.and_then(|doc| doc.get("grin")?.get(vs)?.as_f64());

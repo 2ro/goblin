@@ -59,6 +59,14 @@ const TUNNEL_WAIT: Duration = Duration::from_secs(60);
 /// Redirect hops to follow before giving up.
 const MAX_REDIRECTS: usize = 5;
 
+/// Default `User-Agent` for every Tor-carried HTTP request. A common desktop
+/// browser string (not "goblin-wallet"), so the wallet's traffic is not trivially
+/// classifiable as Goblin at the destination. Callers may still override it by
+/// passing their own `User-Agent` in the headers list; the endpoints Goblin talks
+/// to (GitHub API, CoinGecko, name authorities) all accept a generic UA.
+const DEFAULT_USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) \
+	 Chrome/131.0.0.0 Safari/537.36";
+
 // --- Tor data directories -----------------------------------------------------
 
 /// Base Tor data directory (`<base>/tor`).
@@ -193,7 +201,7 @@ async fn request_once(
 		.method(m)
 		.uri(path)
 		.header(hyper::header::HOST, host_header)
-		.header(hyper::header::USER_AGENT, "goblin-wallet");
+		.header(hyper::header::USER_AGENT, DEFAULT_USER_AGENT);
 	for (k, v) in headers {
 		req = req.header(k, v);
 	}
@@ -258,4 +266,23 @@ where
 		.await
 		.map_err(|e| warn!("tor http: tls handshake with {host} failed: {e}"))
 		.ok()
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[test]
+	fn default_user_agent_is_browser_like_not_goblin() {
+		// The default UA must read as a common desktop browser, so Goblin's Tor
+		// traffic is not trivially fingerprintable at the destination.
+		assert!(DEFAULT_USER_AGENT.starts_with("Mozilla/5.0"));
+		assert!(DEFAULT_USER_AGENT.contains("Chrome/"));
+		assert!(DEFAULT_USER_AGENT.contains("Safari/"));
+		// No line-continuation whitespace leaked into the literal.
+		assert!(!DEFAULT_USER_AGENT.contains("  "));
+		assert!(!DEFAULT_USER_AGENT.contains('\n'));
+		// The old identifying string is gone.
+		assert!(!DEFAULT_USER_AGENT.to_lowercase().contains("goblin"));
+	}
 }

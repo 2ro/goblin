@@ -13,8 +13,8 @@
 // limitations under the License.
 
 //! NIP-05 username resolution/verification and goblin.st registration,
-//! all HTTP routed through the Nym mixnet (the in-process smolmix tunnel). Nothing
-//! here touches clearnet.
+//! all HTTP routed over Tor (the in-process arti tunnel). Nothing here touches
+//! clearnet.
 
 use base64::Engine;
 use nostr_sdk::{EventBuilder, JsonUtil, Keys, Kind, PublicKey, Tag, TagKind};
