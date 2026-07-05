@@ -118,6 +118,14 @@ pub struct TxNostrMeta {
 	/// send, which publishes no receipt at all.
 	#[serde(default)]
 	pub receipt_sent: bool,
+	/// The wallet's OWN nostr identity (pubkey hex) that was ACTIVE when this row
+	/// was created — the "front door" the payment came in / went out on. One
+	/// wallet can hold several identities that all redeem into the single shared
+	/// grin balance; this tags which one so activity can be shown per identity and
+	/// a later per-identity accounting split has the data. Serde-default empty on
+	/// pre-feature rows, which are treated as identity #1 (the primary).
+	#[serde(default)]
+	pub recipient_pubkey: String,
 }
 
 /// A contact: another nostr user we can pay.

@@ -14,7 +14,7 @@
 
 use crate::AppConfig;
 use crate::node::{Node, NodeConfig};
-use crate::nostr::{NostrConfig, NostrIdentity, NostrService, NostrStore};
+use crate::nostr::{HeldIdentities, NostrConfig, NostrIdentity, NostrService, NostrStore};
 use crate::wallet::seed::WalletSeed;
 use crate::wallet::store::TxHeightStore;
 use crate::wallet::types::{
@@ -60,6 +60,22 @@ use std::thread::Thread;
 use std::time::Duration;
 use std::{fs, path, thread};
 use uuid::Uuid;
+
+/// A held nostr identity as the identity switcher needs to render it. Carries no
+/// secret material — the nsec stays encrypted at rest as its own NIP-49 ncryptsec.
+#[derive(Clone, Debug)]
+pub struct HeldIdentitySummary {
+	/// Public key, lowercase hex (the stable id passed to `switch_nostr_identity`).
+	pub pubkey_hex: String,
+	/// Public key, bech32 npub (for display/copy).
+	pub npub: String,
+	/// Claimed @name without the domain, if this identity has one.
+	pub name: Option<String>,
+	/// Short human label (its @name, or "Primary").
+	pub label: String,
+	/// Whether this is the currently active identity.
+	pub active: bool,
+}
 
 /// Contains wallet instance, configuration and state, handles wallet commands.
 #[derive(Clone)]
@@ -455,7 +471,7 @@ impl Wallet {
 		// is deliberately independent of the wallet seed: the seed must never
 		// double as identity evidence, and a rotation must not be derivable
 		// from it. The nsec backup is therefore the identity backup.
-		let identity = match NostrIdentity::load(&nostr_dir) {
+		let legacy = match NostrIdentity::load(&nostr_dir) {
 			Some(identity) => identity,
 			None => match NostrIdentity::create_random(password) {
 				Ok((identity, _)) => {
@@ -470,6 +486,18 @@ impl Wallet {
 					return;
 				}
 			},
+		};
+		// Adopt the held-identity index and run whichever identity is ACTIVE. A
+		// pre-feature wallet has only `identity.json`; `load_or_migrate` records it
+		// as the single, active identity #1 in place — no key regeneration, and the
+		// grin seed/balance are never touched (this cannot reach them). Only the
+		// active identity's ncryptsec is decrypted below; the others rest encrypted.
+		let identity = match HeldIdentities::load_or_migrate(&nostr_dir, &legacy) {
+			Some((_index, active)) => active,
+			None => {
+				error!("nostr: held-identity index unreadable; running the legacy identity");
+				legacy
+			}
 		};
 		let keys = match identity.unlock(password) {
 			Ok(keys) => keys,
@@ -681,6 +709,172 @@ impl Wallet {
 		identity
 			.to_encrypted_backup(&keys)
 			.map_err(|e| format!("backup failed: {e}"))
+	}
+
+	// ── Held nostr identities (one wallet, one balance, many front doors) ──────
+	//
+	// One grin seed / one balance, but the wallet can HOLD several nostr
+	// identities and present a different one at will. Exactly one is ACTIVE: it
+	// drives the single live gift-wrap subscription and all display, and every
+	// identity redeems into the SAME shared grin balance. Only the active nsec is
+	// ever decrypted into memory; the rest rest as ncryptsec on disk. Switching is
+	// mechanically identical to `rotate_nostr_identity` (stop the service, rebuild
+	// it on the target key, restart), plus a per-identity catch-up so payments that
+	// arrived while an identity was dormant are redeemed on switch-in.
+
+	/// The held identities for the identity switcher (no secrets). Empty if nostr
+	/// is disabled/not running.
+	pub fn nostr_identities(&self) -> Vec<HeldIdentitySummary> {
+		let nostr_dir = self.get_config().get_nostr_path();
+		let Some(index) = HeldIdentities::load(&nostr_dir) else {
+			return Vec::new();
+		};
+		index
+			.identities
+			.iter()
+			.filter_map(|entry| {
+				let identity = entry.load(&nostr_dir)?;
+				let name = identity
+					.nip05
+					.as_deref()
+					.and_then(|n| n.split('@').next())
+					.filter(|s| !s.is_empty())
+					.map(|s| s.to_string());
+				Some(HeldIdentitySummary {
+					pubkey_hex: entry.pubkey.clone(),
+					npub: identity.npub.clone(),
+					name,
+					label: entry.label.clone(),
+					active: entry.pubkey == index.active,
+				})
+			})
+			.collect()
+	}
+
+	/// The active identity's pubkey (hex), or `None` if nostr is not running.
+	pub fn active_nostr_pubkey(&self) -> Option<String> {
+		self.nostr_service().map(|s| s.public_key().to_hex())
+	}
+
+	/// Add a nostr identity to this wallet WITHOUT switching to it: generate a
+	/// fresh random nsec (`import` is `None`) or import an existing one (`import`
+	/// is `Some(nsec)`). The new key is encrypted under the wallet password like
+	/// every held identity, then recorded in the index. Returns the new npub. The
+	/// caller may follow with `switch_nostr_identity` to make it active.
+	///
+	/// The wallet password is proven against the CURRENT identity first, so a
+	/// wrong password can neither add a mis-encrypted key nor disturb anything.
+	pub fn add_nostr_identity(
+		&self,
+		import: Option<String>,
+		password: String,
+	) -> Result<String, String> {
+		let svc = self
+			.nostr_service()
+			.ok_or_else(|| "nostr is not running".to_string())?;
+		// Prove the wallet password against the current identity before writing a
+		// new key, so all held identities share the one wallet password.
+		svc.identity
+			.read()
+			.unlock(&password)
+			.map_err(|_| "Wrong password".to_string())?;
+		let (identity, _keys) = match import {
+			Some(nsec) => NostrIdentity::create_imported(nsec.trim(), &password)
+				.map_err(|_| "Invalid nsec".to_string())?,
+			None => NostrIdentity::create_random(&password)
+				.map_err(|e| format!("key generation failed: {e}"))?,
+		};
+		let nostr_dir = self.get_config().get_nostr_path();
+		let mut index = HeldIdentities::load(&nostr_dir)
+			.ok_or_else(|| "identity index unavailable".to_string())?;
+		index
+			.add(&nostr_dir, &identity)
+			.map_err(|e| e.to_string())?;
+		info!("nostr: added held identity {}", identity.npub);
+		Ok(identity.npub)
+	}
+
+	/// Switch the ACTIVE nostr identity to a held one (by pubkey hex). Tears down
+	/// the running service and stands a fresh one on the target key against the
+	/// SAME shared store (so processed-dedup carries across, preventing any
+	/// double-redeem), then runs a catch-up from when that identity last listened
+	/// so payments that arrived while it was dormant land in the one shared
+	/// balance. Reuses the `rotate_nostr_identity` stop-wait-start machinery.
+	///
+	/// The wallet password is verified by unlocking the TARGET before any teardown,
+	/// so a wrong password never leaves the wallet with no running identity. Gated
+	/// on no in-flight send, so an S1 signed by one identity is never followed by a
+	/// mid-flow service swap. Returns the target npub.
+	pub fn switch_nostr_identity(
+		&self,
+		target_hex: String,
+		password: String,
+	) -> Result<String, String> {
+		let svc = self
+			.nostr_service()
+			.ok_or_else(|| "nostr is not running".to_string())?;
+		// Don't swap the signing key out from under an in-flight send.
+		if svc.send_phase() == crate::nostr::send_phase::WORKING {
+			return Err("Finish the payment in progress before switching identity".to_string());
+		}
+		// Already active? Nothing to do.
+		if svc.public_key().to_hex() == target_hex {
+			return Ok(svc.npub());
+		}
+		let config = self.get_config();
+		let nostr_dir = config.get_nostr_path();
+		let mut index = HeldIdentities::load(&nostr_dir)
+			.ok_or_else(|| "identity index unavailable".to_string())?;
+		let entry = index
+			.entry(&target_hex)
+			.ok_or_else(|| "identity not held by this wallet".to_string())?;
+		let target_identity = entry
+			.load(&nostr_dir)
+			.ok_or_else(|| "identity file unreadable".to_string())?;
+		// Verify the password BEFORE any teardown (a wrong password must keep the
+		// current identity running).
+		let target_keys = target_identity
+			.unlock(&password)
+			.map_err(|_| "Wrong password".to_string())?;
+
+		// Stamp the outgoing identity as last-active NOW: it stops listening here,
+		// so a later switch back to it catches up from this moment.
+		let old_hex = svc.public_key().to_hex();
+		svc.store
+			.set_last_active_at(&old_hex, crate::nostr::unix_time());
+
+		// Move the active pointer (the legacy identity.json is never overwritten,
+		// so an older build still opens the wallet on identity #1).
+		index
+			.set_active(&nostr_dir, &target_hex)
+			.map_err(|e| e.to_string())?;
+
+		// Tear down the running service and wait for it to drain, exactly as
+		// rotate/import do.
+		svc.stop();
+		for _ in 0..100 {
+			if !svc.is_running() {
+				break;
+			}
+			thread::sleep(Duration::from_millis(100));
+		}
+
+		// Stand up the new service on the target key against the SAME shared store.
+		let nostr_config = NostrConfig::load(PathBuf::from(config.get_data_path()));
+		let store = NostrStore::new(config.get_nostr_db_path());
+		let new_npub = target_identity.npub.clone();
+		let new_svc =
+			NostrService::new(target_keys, target_identity, nostr_config, store, nostr_dir);
+		// Arm the "Syncing…" UI state before start so the switcher shows it from
+		// the first frame; run_service clears it once the catch-up fetch completes.
+		new_svc.begin_switch_sync();
+		{
+			let mut w_nostr = self.nostr.write();
+			*w_nostr = Some(new_svc.clone());
+		}
+		new_svc.start(self.clone());
+		info!("nostr: switched active identity to {}", new_npub);
+		Ok(new_npub)
 	}
 
 	/// Get keychain mask [`SecretKey`].
@@ -1815,11 +2009,30 @@ impl Wallet {
 
 	/// Change wallet password.
 	pub fn change_password(&self, old: String, new: String) -> Result<(), Error> {
-		let r_inst = self.instance.as_ref().read();
-		let instance = r_inst.clone().unwrap();
-		let mut wallet_lock = instance.lock();
-		let lc = wallet_lock.lc_provider()?;
-		lc.change_password(None, ZeroingString::from(old), ZeroingString::from(new))
+		{
+			let r_inst = self.instance.as_ref().read();
+			let instance = r_inst.clone().unwrap();
+			let mut wallet_lock = instance.lock();
+			let lc = wallet_lock.lc_provider()?;
+			lc.change_password(
+				None,
+				ZeroingString::from(old.clone()),
+				ZeroingString::from(new.clone()),
+			)?;
+		}
+		// The grin seed password changed; re-encrypt EVERY held nostr identity's
+		// ncryptsec from old to new through the same NIP-49 path, so all front
+		// doors follow the one wallet password. Best-effort and non-fatal: a
+		// failure is logged (never swallowed as success), and the grin password
+		// change already committed above. Takes effect for the running service on
+		// the next wallet open (it reloads the active identity from disk).
+		let nostr_dir = self.get_config().get_nostr_path();
+		if let Some(index) = HeldIdentities::load(&nostr_dir)
+			&& let Err(e) = index.reencrypt_all(&nostr_dir, &old, &new)
+		{
+			error!("nostr: re-encrypting held identities after password change: {e}");
+		}
+		Ok(())
 	}
 
 	/// Initiate wallet repair by scanning its outputs.
@@ -2540,6 +2753,7 @@ async fn handle_task(w: &Wallet, t: WalletTask) {
 						proof_amount: if proof_mode { Some(*a) } else { None },
 						proof_delivered: false,
 						receipt_sent: false,
+						recipient_pubkey: service.public_key().to_hex(),
 					});
 					let tx = w.retrieve_tx_by_id(None, Some(s.id));
 					w.send_creating.store(false, Ordering::Relaxed);
@@ -2680,6 +2894,7 @@ async fn handle_task(w: &Wallet, t: WalletTask) {
 						proof_amount: None,
 						proof_delivered: false,
 						receipt_sent: false,
+						recipient_pubkey: service.public_key().to_hex(),
 					});
 					let tx = w.retrieve_tx_by_id(None, Some(s.id));
 					w.invoice_creating.store(false, Ordering::Relaxed);
@@ -2931,6 +3146,7 @@ async fn handle_task(w: &Wallet, t: WalletTask) {
 							proof_amount: None,
 							proof_delivered: false,
 							receipt_sent: false,
+							recipient_pubkey: service.public_key().to_hex(),
 						});
 						match service
 							.send_payment_dm(&request.npub, &text, None, &[])
@@ -2981,6 +3197,7 @@ async fn handle_task(w: &Wallet, t: WalletTask) {
 								proof_amount: None,
 								proof_delivered: false,
 								receipt_sent: false,
+								recipient_pubkey: service.public_key().to_hex(),
 							});
 							match service
 								.send_payment_dm(&request.npub, &text, None, &[])

@@ -173,6 +173,7 @@ mod tests {
 			proof_amount: None,
 			proof_delivered: false,
 			receipt_sent: false,
+			recipient_pubkey: String::new(),
 		}
 	}
 

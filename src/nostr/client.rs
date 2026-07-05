@@ -137,6 +137,15 @@ pub struct NostrService {
 	/// Serializes a manual payment-cancel against a concurrent S2 finalize+post
 	/// so the two can't both succeed (cancel the outputs AND post on-chain).
 	cancel_finalize_lock: Mutex<()>,
+	/// This service was stood up by an identity SWITCH and is running its first
+	/// catch-up (the "Syncing…" state). Cleared once that catch-up fetch completes.
+	/// Only the ACTIVE identity ever listens, so a switch is mechanically a fresh
+	/// service on a different key; this flag just lets the UI show the catch-up.
+	switch_syncing: AtomicBool,
+	/// Count of payments redeemed during the switch catch-up (payments that
+	/// arrived for this identity while it was dormant). Read by the UI to show
+	/// "you were paid while away"; 0 means a quiet "caught up".
+	switch_received: std::sync::atomic::AtomicU32,
 }
 
 /// Phase of the most recent outgoing send, polled by the send UI.
@@ -176,7 +185,37 @@ impl NostrService {
 			last_send_error: RwLock::new(None),
 			cancel_notice: RwLock::new(None),
 			cancel_finalize_lock: Mutex::new(()),
+			switch_syncing: AtomicBool::new(false),
+			switch_received: std::sync::atomic::AtomicU32::new(0),
 		})
+	}
+
+	/// Arm the switch-catch-up UI state before this (freshly stood-up) service
+	/// starts: the next catch-up fetch is the "Syncing…" pass for a just-switched
+	/// identity. Called by [`crate::wallet::Wallet::switch_nostr_identity`] before
+	/// `start`, so the UI shows the syncing state from the first frame.
+	pub fn begin_switch_sync(&self) {
+		self.switch_received
+			.store(0, std::sync::atomic::Ordering::SeqCst);
+		self.switch_syncing.store(true, Ordering::SeqCst);
+	}
+
+	/// End the switch-catch-up state (the catch-up fetch has completed). The
+	/// redeemed count stays readable so the UI can show "you were paid while away".
+	fn end_switch_sync(&self) {
+		self.switch_syncing.store(false, Ordering::SeqCst);
+	}
+
+	/// Whether the service is mid switch-catch-up ("Syncing…").
+	pub fn is_switch_syncing(&self) -> bool {
+		self.switch_syncing.load(Ordering::Relaxed)
+	}
+
+	/// Payments redeemed during the switch catch-up (for "you were paid while
+	/// away"); 0 once caught up with nothing waiting.
+	pub fn switch_received(&self) -> u32 {
+		self.switch_received
+			.load(std::sync::atomic::Ordering::Relaxed)
 	}
 
 	/// Own public key.
@@ -1116,12 +1155,20 @@ async fn run_service(svc: Arc<NostrService>, wallet: Wallet) {
 	// advertised set only. A pool-wide subscription would be inherited by
 	// relays added later for sends and discovery fan-out, handing them a REQ
 	// filter that names our pubkey as a listener.
-	let since = svc
-		.store
-		.last_connected_at()
-		.map(|t| t - LOOKBACK_SECS)
-		.unwrap_or_else(|| unix_time() - LOOKBACK_SECS)
-		.max(0) as u64;
+	// Catch up from when THIS identity last listened, not merely when the wallet
+	// last connected on any identity — so a payment that arrived while this
+	// identity was dormant (e.g. before a switch to it) is fetched and redeemed
+	// now. Falls back to the wallet-wide last connection, then to now, always
+	// minus the same generous lookback (a switched-to identity that has been
+	// inactive longer than the lookback is the documented edge; the relay
+	// retention window is the real bound).
+	let active_hex = svc.public_key().to_hex();
+	let since = crate::nostr::catchup_since(
+		svc.store.last_active_at(&active_hex),
+		svc.store.last_connected_at(),
+		unix_time(),
+		LOOKBACK_SECS,
+	) as u64;
 	let filter = Filter::new()
 		.kind(Kind::GiftWrap)
 		.pubkey(svc.public_key())
@@ -1146,6 +1193,10 @@ async fn run_service(svc: Arc<NostrService>, wallet: Wallet) {
 			handle_wrap(&svc, &wallet, event).await;
 		}
 	}
+	// The switch catch-up fetch is done: leave "Syncing…" and let the UI read
+	// switch_received() to decide between "you were paid while away" and a quiet
+	// "caught up". A no-op unless this service was armed by a switch.
+	svc.end_switch_sync();
 	if let (Some(pk), Some(nf)) = (news_pk, news_filter.clone())
 		&& let Ok(events) = client.fetch_events_from(&relays, nf, FETCH_TIMEOUT).await
 	{
@@ -1186,6 +1237,9 @@ async fn run_service(svc: Arc<NostrService>, wallet: Wallet) {
 	}
 
 	svc.store.set_last_connected_at(unix_time());
+	// Stamp when THIS identity was last live so a later switch back to it catches
+	// up from here, not from the wallet-wide last connection.
+	svc.store.set_last_active_at(&active_hex, unix_time());
 	svc.store.prune_processed();
 
 	// Reflect the connection the moment we reach the loop instead of leaving the
@@ -1266,6 +1320,7 @@ async fn run_service(svc: Arc<NostrService>, wallet: Wallet) {
 				if now - last_heartbeat >= 30 {
 					last_heartbeat = now;
 					svc.store.set_last_connected_at(now);
+					svc.store.set_last_active_at(&active_hex, now);
 					if now - last_prune >= 3600 {
 						svc.store.prune_processed();
 						last_prune = now;
@@ -2130,6 +2185,11 @@ async fn handle_wrap(svc: &Arc<NostrService>, wallet: &Wallet, event: Event) {
 						proof_amount: None,
 						proof_delivered: false,
 						receipt_sent: false,
+						// Tag the front door this payment came in on: the identity
+						// active right now. All identities redeem into the one grin
+						// balance; this only records provenance for per-identity
+						// activity and a future accounting split.
+						recipient_pubkey: svc.public_key().to_hex(),
 					});
 					// Commit dedup markers now the receive is durable, BEFORE
 					// the reply + sync tail. A crash there must not let this
@@ -2138,6 +2198,12 @@ async fn handle_wrap(svc: &Arc<NostrService>, wallet: &Wallet, event: Event) {
 					svc.store.mark_processed(&wrap_id);
 					svc.store.mark_processed(&rumor_id);
 					svc.store.mark_processed(&slate_marker);
+					// If this landed during a switch catch-up, count it toward the
+					// "you were paid while away" summary.
+					if svc.is_switch_syncing() {
+						svc.switch_received
+							.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+					}
 					// "Payment received" system notification (Android; no-op
 					// on desktop): payer's display name (or short npub) and
 					// the human-readable amount.
@@ -2229,6 +2295,12 @@ async fn handle_wrap(svc: &Arc<NostrService>, wallet: &Wallet, event: Event) {
 					svc.store.mark_processed(&wrap_id);
 					svc.store.mark_processed(&rumor_id);
 					svc.store.mark_processed(&slate_marker);
+					// A finalized request-reply that landed during a switch catch-up
+					// also counts toward "you were paid while away".
+					if svc.is_switch_syncing() {
+						svc.switch_received
+							.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+					}
 					if let Some(mut contact) = svc.store.contact(&sender_hex) {
 						contact.last_paid_at = Some(unix_time());
 						svc.store.save_contact(&contact);
@@ -2405,6 +2477,7 @@ mod tests {
 			proof_amount: Some(1_000),
 			proof_delivered: false,
 			receipt_sent: false,
+			recipient_pubkey: String::new(),
 		}
 	}
 
