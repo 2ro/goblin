@@ -202,6 +202,12 @@ pub struct NewsItem {
 	/// before this field existed still deserialize.
 	#[serde(default)]
 	pub lang: Option<String>,
+	/// Optional NIP-23 `published_at` tag (unix seconds). When present the Home
+	/// panel dates the article by this rather than `created_at` (which tracks the
+	/// event's last edit). `#[serde(default)]` so posts cached before this field
+	/// existed still deserialize.
+	#[serde(default)]
+	pub published_at: Option<i64>,
 }
 
 /// Whether the plain "payment sent" receipt (frozen contract 4.3.1) is due at

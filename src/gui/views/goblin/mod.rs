@@ -1086,11 +1086,26 @@ impl GoblinWalletView {
 			// Span the full content width like the balance/activity rows so the
 			// panel reads as a band, not a content-hugging chip.
 			ui.set_min_width(ui.available_width());
+			// Date first, ISO 8601 (YYYY-MM-DD, UTC). Dated by the article's
+			// published_at tag when present, else the event's created_at.
+			let stamp = news.published_at.unwrap_or(news.created_at);
+			ui.label(
+				RichText::new(data::news_date_iso(stamp))
+					.font(FontId::new(12.0, fonts::medium()))
+					.color(t.surface_text_dim),
+			);
 			if !news.title.is_empty() {
+				ui.add_space(2.0);
+				// Title guardrail: hard-cap the length (predictable ellipsis past
+				// NEWS_TITLE_MAX_CHARS) then shrink the font to fit the card width on
+				// one line down to a 12pt floor, so a title never clips. `.truncate()`
+				// backs the floor for the pathological narrow case.
+				let title = data::news_title_clamped(&news.title);
+				let pt = fit_news_title_pt(ui, &title, ui.available_width());
 				ui.add(
 					egui::Label::new(
-						RichText::new(&news.title)
-							.font(FontId::new(16.0, fonts::semibold()))
+						RichText::new(&title)
+							.font(FontId::new(pt, fonts::semibold()))
 							.color(t.surface_text),
 					)
 					.truncate(),
@@ -5291,4 +5306,32 @@ fn hex_of(npub: &str) -> String {
 	PublicKey::from_bech32(npub)
 		.map(|pk| pk.to_hex())
 		.unwrap_or_else(|_| npub.to_string())
+}
+
+/// Largest point size in `[12.0, 16.0]` at which the semibold news title fits on
+/// one line within `avail` px, measured against the live font atlas and stepping
+/// down by 0.5. Returns the 12pt floor when even that overflows (the caller pairs
+/// it with `.truncate()`). This is the shrink-to-fit safety net that keeps a
+/// title readable on a 390px screen; the hard char cap (`news_title_clamped`) is
+/// the predictable ceiling.
+fn fit_news_title_pt(ui: &egui::Ui, text: &str, avail: f32) -> f32 {
+	const CEIL: f32 = 16.0;
+	const FLOOR: f32 = 12.0;
+	let mut pt = CEIL;
+	while pt > FLOOR {
+		let w = ui
+			.painter()
+			.layout_no_wrap(
+				text.to_owned(),
+				FontId::new(pt, fonts::semibold()),
+				egui::Color32::WHITE,
+			)
+			.size()
+			.x;
+		if w <= avail {
+			return pt;
+		}
+		pt -= 0.5;
+	}
+	FLOOR
 }

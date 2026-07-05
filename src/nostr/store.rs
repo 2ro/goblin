@@ -367,6 +367,7 @@ mod tests {
 			title: format!("t{created_at}"),
 			summary: String::new(),
 			lang: None,
+			published_at: None,
 		}
 	}
 

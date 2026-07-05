@@ -1810,12 +1810,15 @@ async fn handle_news(svc: &Arc<NostrService>, news_pk: PublicKey, event: Event) 
 		&event.content,
 	);
 	let lang = news_lang_tag(&event);
+	let published_at =
+		first_tag_value(&event, "published_at").and_then(|s| s.trim().parse::<i64>().ok());
 	svc.store.save_news(NewsItem {
 		d,
 		created_at: event.created_at.as_secs() as i64,
 		title,
 		summary,
 		lang,
+		published_at,
 	});
 }
 

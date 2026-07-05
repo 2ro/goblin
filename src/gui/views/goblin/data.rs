@@ -406,6 +406,7 @@ fn news_pool(wallet: &Wallet) -> Vec<NewsItem> {
 				summary: "Private grin payments over Tor. Read more: https://docs.goblin.st"
 					.to_string(),
 				lang: None,
+				published_at: Some(1_782_864_000), // 2026-07-01 UTC
 			},
 			NewsItem {
 				d: "welcome-de".to_string(),
@@ -414,6 +415,7 @@ fn news_pool(wallet: &Wallet) -> Vec<NewsItem> {
 				summary: "Private Grin-Zahlungen über Tor. Mehr dazu: https://docs.goblin.st"
 					.to_string(),
 				lang: None,
+				published_at: Some(1_782_864_000), // 2026-07-01 UTC
 			},
 		];
 	}
@@ -472,6 +474,39 @@ pub fn news_display_title(title: &str) -> String {
 			}
 		}
 		None => title.to_string(),
+	}
+}
+
+/// Format a unix timestamp (seconds) as an ISO-8601 calendar date in UTC
+/// (`YYYY-MM-DD`), never a US `M/D/Y`, and date only (no time-of-day, unlike the
+/// activity feed). Dates the Home news panel. An out-of-range stamp falls back to
+/// the epoch date rather than panicking.
+pub fn news_date_iso(ts: i64) -> String {
+	use chrono::{TimeZone, Utc};
+	Utc.timestamp_opt(ts, 0)
+		.single()
+		.map(|dt| dt.format("%Y-%m-%d").to_string())
+		.unwrap_or_else(|| "1970-01-01".to_string())
+}
+
+/// The hard character budget for a Home news title before it ellipsizes. Titles
+/// up to ~34 chars sit at the full 16pt on a 390px phone; between there and this
+/// cap the panel shrinks the font to keep one line; past it they are ellipsized.
+/// This is the author's predictable writing budget.
+pub const NEWS_TITLE_MAX_CHARS: usize = 48;
+
+/// A news title clamped to [`NEWS_TITLE_MAX_CHARS`], ellipsizing (`…`) past it so
+/// an over-long title is handled predictably rather than relying on layout alone.
+/// The shrink-to-fit font sizing in the panel is the second, screen-width-aware
+/// half of the guardrail. Clamps on `char` boundaries so multi-byte titles are
+/// never split mid-codepoint.
+pub fn news_title_clamped(title: &str) -> String {
+	let chars: Vec<char> = title.chars().collect();
+	if chars.len() > NEWS_TITLE_MAX_CHARS {
+		let keep = NEWS_TITLE_MAX_CHARS.saturating_sub(1);
+		format!("{}…", chars[..keep].iter().collect::<String>())
+	} else {
+		title.to_string()
 	}
 }
 
@@ -579,6 +614,7 @@ mod tests {
 			title: title.to_string(),
 			summary: String::new(),
 			lang: lang.map(|s| s.to_string()),
+			published_at: None,
 		}
 	}
 
@@ -628,6 +664,35 @@ mod tests {
 		assert_eq!(news_display_title("Welcome to Goblin"), "Welcome to Goblin");
 		// Non-language bracket suffix: left intact.
 		assert_eq!(news_display_title("Build 137 [beta]"), "Build 137 [beta]");
+	}
+
+	#[test]
+	fn date_is_iso_utc_day_only() {
+		// 2026-07-01 00:00:00 UTC.
+		assert_eq!(news_date_iso(1_782_864_000), "2026-07-01");
+		// A within-the-day stamp still yields the same calendar date (no time).
+		assert_eq!(news_date_iso(1_782_864_000 + 3600 * 13 + 59), "2026-07-01");
+		// Epoch.
+		assert_eq!(news_date_iso(0), "1970-01-01");
+	}
+
+	#[test]
+	fn title_clamped_ellipsizes_past_max() {
+		// Short titles pass through untouched.
+		let short = "News in Your Language";
+		assert_eq!(news_title_clamped(short), short);
+		// Exactly the cap is untouched.
+		let at_cap = "x".repeat(NEWS_TITLE_MAX_CHARS);
+		assert_eq!(news_title_clamped(&at_cap), at_cap);
+		// One over the cap ellipsizes to exactly the cap length (… included).
+		let over = "y".repeat(NEWS_TITLE_MAX_CHARS + 10);
+		let clamped = news_title_clamped(&over);
+		assert_eq!(clamped.chars().count(), NEWS_TITLE_MAX_CHARS);
+		assert!(clamped.ends_with('…'));
+		// Multi-byte titles clamp on char boundaries (no panic / no split codepoint).
+		let cjk = "语".repeat(NEWS_TITLE_MAX_CHARS + 5);
+		let clamped = news_title_clamped(&cjk);
+		assert_eq!(clamped.chars().count(), NEWS_TITLE_MAX_CHARS);
 	}
 
 	#[test]
