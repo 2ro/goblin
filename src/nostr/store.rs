@@ -276,6 +276,30 @@ impl NostrStore {
 		let _ = writer.commit();
 	}
 
+	/// Unix time this identity (by pubkey hex) was last the ACTIVE, live-listening
+	/// identity. Held per identity in the one shared settings store so that a
+	/// switch back to a dormant identity can catch up "since it last listened"
+	/// rather than "since the wallet last connected". `None` for an identity that
+	/// has never been active (fresh/imported), which the catch-up handles by
+	/// falling back to the wallet-wide last connection.
+	pub fn last_active_at(&self, pubkey_hex: &str) -> Option<i64> {
+		let env = self.env.read().unwrap_or_else(|e| e.into_inner());
+		let reader = env.read().unwrap();
+		let key = format!("last_active_at:{pubkey_hex}");
+		if let Ok(Some(Value::I64(v))) = self.settings.get(&reader, &key) {
+			return Some(v);
+		}
+		None
+	}
+
+	pub fn set_last_active_at(&self, pubkey_hex: &str, ts: i64) {
+		let env = self.env.read().unwrap_or_else(|e| e.into_inner());
+		let mut writer = env.write().unwrap();
+		let key = format!("last_active_at:{pubkey_hex}");
+		let _ = self.settings.put(&mut writer, &key, &Value::I64(ts));
+		let _ = writer.commit();
+	}
+
 	/// Unix time of the last contact-name re-verify sweep (persisted across
 	/// restarts so a fresh launch only re-sweeps if it's been a while).
 	pub fn last_name_sweep_at(&self) -> Option<i64> {

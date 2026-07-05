@@ -146,6 +146,38 @@ impl NostrIdentity {
 		let _ = fs::remove_file(Self::path(nostr_dir));
 	}
 
+	/// Load an identity from an explicit file path — a member of the held
+	/// identity set (see [`crate::nostr::identities`]), which stores each
+	/// additional identity in its own `identities/<hex>/identity.json`.
+	pub fn load_at(path: &PathBuf) -> Option<NostrIdentity> {
+		let raw = fs::read_to_string(path).ok()?;
+		serde_json::from_str(&raw).ok()
+	}
+
+	/// Persist this identity to an explicit file path with owner-only (0600)
+	/// permissions, creating (and 0700-restricting) the parent directory. Used
+	/// by the held identity set for the non-legacy identities; the ncryptsec
+	/// blob must never be world-readable.
+	pub fn save_at(&self, path: &PathBuf) -> Result<(), IdentityError> {
+		if let Some(dir) = path.parent() {
+			fs::create_dir_all(dir)?;
+			restrict_dir(&dir.to_path_buf());
+		}
+		let raw = serde_json::to_string_pretty(self)?;
+		write_private(path, raw.as_bytes())?;
+		Ok(())
+	}
+
+	/// The identity's public key as lowercase hex — the stable id used to key it
+	/// in the held-identity index and on disk. `None` if the stored npub is
+	/// malformed (never expected for an identity we wrote).
+	pub fn pubkey_hex(&self) -> Option<String> {
+		use nostr_sdk::PublicKey;
+		PublicKey::from_bech32(&self.npub)
+			.ok()
+			.map(|pk| pk.to_hex())
+	}
+
 	/// Build an identity from already-unlocked keys under a (possibly
 	/// different) password — used when importing a backup that was exported
 	/// under another wallet's password.

@@ -31,6 +31,9 @@ pub use store::NostrStore;
 mod identity;
 pub use identity::{IdentitySource, NostrIdentity};
 
+pub mod identities;
+pub use identities::{HeldError, HeldIdentities, MAX_IDENTITIES, catchup_since};
+
 pub mod protocol;
 pub use protocol::*;
 
