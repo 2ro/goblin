@@ -33,7 +33,7 @@ use crate::gui::views::{Content, TextEdit, View};
 use crate::wallet::Wallet;
 use crate::wallet::types::WalletData;
 
-use self::data::{ActivityItem, activity_items, recent_peers};
+use self::data::{ActivityItem, activity_items, news_latest, recent_peers, split_urls};
 use self::send::SendFlow;
 use self::widgets as w;
 
@@ -534,7 +534,16 @@ impl GoblinWalletView {
 				..Default::default()
 			})
 			.show_inside(ui, |ui| {
-				w::centered_column(ui, Content::SIDE_PANEL_WIDTH * 1.2, |ui| match self.tab {
+				// Desktop Home fills the window (up to a readable max) instead of
+				// sitting in the narrow 1.2x column with dead space around it — the news
+				// panel and the rest of home then use the available width. Every other
+				// tab, and all of mobile, keeps the original narrow column.
+				let col_width = if wide_desktop && self.tab == Tab::Home {
+					Content::SIDE_PANEL_WIDTH * 2.4
+				} else {
+					Content::SIDE_PANEL_WIDTH * 1.2
+				};
+				w::centered_column(ui, col_width, |ui| match self.tab {
 					Tab::Home => self.home_ui(ui, wallet, cb, wide_desktop),
 					Tab::Pay => self.pay_ui(ui, wallet, cb),
 					Tab::Activity => self.activity_ui(ui, wallet, cb),
@@ -1026,6 +1035,9 @@ impl GoblinWalletView {
 				}
 				ui.add_space(24.0);
 
+				// Latest news post (hidden entirely when none seen yet).
+				self.news_panel_ui(ui, wallet);
+
 				// Recent peers strip.
 				self.peers_strip_ui(ui, wallet, "goblin_peers_home");
 
@@ -1046,6 +1058,52 @@ impl GoblinWalletView {
 				}
 				ui.add_space(16.0);
 			});
+	}
+
+	/// Latest news post from the Goblin news key. Title + summary in a card, with
+	/// any http(s) URL in the summary rendered as a tappable link. Renders nothing
+	/// (early return) when no post has been cached yet — no empty state.
+	fn news_panel_ui(&mut self, ui: &mut egui::Ui, wallet: &Wallet) {
+		let Some(news) = news_latest(wallet) else {
+			return;
+		};
+		let t = theme::tokens();
+		w::kicker(ui, &t!("goblin.home.news"));
+		ui.add_space(8.0);
+		w::card(ui, |ui| {
+			// Span the full content width like the balance/activity rows so the
+			// panel reads as a band, not a content-hugging chip.
+			ui.set_min_width(ui.available_width());
+			if !news.title.is_empty() {
+				ui.add(
+					egui::Label::new(
+						RichText::new(&news.title)
+							.font(FontId::new(16.0, fonts::semibold()))
+							.color(t.surface_text),
+					)
+					.truncate(),
+				);
+			}
+			if !news.summary.is_empty() {
+				ui.add_space(4.0);
+				ui.horizontal_wrapped(|ui| {
+					ui.spacing_mut().item_spacing.x = 0.0;
+					for (seg, is_url) in split_urls(&news.summary) {
+						if is_url {
+							// hyperlink opens via ctx.open_url, same as open_url().
+							ui.hyperlink(seg);
+						} else {
+							ui.label(
+								RichText::new(seg)
+									.font(FontId::new(13.0, fonts::regular()))
+									.color(t.surface_text_dim),
+							);
+						}
+					}
+				});
+			}
+		});
+		ui.add_space(24.0);
 	}
 
 	/// Horizontal recent-contacts strip; tapping one starts a prefilled send.

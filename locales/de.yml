@@ -375,6 +375,7 @@ goblin:
     nav_receive: "Empfangen"
     nav_settings: "Einstellungen"
     activity: "Aktivität"
+    news: "Neuigkeiten"
     empty_title: "Noch keine Aktivität"
     empty_sub: "Sende oder empfange grin, um zu starten."
     recent: "Zuletzt"

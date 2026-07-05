@@ -375,6 +375,7 @@ goblin:
     nav_receive: "Получить"
     nav_settings: "Настройки"
     activity: "Действия"
+    news: "Новости"
     empty_title: "Пока нет действий"
     empty_sub: "Отправьте или получите grin, чтобы начать."
     recent: "Недавние"

@@ -18,8 +18,8 @@
 use grin_core::core::amount_to_hr_string;
 use log::{error, info, warn};
 use nostr_sdk::{
-	Client, Event, EventBuilder, Filter, Keys, Kind, Metadata, PublicKey, RelayPoolNotification,
-	RelayStatus, SubscriptionId, Tag, TagKind, Timestamp, ToBech32,
+	Client, Event, EventBuilder, Filter, FromBech32, Keys, Kind, Metadata, PublicKey,
+	RelayPoolNotification, RelayStatus, SubscriptionId, Tag, TagKind, Timestamp, ToBech32,
 };
 use parking_lot::{Mutex, RwLock};
 use std::collections::HashMap;
@@ -51,6 +51,13 @@ pub struct NostrProfile {
 /// subscription after a tunnel reselect REPLACES it instead of piling up
 /// duplicate REQs on the relays.
 const GIFTWRAP_SUB: &str = "goblin-giftwrap";
+
+/// The Goblin news publisher (kind 30023 long-form). The Home news panel shows
+/// this key's latest post, fetched from our own relay set.
+const NEWS_NPUB: &str = "npub15gsytqvs5c78u83yv2agl4twjkk6qgem7gtwe2agu7s90tkelxys0xxely";
+/// Stable subscription id for the news feed (same replace-not-duplicate reason
+/// as [`GIFTWRAP_SUB`]).
+const NEWS_SUB: &str = "goblin-news";
 
 /// Subscription look-back window beyond the last connection time: gift wrap
 /// timestamps are randomized up to 2 days into the past (NIP-59), use 3 days.
@@ -614,29 +621,41 @@ impl NostrService {
 			.map_err(|e| format!("send failed: {e}"))?;
 		let event_id = res.val;
 
-		// DELIVERY CONFIRM (money-path safety), reconnect-resilient. `send_*_to`
-		// returned success the moment the wrap was accepted for delivery to the
-		// relays — that IS write-level evidence, but not proof a relay the RECIPIENT
-		// reads has stored it. Confirm the way the recipient's inbox retrieves it:
-		// query {kinds:[1059], "#p":[receiver]} pinned to THIS wrap's id, over the
-		// SAME target set — which now always includes our own advertised relays
-		// (the shared-relay floor the recipient also reads; see `send_targets`).
-		// First-event-wins via `stream_events_from` returns the instant ANY
-		// targeted relay serves the wrap, so the spinner clears as fast as it lands.
-		// The loop retries across transient transport drops within the budget
-		// (arti rebuilds circuits during the CONFIRM_GAP sleeps), so a flapping
-		// onion doesn't defeat a wrap that actually landed.
-		//
-		// Two outcomes, NEVER a hard failure here (we already hold write-evidence):
-		//   * confirmed  -> Ok, report Sent (strongest evidence).
-		//   * unconfirmed within the budget -> Ok as sent-PENDING, logged. Over a
-		//     flapping onion the read-back can't complete even though the write
-		//     landed; a hard error would mark the tx SendFailed, which `reconcile`
-		//     re-dispatches -> DUPLICATE wraps + a stuck "sending" spinner. Instead
-		//     the tx moves to AwaitingS2 (which `reconcile` never re-dispatches) and
-		//     the normal S2-wait / expiry path resolves it. Only a genuine send
-		//     FAILURE (the `send_*_to` error above, BEFORE this loop) ever
-		//     re-dispatches — so we never claim Sent with zero evidence.
+		// The write already succeeded (a relay accepted the wrap for delivery),
+		// which IS the send-level evidence the UI waits on — so return Sent NOW at
+		// write-ack. The read-back delivery-confirm below is ADVISORY only (it
+		// never changes the returned id and never marks the tx failed), so it runs
+		// detached in the background: it keeps its logging/retry behavior without
+		// pinning the spinner for up to CONFIRM_TIMEOUT after the wrap has landed.
+		{
+			let client = client.clone();
+			let urls = urls.clone();
+			tokio::spawn(async move {
+				Self::confirm_delivery(&client, urls, receiver, event_id).await;
+			});
+		}
+		Ok(event_id.to_hex())
+	}
+
+	/// Advisory delivery-confirm (money-path safety), reconnect-resilient, run in
+	/// the background AFTER the send returns. `send_*_to` returned success the
+	/// moment the wrap was accepted for delivery to the relays — that IS
+	/// write-level evidence, but not proof a relay the RECIPIENT reads has stored
+	/// it. Confirm the way the recipient's inbox retrieves it: query
+	/// {kinds:[1059], "#p":[receiver]} pinned to THIS wrap's id, over the SAME
+	/// target set — which always includes our own advertised relays (the
+	/// shared-relay floor the recipient also reads; see `send_targets`). The loop
+	/// retries across transient transport drops within the budget (arti rebuilds
+	/// circuits during the CONFIRM_GAP sleeps), so a flapping onion doesn't defeat
+	/// a wrap that actually landed. It NEVER fails the tx — an unconfirmed wrap
+	/// simply waits for S2 / expiry (a hard failure would re-dispatch DUPLICATE
+	/// wraps); this is purely a logged observation now that the UI no longer waits.
+	async fn confirm_delivery(
+		client: &Client,
+		urls: Vec<String>,
+		receiver: PublicKey,
+		event_id: nostr_sdk::EventId,
+	) {
 		use futures::StreamExt;
 		let confirm_filter = Filter::new()
 			.kind(Kind::GiftWrap)
@@ -649,7 +668,7 @@ impl NostrService {
 				.stream_events_from(urls.clone(), confirm_filter.clone(), CONFIRM_POLL)
 				.await && stream.next().await.is_some()
 			{
-				return Ok(event_id.to_hex());
+				return;
 			}
 			if tokio::time::Instant::now() >= confirm_deadline {
 				warn!(
@@ -659,7 +678,7 @@ impl NostrService {
 					event_id.to_hex(),
 					CONFIRM_TIMEOUT.as_secs()
 				);
-				return Ok(event_id.to_hex());
+				return;
 			}
 			tokio::time::sleep(CONFIRM_GAP).await;
 		}
@@ -1025,6 +1044,16 @@ async fn run_service(svc: Arc<NostrService>, wallet: Wallet) {
 		.pubkey(svc.public_key())
 		.since(Timestamp::from_secs(since));
 
+	// News feed: the owner's kind-30023 long-form posts on our own relay set.
+	// Kept owned like `filter` for the re-subscribe after a tunnel reselect.
+	let news_pk = PublicKey::from_bech32(NEWS_NPUB).ok();
+	let news_filter = news_pk.map(|pk| {
+		Filter::new()
+			.kind(Kind::LongFormTextNote)
+			.author(pk)
+			.limit(4)
+	});
+
 	if let Ok(events) = client
 		.fetch_events_from(&relays, filter.clone(), FETCH_TIMEOUT)
 		.await
@@ -1032,6 +1061,13 @@ async fn run_service(svc: Arc<NostrService>, wallet: Wallet) {
 		info!("nostr: catch-up fetched {} wraps", events.len());
 		for event in events.into_iter() {
 			handle_wrap(&svc, &wallet, event).await;
+		}
+	}
+	if let (Some(pk), Some(nf)) = (news_pk, news_filter.clone())
+		&& let Ok(events) = client.fetch_events_from(&relays, nf, FETCH_TIMEOUT).await
+	{
+		for event in events.into_iter() {
+			handle_news(&svc, pk, event).await;
 		}
 	}
 	// Stable-id subscription so a re-subscribe after a tunnel reselect replaces
@@ -1046,6 +1082,13 @@ async fn run_service(svc: Arc<NostrService>, wallet: Wallet) {
 		.await
 	{
 		error!("nostr: subscribe failed: {e}");
+	}
+	if let Some(nf) = news_filter.clone()
+		&& let Err(e) = client
+			.subscribe_with_id_to(&relays, SubscriptionId::new(NEWS_SUB), nf, None)
+			.await
+	{
+		error!("nostr: news subscribe failed: {e}");
 	}
 
 	// Re-dispatch pending outgoing messages after restart.
@@ -1098,7 +1141,13 @@ async fn run_service(svc: Arc<NostrService>, wallet: Wallet) {
 			notification = notifications.recv() => {
 				match notification {
 					Ok(RelayPoolNotification::Event { event, .. }) => {
-						handle_wrap(&svc, &wallet, *event).await;
+						// News long-form posts and gift wraps ride the same feed;
+						// route by kind (handle_wrap ignores non-1059 anyway).
+						if let Some(pk) = news_pk && event.kind == Kind::LongFormTextNote {
+							handle_news(&svc, pk, *event).await;
+						} else {
+							handle_wrap(&svc, &wallet, *event).await;
+						}
 					}
 					Ok(_) => {}
 					Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
@@ -1117,7 +1166,7 @@ async fn run_service(svc: Arc<NostrService>, wallet: Wallet) {
 				let generation = crate::tor::tunnel_generation();
 				if generation != dial_gen {
 					info!("nostr: tunnel reselected (gen {dial_gen} -> {generation}); re-dialing relays over the new exit");
-					redial_on_new_tunnel(&client, &relays, &filter).await;
+					redial_on_new_tunnel(&client, &relays, &filter, news_filter.as_ref()).await;
 					dial_gen = generation;
 				}
 				let connected = relays_connected(&client).await;
@@ -1204,7 +1253,12 @@ async fn connect_relays(client: &Client, urls: &[String]) {
 /// never duplicates) so we never silently stop receiving. Bounded by
 /// nostr-sdk's own connect timeouts — no busy loop; the generation-aware re-dial
 /// is ours, the per-relay reconnect backoff is the pool's.
-async fn redial_on_new_tunnel(client: &Client, relays: &[String], filter: &Filter) {
+async fn redial_on_new_tunnel(
+	client: &Client,
+	relays: &[String],
+	filter: &Filter,
+	news_filter: Option<&Filter>,
+) {
 	// Close the stale sockets so nostr-sdk re-dials through the current tunnel
 	// (the transport grabs the freshly-selected exit on each new connect).
 	client.disconnect().await;
@@ -1222,6 +1276,13 @@ async fn redial_on_new_tunnel(client: &Client, relays: &[String], filter: &Filte
 		.await
 	{
 		error!("nostr: re-subscribe after reselect failed: {e}");
+	}
+	if let Some(nf) = news_filter
+		&& let Err(e) = client
+			.subscribe_with_id_to(relays, SubscriptionId::new(NEWS_SUB), nf.clone(), None)
+			.await
+	{
+		error!("nostr: news re-subscribe after reselect failed: {e}");
 	}
 }
 
@@ -1515,6 +1576,119 @@ fn handle_request_void(svc: &Arc<NostrService>, wallet: &Wallet, slate_id: &str,
 		}
 		_ => {}
 	}
+}
+
+/// First value of the first tag named `name`, if any.
+fn first_tag_value(event: &Event, name: &str) -> Option<String> {
+	event.tags.iter().find_map(|t| {
+		let parts = t.as_slice();
+		if parts.first().map(|s| s.as_str()) == Some(name) {
+			parts.get(1).cloned()
+		} else {
+			None
+		}
+	})
+}
+
+/// Ingest one kind-30023 news post from the Goblin news key and cache it (the
+/// store dedupes newest-per-`d`). Guards kind + author so a stray event on the
+/// news subscription can't spoof the panel.
+async fn handle_news(svc: &Arc<NostrService>, news_pk: PublicKey, event: Event) {
+	if event.kind != Kind::LongFormTextNote || event.pubkey != news_pk {
+		return;
+	}
+	let d = first_tag_value(&event, "d").unwrap_or_default();
+	let title = first_tag_value(&event, "title").unwrap_or_default();
+	let summary = news_summary_text(
+		first_tag_value(&event, "summary").as_deref(),
+		&event.content,
+	);
+	svc.store.save_news(NewsItem {
+		d,
+		created_at: event.created_at.as_secs() as i64,
+		title,
+		summary,
+	});
+}
+
+/// The panel's summary line: the `summary` tag when present, otherwise the first
+/// couple of lines of the markdown content flattened to plain text. Capped to a
+/// sensible length so the panel stays ~two lines. No markdown is ever rendered.
+fn news_summary_text(summary_tag: Option<&str>, content: &str) -> String {
+	if let Some(s) = summary_tag {
+		let s = s.trim();
+		if !s.is_empty() {
+			return truncate_summary(s);
+		}
+	}
+	let plain = strip_markdown_inline(content);
+	let joined = plain
+		.lines()
+		.map(|l| l.trim())
+		.filter(|l| !l.is_empty())
+		.take(2)
+		.collect::<Vec<_>>()
+		.join(" ");
+	truncate_summary(&joined)
+}
+
+/// Cap a summary to ~160 chars on a char boundary, adding an ellipsis.
+fn truncate_summary(s: &str) -> String {
+	const MAX: usize = 160;
+	if s.chars().count() <= MAX {
+		return s.to_string();
+	}
+	let head: String = s.chars().take(MAX).collect();
+	format!("{}…", head.trim_end())
+}
+
+/// Strip inline markdown for the fallback summary: drop image `![alt](url)`
+/// entirely, reduce link `[text](url)` to its text, and remove common emphasis /
+/// heading markers. Deliberately minimal — the owner usually sets the summary
+/// tag, so this only runs as a fallback.
+fn strip_markdown_inline(s: &str) -> String {
+	let chars: Vec<char> = s.chars().collect();
+	let mut out = String::new();
+	let mut i = 0;
+	while i < chars.len() {
+		match chars[i] {
+			'!' if chars.get(i + 1) == Some(&'[') => {
+				// Image: drop ![alt](url) wholesale.
+				i += 2;
+				while i < chars.len() && chars[i] != ']' {
+					i += 1;
+				}
+				i += 1; // past ']'
+				if chars.get(i) == Some(&'(') {
+					while i < chars.len() && chars[i] != ')' {
+						i += 1;
+					}
+					i += 1; // past ')'
+				}
+			}
+			'[' => {
+				// Link: keep the text, drop the (url).
+				i += 1;
+				while i < chars.len() && chars[i] != ']' {
+					out.push(chars[i]);
+					i += 1;
+				}
+				i += 1; // past ']'
+				if chars.get(i) == Some(&'(') {
+					while i < chars.len() && chars[i] != ')' {
+						i += 1;
+					}
+					i += 1; // past ')'
+				}
+			}
+			'#' | '*' | '`' | '>' | '_' => i += 1,
+			c => {
+				out.push(c);
+				i += 1;
+			}
+		}
+	}
+	out
 }
 
 async fn handle_wrap(svc: &Arc<NostrService>, wallet: &Wallet, event: Event) {

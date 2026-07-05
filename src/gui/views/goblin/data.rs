@@ -16,7 +16,7 @@
 
 use grin_wallet_libwallet::TxLogEntryType;
 
-use crate::nostr::{Contact, NostrSendStatus, NostrStore, TxNostrMeta};
+use crate::nostr::{Contact, NewsItem, NostrSendStatus, NostrStore, TxNostrMeta};
 use crate::wallet::Wallet;
 use crate::wallet::types::WalletTx;
 
@@ -377,4 +377,93 @@ pub fn search_contacts(wallet: &Wallet, query: &str, limit: usize) -> Vec<(Strin
 		.collect();
 	hits.truncate(limit);
 	hits
+}
+
+/// The latest cached news post for the Home panel, or `None` (panel hides).
+/// `GOBLIN_FAKE_NEWS=1` injects a fixed item in debug builds so the panel can be
+/// screenshotted without a live relay feed.
+pub fn news_latest(wallet: &Wallet) -> Option<NewsItem> {
+	#[cfg(debug_assertions)]
+	if std::env::var("GOBLIN_FAKE_NEWS").is_ok() {
+		return Some(NewsItem {
+			d: "fake".to_string(),
+			created_at: 0,
+			title: "Goblin Build 135".to_string(),
+			summary: "Tor transport is live. Read more: https://docs.goblin.st".to_string(),
+		});
+	}
+	wallet.nostr_service()?.store.latest_news()
+}
+
+/// Split a plain-text summary into (segment, is_url) runs so http(s) URLs render
+/// as tappable links and the rest as plain labels. Trailing sentence
+/// punctuation is trimmed off a URL so "…goblin.st." doesn't link the dot.
+pub fn split_urls(s: &str) -> Vec<(String, bool)> {
+	let mut out = Vec::new();
+	let mut rest = s;
+	while let Some(idx) = rest.find("http") {
+		let candidate = &rest[idx..];
+		if candidate.starts_with("http://") || candidate.starts_with("https://") {
+			if idx > 0 {
+				out.push((rest[..idx].to_string(), false));
+			}
+			let end = candidate
+				.find(char::is_whitespace)
+				.unwrap_or(candidate.len());
+			let mut url = &candidate[..end];
+			while let Some(last) = url.chars().last() {
+				if matches!(last, '.' | ',' | ')' | ']' | '}' | '!' | '?' | ';' | ':') {
+					url = &url[..url.len() - last.len_utf8()];
+				} else {
+					break;
+				}
+			}
+			out.push((url.to_string(), true));
+			rest = &candidate[url.len()..];
+		} else {
+			// A bare "http" that isn't a scheme; emit it as text and move past it.
+			let split_at = idx + 4;
+			out.push((rest[..split_at].to_string(), false));
+			rest = &rest[split_at..];
+		}
+	}
+	if !rest.is_empty() {
+		out.push((rest.to_string(), false));
+	}
+	out
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[test]
+	fn split_urls_isolates_links() {
+		let segs = split_urls("Tor is live. Read more: https://docs.goblin.st now");
+		assert_eq!(
+			segs,
+			vec![
+				("Tor is live. Read more: ".to_string(), false),
+				("https://docs.goblin.st".to_string(), true),
+				(" now".to_string(), false),
+			]
+		);
+	}
+
+	#[test]
+	fn split_urls_trims_trailing_punctuation_and_handles_no_url() {
+		let segs = split_urls("See https://x.io.");
+		assert_eq!(
+			segs,
+			vec![
+				("See ".to_string(), false),
+				("https://x.io".to_string(), true),
+				(".".to_string(), false),
+			]
+		);
+		assert_eq!(
+			split_urls("plain text"),
+			vec![("plain text".to_string(), false)]
+		);
+	}
 }

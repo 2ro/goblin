@@ -375,6 +375,7 @@ goblin:
     nav_receive: "收款"
     nav_settings: "设置"
     activity: "动态"
+    news: "新闻"
     empty_title: "暂无动态"
     empty_sub: "收发 grin 即可开始。"
     recent: "最近"

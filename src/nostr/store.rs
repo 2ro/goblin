@@ -29,6 +29,10 @@ use crate::nostr::types::*;
 /// Keys are processed-event markers older than this get pruned (30 days).
 const PROCESSED_TTL_SECS: i64 = 30 * 86_400;
 
+/// Cap on stored news posts (newest kept, older pruned) — the panel only ever
+/// shows the latest, so this is just a small archive bound.
+const NEWS_CAP: usize = 8;
+
 /// Nostr metadata archive for a wallet.
 pub struct NostrStore {
 	env: Arc<RwLock<Rkv<SafeModeEnvironment>>>,
@@ -42,6 +46,8 @@ pub struct NostrStore {
 	processed: SingleStore<SafeModeDatabase>,
 	/// Service settings (last connected time etc).
 	settings: SingleStore<SafeModeDatabase>,
+	/// Cached news posts by `d` tag.
+	news: SingleStore<SafeModeDatabase>,
 }
 
 impl NostrStore {
@@ -75,6 +81,7 @@ impl NostrStore {
 		let settings = k
 			.open_single("nostr_settings", StoreOptions::create())
 			.unwrap();
+		let news = k.open_single("nostr_news", StoreOptions::create()).unwrap();
 		Self {
 			env,
 			tx_meta,
@@ -82,6 +89,7 @@ impl NostrStore {
 			requests,
 			processed,
 			settings,
+			news,
 		}
 	}
 
@@ -288,6 +296,28 @@ impl NostrStore {
 		let _ = writer.commit();
 	}
 
+	// ── news ────────────────────────────────────────────────────────────────
+
+	pub fn all_news(&self) -> Vec<NewsItem> {
+		self.all_json(&self.news)
+	}
+
+	/// The latest news post overall (newest `created_at`).
+	pub fn latest_news(&self) -> Option<NewsItem> {
+		self.all_news().into_iter().max_by_key(|n| n.created_at)
+	}
+
+	/// Store a news post: newest-`created_at`-per-`d` wins, capped to the newest
+	/// `NEWS_CAP` entries (older pruned). Keyed by `d`, so the store holds one
+	/// row per addressable post.
+	pub fn save_news(&self, item: NewsItem) {
+		let merged = reconcile_news(self.all_news(), item, NEWS_CAP);
+		self.clear(&self.news);
+		for n in &merged {
+			self.put_json(&self.news, &n.d, n);
+		}
+	}
+
 	// ── archive control (user-facing) ───────────────────────────────────────
 
 	/// Export the whole archive as a JSON document.
@@ -307,5 +337,59 @@ impl NostrStore {
 		self.clear(&self.tx_meta);
 		self.clear(&self.requests);
 		self.clear(&self.processed);
+	}
+}
+
+/// Merge an incoming news post into the stored set: newest `created_at` wins
+/// per `d`, then keep only the newest `cap` overall. Pure so it's unit-testable
+/// without the rkv env.
+fn reconcile_news(mut all: Vec<NewsItem>, incoming: NewsItem, cap: usize) -> Vec<NewsItem> {
+	if let Some(existing) = all.iter_mut().find(|n| n.d == incoming.d) {
+		if incoming.created_at >= existing.created_at {
+			*existing = incoming;
+		}
+	} else {
+		all.push(incoming);
+	}
+	all.sort_by_key(|n| std::cmp::Reverse(n.created_at));
+	all.truncate(cap);
+	all
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	fn item(d: &str, created_at: i64) -> NewsItem {
+		NewsItem {
+			d: d.to_string(),
+			created_at,
+			title: format!("t{created_at}"),
+			summary: String::new(),
+		}
+	}
+
+	#[test]
+	fn newest_per_d_wins_and_cap_prunes() {
+		// Same d, newer created_at replaces (and carries the newer title).
+		let start = vec![item("a", 100)];
+		let merged = reconcile_news(start, item("a", 200), 8);
+		assert_eq!(merged.len(), 1);
+		assert_eq!(merged[0].created_at, 200);
+		assert_eq!(merged[0].title, "t200");
+
+		// Same d, OLDER created_at is ignored.
+		let merged = reconcile_news(merged, item("a", 150), 8);
+		assert_eq!(merged.len(), 1);
+		assert_eq!(merged[0].created_at, 200);
+
+		// Distinct d accumulate, newest first, capped to `cap`.
+		let mut all = vec![];
+		for i in 0..10 {
+			all = reconcile_news(all, item(&format!("d{i}"), i as i64), 3);
+		}
+		assert_eq!(all.len(), 3);
+		assert_eq!(all[0].created_at, 9);
+		assert_eq!(all[2].created_at, 7);
 	}
 }

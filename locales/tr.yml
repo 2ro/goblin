@@ -375,6 +375,7 @@ goblin:
     nav_receive: "Al"
     nav_settings: "Ayarlar"
     activity: "Etkinlik"
+    news: "Haberler"
     empty_title: "Henüz etkinlik yok"
     empty_sub: "Başlamak için grin gönder ya da al."
     recent: "Son işlemler"

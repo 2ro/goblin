@@ -146,6 +146,20 @@ pub struct PaymentRequest {
 	pub status: RequestStatus,
 }
 
+/// A cached news post (kind 30023 long-form) from the Goblin news key, shown
+/// in the Home news panel. Only the fields the panel needs are persisted.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct NewsItem {
+	/// The addressable `d` tag (replaceable-event identifier); dedupe key.
+	pub d: String,
+	/// Event `created_at` (seconds); newest per `d` wins, newest overall shows.
+	pub created_at: i64,
+	/// The post `title` tag.
+	pub title: String,
+	/// Plain-text summary (the `summary` tag, or a stripped content fallback).
+	pub summary: String,
+}
+
 /// Current unix time in seconds.
 pub fn unix_time() -> i64 {
 	std::time::SystemTime::now()
