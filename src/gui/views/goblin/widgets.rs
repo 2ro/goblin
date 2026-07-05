@@ -1067,6 +1067,75 @@ impl HoldToSend {
 	}
 }
 
+/// Like [`info_row`], but with the per-identity gradient dot drawn just left of
+/// the value — the transaction-detail legend for which held identity a payment
+/// used, alongside its name/npub.
+pub fn info_row_dot(ui: &mut Ui, label: &str, value: &str, seed: &str) {
+	let t = theme::tokens();
+	ui.horizontal(|ui| {
+		ui.label(
+			RichText::new(label)
+				.font(FontId::new(14.0, fonts::regular()))
+				.color(t.text_dim),
+		);
+		ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+			ui.add(
+				egui::Label::new(
+					RichText::new(value)
+						.font(FontId::new(15.0, fonts::semibold()))
+						.color(t.text),
+				)
+				.truncate(),
+			);
+			ui.add_space(7.0);
+			let (rect, _) = ui.allocate_exact_size(Vec2::splat(10.0), Sense::hover());
+			identity_dot(ui.painter(), rect.center(), 4.0, seed);
+		});
+	});
+	ui.add_space(8.0);
+	ui.painter().hline(
+		ui.min_rect().left()..=ui.min_rect().right(),
+		ui.cursor().top(),
+		Stroke::new(1.0, t.line),
+	);
+	ui.add_space(8.0);
+}
+
+/// A deliberately QUIET per-identity cue: a small two-tone dot in an identity's
+/// OWN gradient — the same pubkey-seeded math as its avatar (`identicon`), so the
+/// dot reads as a legend for that identity and matches everywhere it appears
+/// (activity row, switcher page, transaction detail). A faint, theme-aware ring
+/// keeps a PALE gradient legible on a light background and a DARK one on a dark
+/// background, without ever becoming a bright chip. `seed` is the identity's npub
+/// or pubkey hex. This is the single shared renderer, so toning it down (or
+/// removing the row cue) happens in exactly one place.
+pub fn identity_dot(painter: &egui::Painter, center: egui::Pos2, radius: f32, seed: &str) {
+	let t = theme::tokens();
+	let ((r1, g1, b1), (r2, g2, b2)) = super::identicon::gradient_rgb8(seed);
+	// Faint fill in BOTH themes; the ring below carries legibility, not the fill.
+	let fill_a = if t.dark_base { 165 } else { 185 };
+	let c1 = Color32::from_rgba_unmultiplied(r1, g1, b1, fill_a);
+	let c2 = Color32::from_rgba_unmultiplied(r2, g2, b2, fill_a);
+	// Base disc in the first stop, then the second stop as a half-disc so the dot
+	// is two-tone like the gradient avatar rather than a flat chip.
+	painter.circle_filled(center, radius, c1);
+	let start = std::f32::consts::FRAC_PI_4; // 45 degrees, the gradient axis-ish
+	let mut pts = Vec::with_capacity(14);
+	for i in 0..=12 {
+		let a = start + std::f32::consts::PI * (i as f32 / 12.0);
+		pts.push(center + radius * egui::Vec2::angled(a));
+	}
+	painter.add(egui::Shape::convex_polygon(pts, c2, Stroke::NONE));
+	// Faint ring: light on dark, dark on light — a low-contrast gradient still
+	// gets an edge on either background.
+	let ring = if t.dark_base {
+		Color32::from_rgba_unmultiplied(255, 255, 255, 55)
+	} else {
+		Color32::from_rgba_unmultiplied(0, 0, 0, 45)
+	};
+	painter.circle_stroke(center, radius, Stroke::new(1.0, ring));
+}
+
 #[cfg(test)]
 mod tests {
 	use super::{BalanceSubline, balance_subline};

@@ -54,12 +54,6 @@ pub(super) fn hsl_rgb8(h: f64, s: f64, l: f64) -> (u8, u8, u8) {
 	(to(r), to(g), to(b))
 }
 
-/// Standard HSL → RGB → `#rrggbb`.
-fn hsl_to_rgb(h: f64, s: f64, l: f64) -> String {
-	let (r, g, b) = hsl_rgb8(h, s, l);
-	format!("#{r:02x}{g:02x}{b:02x}")
-}
-
 /// Normalise any caller-supplied id (npub bech32 OR raw hex) to the canonical
 /// lowercase hex pubkey used as the seed everywhere.
 pub fn to_hex_seed(id: &str) -> String {
@@ -70,19 +64,36 @@ pub fn to_hex_seed(id: &str) -> String {
 	}
 }
 
-/// Gradient stop colors (`#rrggbb`) + rotation angle derived from the seed `hex`.
-/// Shared by the Grin-mark avatar and the bare-background variant so both draw
-/// the byte-identical gradient for one key. Keep this math in lockstep with the
-/// shared reference port.
-fn gradient_params(hex: &str) -> (String, String, f64) {
+/// Gradient stop colors (RGB bytes) + rotation angle derived from the seed `hex`.
+/// The single source of the per-identity gradient math; both the `#rrggbb`
+/// string form (for the SVG avatar) and the byte form (for the small egui cue)
+/// come from here, so a dot/edge cue matches the avatar exactly. Keep this in
+/// lockstep with the shared reference port.
+fn gradient_rgb(hex: &str) -> ((u8, u8, u8), (u8, u8, u8), f64) {
 	let hash = Sha256::digest(hex.as_bytes());
 	let base = ((u16::from(hash[0]) << 8 | u16::from(hash[1])) as f64 / 65_535.0) * 360.0;
 	let offset = 40.0 + (hash[2] as f64 / 255.0) * 120.0;
 	let h2 = (base + offset) % 360.0;
 	let angle = (hash[3] as f64 / 255.0) * 360.0;
-	let c1 = hsl_to_rgb(base, 0.62, 0.55);
-	let c2 = hsl_to_rgb(h2, 0.62, 0.42);
+	let c1 = hsl_rgb8(base, 0.62, 0.55);
+	let c2 = hsl_rgb8(h2, 0.62, 0.42);
 	(c1, c2, angle)
+}
+
+/// Gradient stop colors (`#rrggbb`) + rotation angle for the SVG avatar.
+fn gradient_params(hex: &str) -> (String, String, f64) {
+	let (c1, c2, angle) = gradient_rgb(hex);
+	let hex_of = |(r, g, b): (u8, u8, u8)| format!("#{r:02x}{g:02x}{b:02x}");
+	(hex_of(c1), hex_of(c2), angle)
+}
+
+/// The two gradient stop colors (RGB bytes) for an identity, seeded by the same
+/// pubkey math as its gradient avatar, so a small dot or edge cue drawn from
+/// these matches that identity's avatar. `id` may be an npub or raw hex.
+pub fn gradient_rgb8(id: &str) -> ((u8, u8, u8), (u8, u8, u8)) {
+	let hex = to_hex_seed(id);
+	let (c1, c2, _angle) = gradient_rgb(&hex);
+	(c1, c2)
 }
 
 /// The gradient avatar as a standalone SVG document, seeded by `hex` (lowercase

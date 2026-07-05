@@ -34,6 +34,10 @@ pub struct ActivityItem {
 	pub time: i64,
 	/// Counterparty npub hex, when known.
 	pub npub: Option<String>,
+	/// The wallet's OWN nostr identity (pubkey hex) that was active when this tx
+	/// happened — the front door it used. Empty/None on pre-feature rows (treated
+	/// as the primary identity). Drives the subtle per-identity row cue.
+	pub owner_pubkey: Option<String>,
 }
 
 /// Full detail for the receipt / transaction-detail screen: GRIM tx data
@@ -316,6 +320,10 @@ fn build_item(tx: &WalletTx, store: Option<&NostrStore>) -> ActivityItem {
 		.map(|t| t.timestamp())
 		.unwrap_or(0);
 	let canceled = is_canceled(tx, meta.as_ref());
+	let owner_pubkey = meta
+		.as_ref()
+		.map(|m| m.recipient_pubkey.clone())
+		.filter(|h| !h.is_empty());
 
 	ActivityItem {
 		tx_id: tx.data.id,
@@ -328,6 +336,7 @@ fn build_item(tx: &WalletTx, store: Option<&NostrStore>) -> ActivityItem {
 		system,
 		time,
 		npub: meta.map(|m| m.npub),
+		owner_pubkey,
 	}
 }
 

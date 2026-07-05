@@ -130,6 +130,35 @@ pub struct GoblinWalletView {
 	wipe_confirm: bool,
 }
 
+/// Whether a per-identity cue is drawn on activity rows. OFF by design: on an
+/// activity row the avatar is the COUNTERPARTY, so a dot in an identity gradient
+/// there is both redundant with that avatar and does not convey which of the
+/// USER's own identities was involved. A correct in-list cue would need a
+/// distinct element encoding the user's own active identity, which is a separate
+/// follow-up with its own design pass. The seam (this const + the plumbing below)
+/// is kept so that cue can be added in one place; the detail-view identity
+/// attribution is the shipped "which identity" answer. Leave false.
+const SHOW_ROW_IDENTITY_CUE: bool = false;
+
+/// Per-frame identity context for the activity rows: whether the wallet holds
+/// more than one identity (the cue only shows then) and the primary identity's
+/// pubkey hex (the seed for pre-feature rows that carry no owner tag). Computed
+/// once per activity list, not per row.
+struct IdentityCueCtx {
+	multi: bool,
+	primary: Option<String>,
+}
+
+impl IdentityCueCtx {
+	fn compute(wallet: &Wallet) -> Self {
+		let ids = wallet.nostr_identities();
+		IdentityCueCtx {
+			multi: ids.len() > 1,
+			primary: ids.first().map(|i| i.pubkey_hex.clone()),
+		}
+	}
+}
+
 /// Sub-pages of the Settings tab.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum SettingsPage {
@@ -1091,6 +1120,7 @@ impl GoblinWalletView {
 				w::kicker(ui, &t!("goblin.home.activity"));
 				ui.add_space(6.0);
 				let items = activity_items(wallet);
+				let id_cue = IdentityCueCtx::compute(wallet);
 				if items.is_empty() {
 					empty_state(
 						ui,
@@ -1099,7 +1129,7 @@ impl GoblinWalletView {
 					);
 				} else {
 					for item in items.iter().take(6) {
-						self.activity_item_ui(ui, item, wallet, cb);
+						self.activity_item_ui(ui, item, wallet, cb, &id_cue);
 					}
 				}
 				ui.add_space(16.0);
@@ -1570,30 +1600,38 @@ impl GoblinWalletView {
 										})
 										.map(|m| m.recipient_pubkey)
 										.filter(|h| !h.is_empty());
-									let id_label = match owning_hex {
-										Some(hex) => wallet
-											.nostr_identities()
-											.iter()
-											.find(|i| i.pubkey_hex == hex)
-											.map(|i| {
-												i.nip05.clone().unwrap_or_else(|| {
-													data::short_npub(&i.pubkey_hex)
-												})
-											})
-											.unwrap_or_else(|| data::short_npub(&hex)),
-										// Legacy/primary row: the first held identity.
-										None => wallet
-											.nostr_identities()
-											.first()
-											.map(|i| {
-												i.nip05.clone().unwrap_or_else(|| {
-													data::short_npub(&i.pubkey_hex)
-												})
-											})
-											.unwrap_or_default(),
+									let ids = wallet.nostr_identities();
+									// The identity this tx used: the one recorded on it,
+									// else the primary for pre-feature rows.
+									let owner = match &owning_hex {
+										Some(hex) => ids.iter().find(|i| &i.pubkey_hex == hex),
+										None => ids.first(),
 									};
+									let seed = owner
+										.map(|i| i.pubkey_hex.clone())
+										.or_else(|| owning_hex.clone());
+									let id_label = owner
+										.map(|i| {
+											i.nip05
+												.clone()
+												.unwrap_or_else(|| data::short_npub(&i.pubkey_hex))
+										})
+										.or_else(|| owning_hex.as_deref().map(data::short_npub))
+										.unwrap_or_default();
 									if !id_label.is_empty() {
-										w::info_row(ui, &t!("goblin.receipt.identity"), &id_label);
+										match &seed {
+											Some(seed) => w::info_row_dot(
+												ui,
+												&t!("goblin.receipt.identity"),
+												&id_label,
+												seed,
+											),
+											None => w::info_row(
+												ui,
+												&t!("goblin.receipt.identity"),
+												&id_label,
+											),
+										}
 									}
 								}
 								if let Some(npub) = &d.npub {
@@ -2024,6 +2062,7 @@ impl GoblinWalletView {
 			.scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
 			.show(ui, |ui| {
 				let items = activity_items(wallet);
+				let id_cue = IdentityCueCtx::compute(wallet);
 				if items.is_empty() {
 					empty_state(
 						ui,
@@ -2040,7 +2079,7 @@ impl GoblinWalletView {
 					if !pending.is_empty() {
 						w::section_header(ui, &t!("goblin.activity.pending_header"));
 						for item in pending {
-							self.activity_item_ui(ui, item, wallet, cb);
+							self.activity_item_ui(ui, item, wallet, cb, &id_cue);
 						}
 						ui.add_space(8.0);
 					}
@@ -2055,7 +2094,7 @@ impl GoblinWalletView {
 							w::section_header(ui, &label);
 							last = Some(label);
 						}
-						self.activity_item_ui(ui, item, wallet, cb);
+						self.activity_item_ui(ui, item, wallet, cb, &id_cue);
 					}
 				}
 				ui.add_space(16.0);
@@ -2068,6 +2107,7 @@ impl GoblinWalletView {
 		item: &ActivityItem,
 		wallet: &Wallet,
 		_cb: &dyn PlatformCallbacks,
+		id_cue: &IdentityCueCtx,
 	) {
 		// No +/- for canceled: nothing moved.
 		let sign = if item.canceled {
@@ -2080,7 +2120,7 @@ impl GoblinWalletView {
 		let amount = format!("{}{}{}", sign, w::amount_str(item.amount), w::TSU);
 		let (note, time) = Self::activity_note_time(item);
 		let tex = self.handle_tex(ui.ctx(), wallet, &item.title);
-		if w::activity_row(
+		let resp = w::activity_row(
 			ui,
 			&item.title,
 			&note,
@@ -2091,9 +2131,26 @@ impl GoblinWalletView {
 			item.canceled,
 			item.system,
 			tex.as_ref(),
-		)
-		.clicked()
-		{
+		);
+		// Provisional per-identity cue (owner reviews the look before it is final):
+		// only when the wallet holds MORE THAN ONE identity, and never on system
+		// (mining) rows. A single, quiet gradient dot at the row's top-left corner,
+		// seeded by the identity this tx used (its own gradient, matching that
+		// identity's avatar in the switcher). Behind SHOW_ROW_IDENTITY_CUE so it can
+		// be toned down or dropped in one place without touching the rest.
+		if SHOW_ROW_IDENTITY_CUE && id_cue.multi && !item.system {
+			let seed = item.owner_pubkey.clone().or_else(|| id_cue.primary.clone());
+			if let Some(seed) = seed {
+				let r = resp.rect;
+				w::identity_dot(
+					ui.painter(),
+					egui::pos2(r.left() + 8.0, r.top() + 7.0),
+					4.0,
+					&seed,
+				);
+			}
+		}
+		if resp.clicked() {
 			self.receipt = Some(item.tx_id);
 		}
 	}
