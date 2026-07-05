@@ -39,6 +39,23 @@ fn terr(msg: impl Into<String>) -> TransportError {
 	TransportError::backend(std::io::Error::other(msg.into()))
 }
 
+/// Per-message / per-frame ceiling for every relay websocket. The relay pool
+/// only ever requires `max_message_length >= 131072` (128 KiB) from a relay,
+/// and the wallet's own events (gift wraps, kind-0/10050) are far smaller.
+/// tungstenite otherwise defaults to a 64 MiB message / 16 MiB frame ceiling;
+/// tighten it to a few MiB so a hostile or buggy relay can't stream a giant
+/// frame into wallet memory, while keeping ample headroom above any legitimate
+/// event.
+const WS_MAX_MESSAGE_SIZE: usize = 4 << 20; // 4 MiB
+const WS_MAX_FRAME_SIZE: usize = 4 << 20; // 4 MiB
+
+/// The tightened websocket config applied to every relay dial.
+fn ws_config() -> tokio_tungstenite::tungstenite::protocol::WebSocketConfig {
+	tokio_tungstenite::tungstenite::protocol::WebSocketConfig::default()
+		.max_message_size(Some(WS_MAX_MESSAGE_SIZE))
+		.max_frame_size(Some(WS_MAX_FRAME_SIZE))
+}
+
 /// Nostr websocket transport over embedded Tor.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct TorWebSocketTransport;
@@ -81,7 +98,12 @@ impl WebSocketTransport for TorWebSocketTransport {
 				.map_err(terr)?;
 			let (ws, _response) = tokio::time::timeout(
 				timeout,
-				tokio_tungstenite::client_async_tls(url.as_str(), stream),
+				tokio_tungstenite::client_async_tls_with_config(
+					url.as_str(),
+					stream,
+					Some(ws_config()),
+					None,
+				),
 			)
 			.await
 			.map_err(|_| terr("websocket handshake timeout"))?
@@ -158,5 +180,25 @@ where
 		Pin::new(&mut self.0)
 			.poll_close_unpin(cx)
 			.map_err(TransportError::backend)
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[test]
+	fn ws_config_caps_message_and_frame_size() {
+		let cfg = ws_config();
+		// Tightened to the constants, well below tungstenite's 64 MiB / 16 MiB
+		// defaults so a hostile relay can't stream a giant frame into memory...
+		assert_eq!(cfg.max_message_size, Some(WS_MAX_MESSAGE_SIZE));
+		assert_eq!(cfg.max_frame_size, Some(WS_MAX_FRAME_SIZE));
+		assert!(WS_MAX_MESSAGE_SIZE < 64 << 20);
+		assert!(WS_MAX_FRAME_SIZE < 16 << 20);
+		// ...yet with ample headroom above the pool's 128 KiB minimum event size,
+		// so no legitimate relay traffic is ever truncated.
+		assert!(WS_MAX_MESSAGE_SIZE >= 131_072);
+		assert!(WS_MAX_FRAME_SIZE >= 131_072);
 	}
 }

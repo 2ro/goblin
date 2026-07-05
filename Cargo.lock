@@ -4227,6 +4227,7 @@ dependencies = [
  "wgpu",
  "winit",
  "winresource",
+ "zeroize",
 ]
 
 [[package]]

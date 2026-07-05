@@ -30,6 +30,7 @@ use nostr_sdk::nips::nip59::{self, UnwrappedGift};
 use nostr_sdk::{
 	Event, EventBuilder, JsonUtil, Keys, Kind, PublicKey, Tag, Timestamp, UnsignedEvent,
 };
+use zeroize::Zeroizing;
 
 /// The capability Goblin advertises in its kind 10050 `encryption` tag,
 /// space-separated best-first (NIP-17 backward-compat extension).
@@ -56,12 +57,17 @@ pub fn peer_supports_v3(encryption: Option<&str>) -> bool {
 /// Derive the v3 conversation key between our secret key and a peer's
 /// public key, bridging nostr-sdk's key types (secp256k1 0.29) to the nip44
 /// crate's (0.31) via their byte serializations.
-fn conversation_key(secret: &nostr_sdk::SecretKey, public: &PublicKey) -> Result<[u8; 32], String> {
+fn conversation_key(
+	secret: &nostr_sdk::SecretKey,
+	public: &PublicKey,
+) -> Result<Zeroizing<[u8; 32]>, String> {
 	let sk = secp256k1::SecretKey::from_byte_array(secret.to_secret_bytes())
 		.map_err(|e| format!("invalid secret key: {e}"))?;
 	let pk = secp256k1::XOnlyPublicKey::from_byte_array(*public.as_bytes())
 		.map_err(|e| format!("invalid public key: {e}"))?;
-	Ok(nip44::get_conversation_key_v3(sk, pk))
+	// The raw ECDH conversation key is secret material: wrap it so it is scrubbed
+	// from memory on drop. It derefs to `&[u8; 32]` for the nip44 calls below.
+	Ok(Zeroizing::new(nip44::get_conversation_key_v3(sk, pk)))
 }
 
 /// Build a NIP-17 private-message gift wrap encrypted with NIP-44 v3.

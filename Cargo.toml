@@ -122,6 +122,9 @@ nip44 = "0.3.0"
 ## Only to construct the key types the `nip44` crate takes: nostr-sdk pins
 ## secp256k1 0.29, the nip44 crate 0.31 — bridged via byte arrays in wrapv3.rs.
 secp256k1 = "0.31"
+## Scrub the NIP-44 conversation-key buffers (raw ECDH secret) from memory on
+## drop in wrapv3.rs. Already a transitive dep; pulled in directly here.
+zeroize = "1"
 async-wsocket = "0.13"
 tokio-tungstenite = { version = "0.26", features = ["rustls-tls-webpki-roots"] }
 regex = "1"
