@@ -96,6 +96,16 @@ pub fn gradient_rgb8(id: &str) -> ((u8, u8, u8), (u8, u8, u8)) {
 	(c1, c2)
 }
 
+/// The identity's gradient stops PLUS the rotation angle (degrees), so a small
+/// egui-drawn badge can reproduce the same rotated linear gradient the SVG
+/// avatar uses (`gradient_avatar_svg`: `x1=0 y1=0 x2=1 y2=1` then
+/// `rotate(angle, 0.5, 0.5)`). `id` may be an npub or raw hex.
+pub fn gradient_stops(id: &str) -> ((u8, u8, u8), (u8, u8, u8), f32) {
+	let hex = to_hex_seed(id);
+	let (c1, c2, angle) = gradient_rgb(&hex);
+	(c1, c2, angle as f32)
+}
+
 /// The gradient avatar as a standalone SVG document, seeded by `hex` (lowercase
 /// hex pubkey). `id_suffix` makes the gradient element id unique when several
 /// are inlined into ONE html document; for a standalone document (how egui

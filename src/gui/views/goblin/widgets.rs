@@ -1101,37 +1101,59 @@ pub fn info_row_dot(ui: &mut Ui, label: &str, value: &str, seed: &str) {
 	ui.add_space(8.0);
 }
 
-/// A deliberately QUIET per-identity cue: a small two-tone dot in an identity's
-/// OWN gradient — the same pubkey-seeded math as its avatar (`identicon`), so the
-/// dot reads as a legend for that identity and matches everywhere it appears
-/// (activity row, switcher page, transaction detail). A faint, theme-aware ring
-/// keeps a PALE gradient legible on a light background and a DARK one on a dark
-/// background, without ever becoming a bright chip. `seed` is the identity's npub
-/// or pubkey hex. This is the single shared renderer, so toning it down (or
-/// removing the row cue) happens in exactly one place.
+/// A per-identity cue: a small disc filled with an identity's OWN gradient — the
+/// same pubkey-seeded, rotated two-stop linear gradient its avatar uses
+/// (`identicon`), so the disc reads as a color legend for that identity and
+/// matches its avatar everywhere it appears (activity-row corner badge, switcher,
+/// transaction detail). The fill is a true smooth gradient (an egui mesh, not a
+/// flat chip) at 0.9 opacity, with a 1px theme-aware hairline ring that keeps it
+/// legible on both a pure-white and a pure-black background. `seed` is the
+/// identity's npub or pubkey hex. Single shared renderer, so the look is tuned in
+/// exactly one place. Matches the owner-approved cue mock precisely.
 pub fn identity_dot(painter: &egui::Painter, center: egui::Pos2, radius: f32, seed: &str) {
 	let t = theme::tokens();
-	let ((r1, g1, b1), (r2, g2, b2)) = super::identicon::gradient_rgb8(seed);
-	// Faint fill in BOTH themes; the ring below carries legibility, not the fill.
-	let fill_a = if t.dark_base { 165 } else { 185 };
-	let c1 = Color32::from_rgba_unmultiplied(r1, g1, b1, fill_a);
-	let c2 = Color32::from_rgba_unmultiplied(r2, g2, b2, fill_a);
-	// Base disc in the first stop, then the second stop as a half-disc so the dot
-	// is two-tone like the gradient avatar rather than a flat chip.
-	painter.circle_filled(center, radius, c1);
-	let start = std::f32::consts::FRAC_PI_4; // 45 degrees, the gradient axis-ish
-	let mut pts = Vec::with_capacity(14);
-	for i in 0..=12 {
-		let a = start + std::f32::consts::PI * (i as f32 / 12.0);
-		pts.push(center + radius * egui::Vec2::angled(a));
+	let ((r1, g1, b1), (r2, g2, b2), angle) = super::identicon::gradient_stops(seed);
+	// 0.9 fill opacity per the mock.
+	const FILL_A: u8 = 230;
+	let lerp = |a: u8, b: u8, f: f32| (a as f32 + (b as f32 - a as f32) * f).round() as u8;
+	let col = |f: f32| {
+		let f = f.clamp(0.0, 1.0);
+		Color32::from_rgba_unmultiplied(lerp(r1, r2, f), lerp(g1, g2, f), lerp(b1, b2, f), FILL_A)
+	};
+	// Reproduce the SVG's rotated linear gradient (base axis 0,0 -> 1,1 in the
+	// unit bounding box, then rotate(angle) about the centre). For a rim point in
+	// direction (cv, sv) on the unit circle, its bounding-box offset from centre
+	// is (0.5·cv, 0.5·sv); inverse-rotating by the gradient angle and projecting
+	// onto the (1,1) axis gives the stop parameter t.
+	let (sin_a, cos_a) = angle.to_radians().sin_cos();
+	let t_at = |cv: f32, sv: f32| -> f32 {
+		let dx = 0.5 * cv;
+		let dy = 0.5 * sv;
+		let rx = cos_a * dx + sin_a * dy;
+		let ry = -sin_a * dx + cos_a * dy;
+		(rx + ry) * 0.5 + 0.5
+	};
+	// Gradient-filled disc as a triangle fan; egui interpolates the per-vertex
+	// colours, so the fill is a smooth gradient at this size.
+	let n = 28usize;
+	let mut mesh = egui::Mesh::default();
+	mesh.colored_vertex(center, col(t_at(0.0, 0.0)));
+	for i in 0..=n {
+		let a = std::f32::consts::TAU * (i as f32 / n as f32);
+		let (sv, cv) = a.sin_cos();
+		mesh.colored_vertex(center + radius * egui::vec2(cv, sv), col(t_at(cv, sv)));
 	}
-	painter.add(egui::Shape::convex_polygon(pts, c2, Stroke::NONE));
-	// Faint ring: light on dark, dark on light — a low-contrast gradient still
-	// gets an edge on either background.
+	for i in 1..=n as u32 {
+		mesh.add_triangle(0, i, i + 1);
+	}
+	painter.add(egui::Shape::mesh(mesh));
+	// 1px theme-aware hairline ring (matches the mock): near-black on light,
+	// near-white on dark, so the disc has a defined edge on either background and
+	// against the avatar it badges.
 	let ring = if t.dark_base {
-		Color32::from_rgba_unmultiplied(255, 255, 255, 55)
+		Color32::from_rgba_unmultiplied(250, 250, 247, 82)
 	} else {
-		Color32::from_rgba_unmultiplied(0, 0, 0, 45)
+		Color32::from_rgba_unmultiplied(14, 14, 12, 71)
 	};
 	painter.circle_stroke(center, radius, Stroke::new(1.0, ring));
 }

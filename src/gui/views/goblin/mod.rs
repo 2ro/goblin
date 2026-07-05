@@ -130,15 +130,12 @@ pub struct GoblinWalletView {
 	wipe_confirm: bool,
 }
 
-/// Whether a per-identity cue is drawn on activity rows. OFF by design: on an
-/// activity row the avatar is the COUNTERPARTY, so a dot in an identity gradient
-/// there is both redundant with that avatar and does not convey which of the
-/// USER's own identities was involved. A correct in-list cue would need a
-/// distinct element encoding the user's own active identity, which is a separate
-/// follow-up with its own design pass. The seam (this const + the plumbing below)
-/// is kept so that cue can be added in one place; the detail-view identity
-/// attribution is the shipped "which identity" answer. Leave false.
-const SHOW_ROW_IDENTITY_CUE: bool = false;
+/// Whether the per-identity cue is drawn on activity rows (owner-approved). The
+/// row's main avatar stays the COUNTERPARTY; the cue is a SMALL corner badge on
+/// that avatar, filled with the USER's OWN identity gradient for the tx (from
+/// `ActivityItem.owner_pubkey`), so a glance clusters which of your identities
+/// each payment used. Only shown when the wallet holds more than one identity.
+const SHOW_ROW_IDENTITY_CUE: bool = true;
 
 /// Per-frame identity context for the activity rows: whether the wallet holds
 /// more than one identity (the cue only shows then) and the primary identity's
@@ -2132,22 +2129,19 @@ impl GoblinWalletView {
 			item.system,
 			tex.as_ref(),
 		);
-		// Provisional per-identity cue (owner reviews the look before it is final):
-		// only when the wallet holds MORE THAN ONE identity, and never on system
-		// (mining) rows. A single, quiet gradient dot at the row's top-left corner,
-		// seeded by the identity this tx used (its own gradient, matching that
-		// identity's avatar in the switcher). Behind SHOW_ROW_IDENTITY_CUE so it can
-		// be toned down or dropped in one place without touching the rest.
+		// Per-identity cue (owner-approved): only when the wallet holds MORE THAN
+		// ONE identity, and never on system (mining) rows. A small corner badge on
+		// the counterparty avatar, filled with the identity THIS tx used (its own
+		// gradient; falls back to the primary for pre-feature rows). The row avatar
+		// is 40px, flush to the row's left and vertically centred, so its
+		// bottom-right corner is at (left+40, mid+20); the badge overhangs that
+		// corner by ~4px (matching the mock's right:-4/bottom:-4, 14px badge).
 		if SHOW_ROW_IDENTITY_CUE && id_cue.multi && !item.system {
 			let seed = item.owner_pubkey.clone().or_else(|| id_cue.primary.clone());
 			if let Some(seed) = seed {
 				let r = resp.rect;
-				w::identity_dot(
-					ui.painter(),
-					egui::pos2(r.left() + 8.0, r.top() + 7.0),
-					4.0,
-					&seed,
-				);
+				let badge = egui::pos2(r.left() + 37.0, r.center().y + 17.0);
+				w::identity_dot(ui.painter(), badge, 6.0, &seed);
 			}
 		}
 		if resp.clicked() {
