@@ -58,16 +58,19 @@ pub const MAX_IDENTITIES: usize = 8;
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct HeldEntry {
 	/// Public key, lowercase hex — the stable id of this identity.
+	#[serde(default)]
 	pub pubkey: String,
 	/// Path to the identity's `identity.json`, RELATIVE to the nostr dir:
 	/// `"identity.json"` for the legacy identity #1, else
 	/// `"identities/<hex>/identity.json"`.
+	#[serde(default)]
 	pub path: String,
 	/// A short human label: the identity's claimed name (local part of its NIP-05)
 	/// when it has one, else empty. NOT rendered — the UI derives its display from
 	/// the name or a truncated npub — kept only as a convenience field in the
 	/// index. Plaintext by design (this index carries no secret). Never a
 	/// placeholder word.
+	#[serde(default)]
 	pub label: String,
 }
 
@@ -91,14 +94,25 @@ impl HeldEntry {
 /// active. Persisted as `identities.json`.
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct HeldIdentities {
+	/// Format version. Defaults to 1 when absent so a file that dropped the field
+	/// still parses.
+	#[serde(default = "default_held_ver")]
 	pub ver: u8,
 	/// Active identity, lowercase hex. Drives the single live subscription and
 	/// all display; the only pointer a switch moves.
+	#[serde(default)]
 	pub active: String,
 	/// Display order, lowercase hex.
+	#[serde(default)]
 	pub order: Vec<String>,
 	/// Entry metadata (no secrets).
+	#[serde(default)]
 	pub identities: Vec<HeldEntry>,
+}
+
+/// The held-index format version default (1).
+fn default_held_ver() -> u8 {
+	1
 }
 
 impl HeldIdentities {
@@ -550,6 +564,32 @@ mod tests {
 		assert_eq!(stored.source, crate::nostr::IdentitySource::Imported);
 		assert_eq!(stored.unlock("pw").unwrap().public_key(), ext.public_key());
 		let _ = std::fs::remove_dir_all(&dir);
+	}
+
+	#[test]
+	fn held_index_parse_is_forward_compatible() {
+		// A blob in the CURRENT format plus an unknown extra field still parses
+		// (unknown fields ignored), so a newer build's index is not rejected.
+		let idx: HeldIdentities = serde_json::from_str(
+			r#"{"ver":1,"active":"ab","order":["ab"],"identities":[{"pubkey":"ab","path":"identity.json","label":"","future_field":true}],"future_top":42}"#,
+		)
+		.unwrap();
+		assert_eq!(idx.ver, 1);
+		assert_eq!(idx.active, "ab");
+		assert_eq!(idx.len(), 1);
+		// A blob MISSING non-essential fields parses with the correct defaults:
+		// ver -> 1, order/identities -> empty, active -> empty.
+		let idx: HeldIdentities = serde_json::from_str(r#"{"active":"cd"}"#).unwrap();
+		assert_eq!(idx.ver, 1, "ver must default to 1");
+		assert_eq!(idx.active, "cd");
+		assert!(idx.order.is_empty());
+		assert!(idx.identities.is_empty());
+		// A HeldEntry missing its label still parses (label defaults empty).
+		let idx: HeldIdentities = serde_json::from_str(
+			r#"{"ver":1,"active":"ab","order":["ab"],"identities":[{"pubkey":"ab","path":"identity.json"}]}"#,
+		)
+		.unwrap();
+		assert_eq!(idx.identities[0].label, "");
 	}
 
 	#[test]

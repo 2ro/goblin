@@ -48,13 +48,34 @@ pub const MAX_PROOF_ADDRESS_INDEX: u32 = 1023;
 /// app's default address, so per-sale allocation starts at 1.
 #[derive(Serialize, Deserialize, Clone, Debug)]
 struct ProofAddrRegistry {
+	/// Format version. Defaults to 1 when absent so an older/newer file that
+	/// dropped the field still parses.
+	#[serde(default = "default_ver")]
 	ver: u8,
+	/// Next index to hand out. MUST default to 1 (never 0: index 0 is the app's
+	/// default address), so a file missing this field parses to the fresh-wallet
+	/// counter rather than re-handing-out index 0.
+	#[serde(default = "default_next")]
 	next: u32,
+}
+
+/// The registry format version default (1).
+fn default_ver() -> u8 {
+	1
+}
+
+/// The allocation counter default. MUST be 1: index 0 is the app's default
+/// address, so per-sale minting starts at 1 and never 0.
+fn default_next() -> u32 {
+	1
 }
 
 impl Default for ProofAddrRegistry {
 	fn default() -> Self {
-		Self { ver: 1, next: 1 }
+		Self {
+			ver: default_ver(),
+			next: default_next(),
+		}
 	}
 }
 
@@ -177,6 +198,33 @@ mod tests {
 		assert_eq!(allocate(&path).unwrap(), 1);
 		// After the first allocate the file exists and the counter persisted.
 		assert_eq!(allocate(&path).unwrap(), 2);
+		let _ = std::fs::remove_file(&path);
+	}
+
+	#[test]
+	fn registry_parse_is_forward_compatible() {
+		// A blob in the CURRENT format plus an unknown extra field still parses
+		// (unknown fields ignored, so it is NOT treated as corrupt).
+		let reg: ProofAddrRegistry =
+			serde_json::from_str(r#"{"ver":1,"next":7,"future_field":true}"#).unwrap();
+		assert_eq!(reg.next, 7);
+		assert_eq!(reg.ver, 1);
+		// A blob MISSING the non-essential field parses with the correct default:
+		// next defaults to 1 (never 0), ver to 1.
+		let reg: ProofAddrRegistry = serde_json::from_str(r#"{"ver":1}"#).unwrap();
+		assert_eq!(reg.next, 1, "next must default to 1, never 0");
+		let reg: ProofAddrRegistry = serde_json::from_str(r#"{}"#).unwrap();
+		assert_eq!(reg.ver, 1);
+		assert_eq!(reg.next, 1);
+	}
+
+	#[test]
+	fn present_registry_with_unknown_field_still_allocates() {
+		// Interaction with the corrupt-refuse rule: an unknown extra field is
+		// forward-compat, not corruption, so allocation proceeds normally.
+		let path = tmpfile("forward");
+		std::fs::write(&path, r#"{"ver":1,"next":9,"future_field":true}"#).unwrap();
+		assert_eq!(allocate(&path).unwrap(), 9);
 		let _ = std::fs::remove_file(&path);
 	}
 
