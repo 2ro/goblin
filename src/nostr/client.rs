@@ -95,12 +95,31 @@ const NAME_REVERIFY_INTERVAL_SECS: i64 = 6 * 3600;
 /// instead of bursting dozens of simultaneous mixnet lookups at once.
 const NAME_REVERIFY_MAX_PER_TICK: usize = 8;
 
+/// One held identity live in memory: its decrypted keys (for unwrapping incoming
+/// gift wraps addressed to it, and for signing when it is the active identity)
+/// and its file state (for publishing its DM-relay list and, if named, its
+/// profile). Every held identity of the open wallet is kept here so the wallet
+/// LISTENS for ALL of them at once; switching is then a purely local change of
+/// which one is presented and used for sending.
+#[derive(Clone)]
+pub struct HeldIdentityKeys {
+	pub keys: Keys,
+	pub identity: NostrIdentity,
+}
+
 /// Per-wallet nostr service.
 pub struct NostrService {
-	/// Identity keys (decrypted for the session).
-	keys: Keys,
-	/// Identity file state.
+	/// The ACTIVE identity's keys — used for sending, signing, and display. A
+	/// switch swaps this in place (the target is already unlocked in `recv`).
+	keys: RwLock<Keys>,
+	/// Active identity file state (display, username claim, etc.).
 	pub identity: RwLock<NostrIdentity>,
+	/// EVERY held identity of the open wallet, decrypted for the session. The
+	/// wallet subscribes to gift wraps for all of their pubkeys at once and
+	/// unwraps each incoming wrap with whichever of these keys opens it, redeeming
+	/// into the one shared balance. Rebuilt on add/import/rotate; a plain switch
+	/// leaves it untouched and only re-points `keys`/`identity`.
+	recv: RwLock<Vec<HeldIdentityKeys>>,
 	/// Per-wallet configuration.
 	pub config: RwLock<NostrConfig>,
 	/// Metadata archive.
@@ -137,15 +156,6 @@ pub struct NostrService {
 	/// Serializes a manual payment-cancel against a concurrent S2 finalize+post
 	/// so the two can't both succeed (cancel the outputs AND post on-chain).
 	cancel_finalize_lock: Mutex<()>,
-	/// This service was stood up by an identity SWITCH and is running its first
-	/// catch-up (the "Syncing…" state). Cleared once that catch-up fetch completes.
-	/// Only the ACTIVE identity ever listens, so a switch is mechanically a fresh
-	/// service on a different key; this flag just lets the UI show the catch-up.
-	switch_syncing: AtomicBool,
-	/// Count of payments redeemed during the switch catch-up (payments that
-	/// arrived for this identity while it was dormant). Read by the UI to show
-	/// "you were paid while away"; 0 means a quiet "caught up".
-	switch_received: std::sync::atomic::AtomicU32,
 }
 
 /// Phase of the most recent outgoing send, polled by the send UI.
@@ -160,17 +170,28 @@ pub mod send_phase {
 }
 
 impl NostrService {
-	/// Create the service for an unlocked identity.
+	/// Create the service holding EVERY held identity of the open wallet (all
+	/// unlocked at wallet-open), with `active_hex` marking which one is presented
+	/// and used for sending. The wallet listens for all of them at once.
 	pub fn new(
-		keys: Keys,
-		identity: NostrIdentity,
+		recv: Vec<HeldIdentityKeys>,
+		active_hex: &str,
 		config: NostrConfig,
 		store: NostrStore,
 		nostr_dir: PathBuf,
 	) -> Arc<Self> {
+		// Pick the active identity (fall back to the first if the pointer doesn't
+		// resolve — the service must always have a running identity).
+		let active = recv
+			.iter()
+			.find(|h| h.keys.public_key().to_hex() == active_hex)
+			.or_else(|| recv.first())
+			.cloned()
+			.expect("nostr service created with no identities");
 		Arc::new(Self {
-			keys,
-			identity: RwLock::new(identity),
+			keys: RwLock::new(active.keys),
+			identity: RwLock::new(active.identity),
+			recv: RwLock::new(recv),
 			config: RwLock::new(config),
 			store: Arc::new(store),
 			nostr_dir,
@@ -185,42 +206,54 @@ impl NostrService {
 			last_send_error: RwLock::new(None),
 			cancel_notice: RwLock::new(None),
 			cancel_finalize_lock: Mutex::new(()),
-			switch_syncing: AtomicBool::new(false),
-			switch_received: std::sync::atomic::AtomicU32::new(0),
 		})
 	}
 
-	/// Arm the switch-catch-up UI state before this (freshly stood-up) service
-	/// starts: the next catch-up fetch is the "Syncing…" pass for a just-switched
-	/// identity. Called by [`crate::wallet::Wallet::switch_nostr_identity`] before
-	/// `start`, so the UI shows the syncing state from the first frame.
-	pub fn begin_switch_sync(&self) {
-		self.switch_received
-			.store(0, std::sync::atomic::Ordering::SeqCst);
-		self.switch_syncing.store(true, Ordering::SeqCst);
+	/// Every held identity's pubkey — the recipients the gift-wrap subscription
+	/// filter names, so the wallet receives for all identities at once.
+	pub fn recv_pubkeys(&self) -> Vec<PublicKey> {
+		self.recv
+			.read()
+			.iter()
+			.map(|h| h.keys.public_key())
+			.collect()
 	}
 
-	/// End the switch-catch-up state (the catch-up fetch has completed). The
-	/// redeemed count stays readable so the UI can show "you were paid while away".
-	fn end_switch_sync(&self) {
-		self.switch_syncing.store(false, Ordering::SeqCst);
+	/// Snapshot of every held identity live in memory (for unwrapping a wrap with
+	/// whichever key opens it, and for publishing each identity's relay list).
+	pub fn recv_snapshot(&self) -> Vec<HeldIdentityKeys> {
+		self.recv.read().clone()
 	}
 
-	/// Whether the service is mid switch-catch-up ("Syncing…").
-	pub fn is_switch_syncing(&self) -> bool {
-		self.switch_syncing.load(Ordering::Relaxed)
+	/// Whether `pk` is one of THIS wallet's own held identities (used to ignore
+	/// our own wrap-to-self copies across any identity).
+	pub fn is_own_pubkey(&self, pk: &PublicKey) -> bool {
+		self.recv.read().iter().any(|h| &h.keys.public_key() == pk)
 	}
 
-	/// Payments redeemed during the switch catch-up (for "you were paid while
-	/// away"); 0 once caught up with nothing waiting.
-	pub fn switch_received(&self) -> u32 {
-		self.switch_received
-			.load(std::sync::atomic::Ordering::Relaxed)
+	/// Instant, purely-local identity switch: re-point the active keys/identity to
+	/// a held identity already unlocked and already listening. No password, no
+	/// teardown, no catch-up. `false` if `hex` is not held.
+	pub fn set_active_by_pubkey(&self, hex: &str) -> bool {
+		let held = self
+			.recv
+			.read()
+			.iter()
+			.find(|h| h.keys.public_key().to_hex() == hex)
+			.cloned();
+		match held {
+			Some(h) => {
+				*self.keys.write() = h.keys;
+				*self.identity.write() = h.identity;
+				true
+			}
+			None => false,
+		}
 	}
 
-	/// Own public key.
+	/// Own (active) public key.
 	pub fn public_key(&self) -> PublicKey {
-		self.keys.public_key()
+		self.keys.read().public_key()
 	}
 
 	/// Own npub bech32.
@@ -240,21 +273,21 @@ impl NostrService {
 			.filter_map(|r| RelayUrl::parse(r).ok())
 			.take(2)
 			.collect();
-		Nip19Profile::new(self.keys.public_key(), relays)
+		Nip19Profile::new(self.keys.read().public_key(), relays)
 			.to_bech32()
 			.ok()
 			.unwrap_or_else(|| self.npub())
 	}
 
-	/// Own nsec (secret key) bech32 — for explicit user backup only.
+	/// Own (active) nsec (secret key) bech32 — for explicit user backup only.
 	pub fn nsec(&self) -> Option<String> {
-		self.keys.secret_key().to_bech32().ok()
+		self.keys.read().secret_key().to_bech32().ok()
 	}
 
-	/// The service's signing keys, for in-process signing (e.g. NIP-98 auth)
-	/// without ever serializing the secret to a plaintext `String`.
+	/// The active identity's signing keys, for in-process signing (e.g. NIP-98
+	/// auth) without ever serializing the secret to a plaintext `String`.
 	pub fn keys(&self) -> Keys {
-		self.keys.clone()
+		self.keys.read().clone()
 	}
 
 	/// Fetch a pubkey's published kind-0 profile (one shot, short timeout).
@@ -700,7 +733,7 @@ impl NostrService {
 			),
 		];
 		let wrap = wrapv3::wrap_kind(
-			&self.keys,
+			&self.keys.read().clone(),
 			&receiver,
 			Kind::Custom(17),
 			proof_json.to_string(),
@@ -729,7 +762,7 @@ impl NostrService {
 		tags: Vec<Tag>,
 	) -> Result<String, String> {
 		let sent = if v3 {
-			let wrap = wrapv3::wrap(&self.keys, &receiver, content, tags)?;
+			let wrap = wrapv3::wrap(&self.keys.read().clone(), &receiver, content, tags)?;
 			tokio::time::timeout(SEND_TIMEOUT, client.send_event_to(urls.clone(), &wrap)).await
 		} else {
 			tokio::time::timeout(
@@ -1046,7 +1079,7 @@ async fn run_service(svc: Arc<NostrService>, wallet: Wallet) {
 	crate::nostr::nip05::set_home_domain(&svc.config.read().home_domain());
 
 	let client = Client::builder()
-		.signer(svc.keys.clone())
+		.signer(svc.keys.read().clone())
 		.websocket_transport(TorWebSocketTransport)
 		.build();
 	// Wait for the embedded Tor client before any network work (relay dials, pool
@@ -1155,23 +1188,23 @@ async fn run_service(svc: Arc<NostrService>, wallet: Wallet) {
 	// advertised set only. A pool-wide subscription would be inherited by
 	// relays added later for sends and discovery fan-out, handing them a REQ
 	// filter that names our pubkey as a listener.
-	// Catch up from when THIS identity last listened, not merely when the wallet
-	// last connected on any identity — so a payment that arrived while this
-	// identity was dormant (e.g. before a switch to it) is fetched and redeemed
-	// now. Falls back to the wallet-wide last connection, then to now, always
-	// minus the same generous lookback (a switched-to identity that has been
-	// inactive longer than the lookback is the documented edge; the relay
-	// retention window is the real bound).
-	let active_hex = svc.public_key().to_hex();
-	let since = crate::nostr::catchup_since(
-		svc.store.last_active_at(&active_hex),
-		svc.store.last_connected_at(),
-		unix_time(),
-		LOOKBACK_SECS,
-	) as u64;
+	// Catch up from the wallet's last connection (all held identities listen
+	// continuously, so there is nothing identity-specific to catch up — the whole
+	// wallet was offline together). The generous lookback bounds re-fetch; the
+	// relay retention window is the real bound.
+	let since = svc
+		.store
+		.last_connected_at()
+		.map(|t| t - LOOKBACK_SECS)
+		.unwrap_or_else(|| unix_time() - LOOKBACK_SECS)
+		.max(0) as u64;
+	// One subscription for gift wraps addressed to ANY held identity: a single
+	// filter with all our pubkeys (OR over #p). Each wrap is p-tagged to exactly
+	// one identity, so it arrives once and is handled once — dedup stays exactly
+	// as safe as the single-identity path (no concurrent processing).
 	let filter = Filter::new()
 		.kind(Kind::GiftWrap)
-		.pubkey(svc.public_key())
+		.pubkeys(svc.recv_pubkeys())
 		.since(Timestamp::from_secs(since));
 
 	// News feed: the owner's kind-30023 long-form posts on our own relay set.
@@ -1193,10 +1226,6 @@ async fn run_service(svc: Arc<NostrService>, wallet: Wallet) {
 			handle_wrap(&svc, &wallet, event).await;
 		}
 	}
-	// The switch catch-up fetch is done: leave "Syncing…" and let the UI read
-	// switch_received() to decide between "you were paid while away" and a quiet
-	// "caught up". A no-op unless this service was armed by a switch.
-	svc.end_switch_sync();
 	if let (Some(pk), Some(nf)) = (news_pk, news_filter.clone())
 		&& let Ok(events) = client.fetch_events_from(&relays, nf, FETCH_TIMEOUT).await
 	{
@@ -1237,9 +1266,6 @@ async fn run_service(svc: Arc<NostrService>, wallet: Wallet) {
 	}
 
 	svc.store.set_last_connected_at(unix_time());
-	// Stamp when THIS identity was last live so a later switch back to it catches
-	// up from here, not from the wallet-wide last connection.
-	svc.store.set_last_active_at(&active_hex, unix_time());
 	svc.store.prune_processed();
 
 	// Reflect the connection the moment we reach the loop instead of leaving the
@@ -1320,7 +1346,6 @@ async fn run_service(svc: Arc<NostrService>, wallet: Wallet) {
 				if now - last_heartbeat >= 30 {
 					last_heartbeat = now;
 					svc.store.set_last_connected_at(now);
-					svc.store.set_last_active_at(&active_hex, now);
 					if now - last_prune >= 3600 {
 						svc.store.prune_processed();
 						last_prune = now;
@@ -1479,65 +1504,65 @@ async fn ensure_advertised_set(svc: &Arc<NostrService>) {
 /// on discovery relays.
 async fn publish_identity(svc: &Arc<NostrService>, client: &Client) {
 	let advertised: Vec<String> = svc.relays().into_iter().take(MAX_DM_RELAYS).collect();
+	let allow_requests = svc.config.read().allow_incoming_requests();
 
-	let mut dm_tags: Vec<Tag> = advertised
-		.iter()
-		.map(|r| Tag::custom(TagKind::custom("relay"), [r.clone()]))
-		.collect();
-	// NIP-17 backward-compat extension: advertise our NIP-44 capabilities,
-	// space-separated best-first, so v3-aware senders pick v3 (G4).
-	dm_tags.push(Tag::custom(
-		TagKind::custom("encryption"),
-		[wrapv3::ENCRYPTION_CAPABILITY.to_string()],
-	));
-	let mut builders = vec![
-		EventBuilder::new(Kind::InboxRelays, "").tags(dm_tags),
-		// The NIP-65 list mirrors the same set, unmarked (read + write).
-		EventBuilder::relay_list(
-			advertised
-				.iter()
-				.filter_map(|r| nostr_sdk::RelayUrl::parse(r).ok())
-				.map(|u| (u, None)),
-		),
-	];
-
-	let (anonymous, nip05) = {
-		let identity = svc.identity.read();
-		(identity.anonymous, identity.nip05.clone())
-	};
-	if !anonymous {
-		if let Some(nip05) = nip05 {
-			let name = nip05.split('@').next().unwrap_or_default().to_string();
-			// Advertise the request opt-out so requesters see it before sending.
-			let allow_requests = svc.config.read().allow_incoming_requests();
-			let metadata = Metadata::new()
-				.name(name)
-				.nip05(nip05)
-				.custom_field("goblin_accepts_requests", allow_requests);
-			builders.push(EventBuilder::metadata(&metadata));
-		}
-	}
-
-	// Sign each event ONCE so the advertised set and the indexers receive the
-	// same replaceable event, and sends stay targeted (a plain send would also
-	// hit whatever recipient relays happen to be connected).
+	// Publish the DM-relay list (kind 10050 + NIP-65) for EVERY held identity, and
+	// a kind-0 profile for each named one, so senders can route to any of them —
+	// all listen on this shared advertised set. Each event is signed with ITS OWN
+	// identity key (not the active one), and all are collected for the discovery
+	// fan-out below.
 	let mut events = vec![];
-	for builder in builders {
-		match client.sign_event_builder(builder).await {
-			Ok(event) => events.push(event),
-			Err(e) => warn!("nostr: identity event signing failed: {e}"),
+	for h in svc.recv_snapshot() {
+		let mut dm_tags: Vec<Tag> = advertised
+			.iter()
+			.map(|r| Tag::custom(TagKind::custom("relay"), [r.clone()]))
+			.collect();
+		// NIP-17 backward-compat extension: advertise our NIP-44 capabilities,
+		// space-separated best-first, so v3-aware senders pick v3 (G4).
+		dm_tags.push(Tag::custom(
+			TagKind::custom("encryption"),
+			[wrapv3::ENCRYPTION_CAPABILITY.to_string()],
+		));
+		let mut builders = vec![
+			EventBuilder::new(Kind::InboxRelays, "").tags(dm_tags),
+			// The NIP-65 list mirrors the same set, unmarked (read + write).
+			EventBuilder::relay_list(
+				advertised
+					.iter()
+					.filter_map(|r| nostr_sdk::RelayUrl::parse(r).ok())
+					.map(|u| (u, None)),
+			),
+		];
+		if !h.identity.anonymous {
+			if let Some(nip05) = h.identity.nip05.clone() {
+				let name = nip05.split('@').next().unwrap_or_default().to_string();
+				let metadata = Metadata::new()
+					.name(name)
+					.nip05(nip05)
+					.custom_field("goblin_accepts_requests", allow_requests);
+				builders.push(EventBuilder::metadata(&metadata));
+			}
 		}
-	}
-	for event in &events {
-		// Time-box each publish (mirrors dispatch_dm's SEND_TIMEOUT): this loop is
-		// awaited before the catch-up fetch and the kind:1059 subscription below, so
-		// an untimed send to a stalled relay would delay real incoming-message
-		// delivery. On timeout, warn and move on to the next event — never abort the
-		// identity sequence.
-		match tokio::time::timeout(SEND_TIMEOUT, client.send_event_to(&advertised, event)).await {
-			Ok(Ok(_)) => {}
-			Ok(Err(e)) => warn!("nostr: publish kind {} failed: {e}", event.kind),
-			Err(_) => warn!("nostr: publish kind {} timed out", event.kind),
+		for builder in builders {
+			// Sign with THIS identity's key so each advertisement is authored by the
+			// identity it describes.
+			let event = match builder.sign_with_keys(&h.keys) {
+				Ok(event) => event,
+				Err(e) => {
+					warn!("nostr: identity event signing failed: {e}");
+					continue;
+				}
+			};
+			// Time-box each publish (mirrors dispatch_dm's SEND_TIMEOUT) so a stalled
+			// relay never delays incoming-message delivery; warn and move on.
+			match tokio::time::timeout(SEND_TIMEOUT, client.send_event_to(&advertised, &event))
+				.await
+			{
+				Ok(Ok(_)) => {}
+				Ok(Err(e)) => warn!("nostr: publish kind {} failed: {e}", event.kind),
+				Err(_) => warn!("nostr: publish kind {} timed out", event.kind),
+			}
+			events.push(event);
 		}
 	}
 
@@ -2003,25 +2028,37 @@ async fn handle_wrap(svc: &Arc<NostrService>, wallet: &Wallet, event: Event) {
 	// 3. Unwrap (NIP-59: seal signature is verified, rumor must not be signed),
 	// dispatched on the NIP-44 payload version byte: 0x02 = the unchanged
 	// nostr-sdk path, 0x03 = the nip44 crate (G4); anything else errors cleanly.
-	let unwrapped = match wrapv3::unwrap(&svc.keys, &event).await {
-		Ok(u) => u,
-		Err(e) => {
-			// A gift wrap that reached here is p-tagged to US (both the catch-up
-			// fetch and the live subscription filter name our pubkey), so a decrypt
-			// failure is a wrap ADDRESSED to us that we could not open — most often a
-			// NIP-44 v2/v3 negotiation mismatch or a decrypt bug, i.e. potentially a
-			// real incoming payment. Do NOT silently drop it: surface the failure,
-			// and do NOT mark it processed, so a corrected build can re-attempt the
-			// unwrap on the next catch-up instead of the dedup cache eating the
-			// payment forever. Total unwrap work stays bounded by the global decrypt
-			// ceiling checked above, which is the designed spam guard.
+	//
+	// The wallet listens for ALL held identities, so the wrap may be addressed to
+	// any of them. Try each held key until one opens it; the key that succeeds is
+	// the RECIPIENT identity (the front door this payment came in on). Trying is
+	// bounded (a handful of held keys) and only runs for wraps the subscription
+	// already restricted to our own pubkeys; the global decrypt ceiling above
+	// still bounds total unwrap work against spam.
+	let held = svc.recv_snapshot();
+	let mut opened: Option<(PublicKey, nostr_sdk::nips::nip59::UnwrappedGift)> = None;
+	for h in &held {
+		if let Ok(u) = wrapv3::unwrap(&h.keys, &event).await {
+			opened = Some((h.keys.public_key(), u));
+			break;
+		}
+	}
+	let (recipient_pk, unwrapped) = match opened {
+		Some(x) => x,
+		None => {
+			// Addressed to one of our identities (the filter names only our
+			// pubkeys) but no held key opened it — most often a NIP-44 v2/v3
+			// negotiation mismatch or a decrypt bug, i.e. potentially a real
+			// incoming payment. Do NOT mark processed, so a corrected build can
+			// re-attempt on the next catch-up instead of the dedup cache eating it.
 			warn!(
-				"nostr: gift wrap {wrap_id} addressed to us failed to unwrap: {e}; \
-				 leaving unprocessed for retry"
+				"nostr: gift wrap {wrap_id} addressed to us failed to unwrap with any \
+				 held identity; leaving unprocessed for retry"
 			);
 			return;
 		}
 	};
+	let recipient_hex = recipient_pk.to_hex();
 	let sender = unwrapped.sender;
 	let mut rumor = unwrapped.rumor;
 	// 4. The rumor author must be the seal signer (NIP-17 requirement).
@@ -2030,8 +2067,8 @@ async fn handle_wrap(svc: &Arc<NostrService>, wallet: &Wallet, event: Event) {
 		svc.store.mark_processed(&wrap_id);
 		return;
 	}
-	// Ignore our own messages (e.g. wrap-to-self copies).
-	if sender == svc.public_key() {
+	// Ignore our own messages (e.g. wrap-to-self copies) from ANY held identity.
+	if svc.is_own_pubkey(&sender) {
 		svc.store.mark_processed(&wrap_id);
 		return;
 	}
@@ -2186,10 +2223,10 @@ async fn handle_wrap(svc: &Arc<NostrService>, wallet: &Wallet, event: Event) {
 						proof_delivered: false,
 						receipt_sent: false,
 						// Tag the front door this payment came in on: the identity
-						// active right now. All identities redeem into the one grin
-						// balance; this only records provenance for per-identity
-						// activity and a future accounting split.
-						recipient_pubkey: svc.public_key().to_hex(),
+						// this wrap was actually addressed to (whichever held key
+						// opened it), NOT necessarily the active one. All identities
+						// redeem into the one grin balance; this records provenance.
+						recipient_pubkey: recipient_hex.clone(),
 					});
 					// Commit dedup markers now the receive is durable, BEFORE
 					// the reply + sync tail. A crash there must not let this
@@ -2198,12 +2235,6 @@ async fn handle_wrap(svc: &Arc<NostrService>, wallet: &Wallet, event: Event) {
 					svc.store.mark_processed(&wrap_id);
 					svc.store.mark_processed(&rumor_id);
 					svc.store.mark_processed(&slate_marker);
-					// If this landed during a switch catch-up, count it toward the
-					// "you were paid while away" summary.
-					if svc.is_switch_syncing() {
-						svc.switch_received
-							.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-					}
 					// "Payment received" system notification (Android; no-op
 					// on desktop): payer's display name (or short npub) and
 					// the human-readable amount.
@@ -2295,12 +2326,6 @@ async fn handle_wrap(svc: &Arc<NostrService>, wallet: &Wallet, event: Event) {
 					svc.store.mark_processed(&wrap_id);
 					svc.store.mark_processed(&rumor_id);
 					svc.store.mark_processed(&slate_marker);
-					// A finalized request-reply that landed during a switch catch-up
-					// also counts toward "you were paid while away".
-					if svc.is_switch_syncing() {
-						svc.switch_received
-							.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-					}
 					if let Some(mut contact) = svc.store.contact(&sender_hex) {
 						contact.last_paid_at = Some(unix_time());
 						svc.store.save_contact(&contact);

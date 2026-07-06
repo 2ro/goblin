@@ -14,7 +14,9 @@
 
 use crate::AppConfig;
 use crate::node::{Node, NodeConfig};
-use crate::nostr::{HeldIdentities, NostrConfig, NostrIdentity, NostrService, NostrStore};
+use crate::nostr::{
+	HeldIdentities, HeldIdentityKeys, NostrConfig, NostrIdentity, NostrService, NostrStore,
+};
 use crate::wallet::seed::WalletSeed;
 use crate::wallet::store::TxHeightStore;
 use crate::wallet::types::{
@@ -44,7 +46,7 @@ use grin_wallet_libwallet::{
 	SlatepackAddress, StatusMessage, StoredProofInfo, TxLogEntry, TxLogEntryType, WalletBackend,
 	WalletInitStatus, WalletInst, WalletLCProvider, address,
 };
-use log::{error, info};
+use log::{error, info, warn};
 use num_bigint::BigInt;
 use parking_lot::RwLock;
 use rand::Rng;
@@ -490,30 +492,66 @@ impl Wallet {
 				}
 			},
 		};
-		// Adopt the held-identity index and run whichever identity is ACTIVE. A
-		// pre-feature wallet has only `identity.json`; `load_or_migrate` records it
-		// as the single, active identity #1 in place — no key regeneration, and the
-		// grin seed/balance are never touched (this cannot reach them). Only the
-		// active identity's ncryptsec is decrypted below; the others rest encrypted.
-		let identity = match HeldIdentities::load_or_migrate(&nostr_dir, &legacy) {
-			Some((_index, active)) => active,
+		// Adopt the held-identity index (migrating a pre-feature wallet's bare
+		// identity.json into it) and UNLOCK EVERY held identity now: with the wallet
+		// open, all identities' keys live in memory so the wallet listens for all of
+		// them at once (same trust boundary as the grin seed already in memory).
+		if HeldIdentities::load_or_migrate(&nostr_dir, &legacy).is_none() {
+			error!("nostr: held-identity index unreadable");
+		}
+		let (recv, active_hex) = match self.unlock_all_identities(&nostr_dir, password) {
+			Some(v) => v,
 			None => {
-				error!("nostr: held-identity index unreadable; running the legacy identity");
-				legacy
-			}
-		};
-		let keys = match identity.unlock(password) {
-			Ok(keys) => keys,
-			Err(e) => {
-				error!("nostr: identity unlock failed: {e}");
+				error!("nostr: no identity could be unlocked; nostr disabled this session");
 				return;
 			}
 		};
-		info!("nostr: identity ready: {}", identity.npub);
+		info!(
+			"nostr: {} identit(ies) unlocked; active {}",
+			recv.len(),
+			active_hex
+		);
 		let store = NostrStore::new(config.get_nostr_db_path());
-		let service = NostrService::new(keys, identity, nostr_config, store, nostr_dir);
+		let service = NostrService::new(recv, &active_hex, nostr_config, store, nostr_dir);
 		let mut w_nostr = self.nostr.write();
 		*w_nostr = Some(service);
+	}
+
+	/// Unlock EVERY held identity with the wallet password, returning the decrypted
+	/// set plus the active identity's pubkey hex. All held nsecs share the one
+	/// wallet password. Identities that fail to unlock (corrupt file) are skipped
+	/// with a warning; `None` only if not a single one could be unlocked. Used at
+	/// wallet-open and when rebuilding the service after add/import/rotate.
+	fn unlock_all_identities(
+		&self,
+		nostr_dir: &PathBuf,
+		password: &str,
+	) -> Option<(Vec<HeldIdentityKeys>, String)> {
+		let index = HeldIdentities::load(nostr_dir)?;
+		let mut recv = Vec::new();
+		for entry in &index.identities {
+			let Some(identity) = entry.load(nostr_dir) else {
+				warn!("nostr: identity file unreadable: {}", entry.path);
+				continue;
+			};
+			match identity.unlock(password) {
+				Ok(keys) => recv.push(HeldIdentityKeys { keys, identity }),
+				Err(e) => warn!("nostr: identity {} failed to unlock: {e}", entry.pubkey),
+			}
+		}
+		if recv.is_empty() {
+			return None;
+		}
+		// Prefer the recorded active pointer; fall back to the first that unlocked.
+		let active_hex = if recv
+			.iter()
+			.any(|h| h.identity.pubkey_hex().as_deref() == Some(index.active.as_str()))
+		{
+			index.active.clone()
+		} else {
+			recv[0].identity.pubkey_hex().unwrap_or_default()
+		};
+		Some((recv, active_hex))
 	}
 
 	/// Get the nostr service when available.
@@ -560,7 +598,7 @@ impl Wallet {
 			.map_err(|_| "Wrong password".to_string())?;
 
 		// Generate the replacement identity.
-		let (mut new_identity, new_keys) = NostrIdentity::create_random(&password)
+		let (mut new_identity, _new_keys) = NostrIdentity::create_random(&password)
 			.map_err(|e| format!("key generation failed: {e}"))?;
 
 		// Release the username first (the server also deletes its avatar);
@@ -600,7 +638,13 @@ impl Wallet {
 		let nostr_config = NostrConfig::load(wallet_dir);
 		let store = NostrStore::new(config.get_nostr_db_path());
 		let new_npub = new_identity.npub.clone();
-		let new_svc = NostrService::new(new_keys, new_identity, nostr_config, store, nostr_dir);
+		// Rebuild the service holding ALL held identities (the primary entry now
+		// resolves to the new identity), with the new one active.
+		let (recv, _) = self
+			.unlock_all_identities(&nostr_dir, &password)
+			.ok_or_else(|| "identity unlock failed".to_string())?;
+		let active_hex = new_identity.pubkey_hex().unwrap_or_default();
+		let new_svc = NostrService::new(recv, &active_hex, nostr_config, store, nostr_dir);
 		{
 			let mut w_nostr = self.nostr.write();
 			*w_nostr = Some(new_svc.clone());
@@ -689,7 +733,14 @@ impl Wallet {
 		let nostr_config = NostrConfig::load(wallet_dir);
 		let store = NostrStore::new(config.get_nostr_db_path());
 		let new_npub = new_identity.npub.clone();
-		let new_svc = NostrService::new(new_keys, new_identity, nostr_config, store, nostr_dir);
+		// Rebuild the service holding ALL held identities, with the imported one
+		// active (the primary entry now resolves to it).
+		let _ = new_keys;
+		let (recv, _) = self
+			.unlock_all_identities(&nostr_dir, &password)
+			.ok_or_else(|| "identity unlock failed".to_string())?;
+		let active_hex = new_identity.pubkey_hex().unwrap_or_default();
+		let new_svc = NostrService::new(recv, &active_hex, nostr_config, store, nostr_dir);
 		{
 			let mut w_nostr = self.nostr.write();
 			*w_nostr = Some(new_svc.clone());
@@ -798,73 +849,24 @@ impl Wallet {
 			None => NostrIdentity::create_random(&password)
 				.map_err(|e| format!("key generation failed: {e}"))?,
 		};
-		let nostr_dir = self.get_config().get_nostr_path();
+		let config = self.get_config();
+		let nostr_dir = config.get_nostr_path();
 		let mut index = HeldIdentities::load(&nostr_dir)
 			.ok_or_else(|| "identity index unavailable".to_string())?;
 		index
 			.add(&nostr_dir, &identity)
 			.map_err(|e| e.to_string())?;
-		info!("nostr: added held identity {}", identity.npub);
-		Ok(identity.npub)
-	}
-
-	/// Switch the ACTIVE nostr identity to a held one (by pubkey hex). Tears down
-	/// the running service and stands a fresh one on the target key against the
-	/// SAME shared store (so processed-dedup carries across, preventing any
-	/// double-redeem), then runs a catch-up from when that identity last listened
-	/// so payments that arrived while it was dormant land in the one shared
-	/// balance. Reuses the `rotate_nostr_identity` stop-wait-start machinery.
-	///
-	/// The wallet password is verified by unlocking the TARGET before any teardown,
-	/// so a wrong password never leaves the wallet with no running identity. Gated
-	/// on no in-flight send, so an S1 signed by one identity is never followed by a
-	/// mid-flow service swap. Returns the target npub.
-	pub fn switch_nostr_identity(
-		&self,
-		target_hex: String,
-		password: String,
-	) -> Result<String, String> {
-		let svc = self
-			.nostr_service()
-			.ok_or_else(|| "nostr is not running".to_string())?;
-		// Don't swap the signing key out from under an in-flight send.
-		if svc.send_phase() == crate::nostr::send_phase::WORKING {
-			return Err("Finish the payment in progress before switching identity".to_string());
-		}
-		// Already active? Nothing to do.
-		if svc.public_key().to_hex() == target_hex {
-			return Ok(svc.npub());
-		}
-		let config = self.get_config();
-		let nostr_dir = config.get_nostr_path();
-		let mut index = HeldIdentities::load(&nostr_dir)
-			.ok_or_else(|| "identity index unavailable".to_string())?;
-		let entry = index
-			.entry(&target_hex)
-			.ok_or_else(|| "identity not held by this wallet".to_string())?;
-		let target_identity = entry
-			.load(&nostr_dir)
-			.ok_or_else(|| "identity file unreadable".to_string())?;
-		// Verify the password BEFORE any teardown (a wrong password must keep the
-		// current identity running).
-		let target_keys = target_identity
-			.unlock(&password)
-			.map_err(|_| "Wrong password".to_string())?;
-
-		// Stamp the outgoing identity as last-active NOW: it stops listening here,
-		// so a later switch back to it catches up from this moment.
-		let old_hex = svc.public_key().to_hex();
-		svc.store
-			.set_last_active_at(&old_hex, crate::nostr::unix_time());
-
-		// Move the active pointer (the legacy identity.json is never overwritten,
-		// so an older build still opens the wallet on identity #1).
-		index
-			.set_active(&nostr_dir, &target_hex)
-			.map_err(|e| e.to_string())?;
-
-		// Tear down the running service and wait for it to drain, exactly as
-		// rotate/import do.
+		let new_npub = identity.npub.clone();
+		info!("nostr: added held identity {new_npub}");
+		// Bring the new identity ONLINE: rebuild the service holding ALL identities
+		// (including the one just added) so it starts listening immediately. The
+		// active identity is unchanged — adding never switches.
+		let active_hex = svc.public_key().to_hex();
+		let nostr_config = NostrConfig::load(PathBuf::from(config.get_data_path()));
+		let store = NostrStore::new(config.get_nostr_db_path());
+		let (recv, _) = self
+			.unlock_all_identities(&nostr_dir, &password)
+			.ok_or_else(|| "identity unlock failed".to_string())?;
 		svc.stop();
 		for _ in 0..100 {
 			if !svc.is_running() {
@@ -872,21 +874,41 @@ impl Wallet {
 			}
 			thread::sleep(Duration::from_millis(100));
 		}
-
-		// Stand up the new service on the target key against the SAME shared store.
-		let nostr_config = NostrConfig::load(PathBuf::from(config.get_data_path()));
-		let store = NostrStore::new(config.get_nostr_db_path());
-		let new_npub = target_identity.npub.clone();
-		let new_svc =
-			NostrService::new(target_keys, target_identity, nostr_config, store, nostr_dir);
-		// Arm the "Syncing…" UI state before start so the switcher shows it from
-		// the first frame; run_service clears it once the catch-up fetch completes.
-		new_svc.begin_switch_sync();
+		let new_svc = NostrService::new(recv, &active_hex, nostr_config, store, nostr_dir);
 		{
 			let mut w_nostr = self.nostr.write();
 			*w_nostr = Some(new_svc.clone());
 		}
 		new_svc.start(self.clone());
+		Ok(new_npub)
+	}
+
+	/// INSTANT identity switch: a purely-local change of which held identity is
+	/// presented and used for sending. Every held identity is already unlocked and
+	/// already listening, so there is NO password prompt, NO service teardown, and
+	/// NO catch-up — payments were never missed. Just re-points the running
+	/// service's active keys/identity and persists the active pointer. Returns the
+	/// target npub.
+	pub fn switch_nostr_identity(&self, target_hex: String) -> Result<String, String> {
+		let svc = self
+			.nostr_service()
+			.ok_or_else(|| "nostr is not running".to_string())?;
+		// Already active? Nothing to do.
+		if svc.public_key().to_hex() == target_hex {
+			return Ok(svc.npub());
+		}
+		// Re-point the active identity in memory (the target is already unlocked and
+		// listening); fails only if it isn't a held identity of this wallet.
+		if !svc.set_active_by_pubkey(&target_hex) {
+			return Err("identity not held by this wallet".to_string());
+		}
+		// Persist the active pointer so the next open lands on it too. The legacy
+		// identity.json is never overwritten (an older build still opens on #1).
+		let nostr_dir = self.get_config().get_nostr_path();
+		if let Some(mut index) = HeldIdentities::load(&nostr_dir) {
+			let _ = index.set_active(&nostr_dir, &target_hex);
+		}
+		let new_npub = svc.npub();
 		info!("nostr: switched active identity to {}", new_npub);
 		Ok(new_npub)
 	}

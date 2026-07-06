@@ -43,7 +43,7 @@ pub mod ingest;
 pub use ingest::*;
 
 mod client;
-pub use client::{NostrProfile, NostrService, send_phase};
+pub use client::{HeldIdentityKeys, NostrProfile, NostrService, send_phase};
 
 pub mod avatar;
 pub mod nip05;
