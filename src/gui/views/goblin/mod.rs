@@ -149,6 +149,17 @@ pub struct GoblinWalletView {
 	/// Quiet toast for the login outcome: text and when it appeared. Reused for
 	/// the authorize outcome (same quiet pill, different strings).
 	login_toast: Option<(String, std::time::Instant)>,
+	/// A "Trust with Goblin" (Authorize Sessions) grant awaiting approval. While
+	/// this OR `login`/`authorize`/`money` is `Some`, new incoming requests are
+	/// ignored (one approval at a time).
+	trust: Option<TrustState>,
+	/// The hold-to-confirm gesture for the single high-value trust decision.
+	trust_hold: w::HoldToSend,
+	/// A money-tier sign or encrypt arriving mid-session that must be
+	/// password-approved per action (the v1-style prompt raised over the channel).
+	money: Option<MoneyState>,
+	/// The hold-to-confirm gesture for a money-tier approval.
+	money_hold: w::HoldToSend,
 }
 
 /// Whether the per-identity cue is drawn on activity rows (owner-approved). The
@@ -193,6 +204,9 @@ enum SettingsPage {
 	Advanced,
 	/// The identity switcher: one wallet, one balance, many nostr identities.
 	Identities,
+	/// Trusted Sites: the active Authorize Sessions, what each can sign, and a
+	/// one-tap end (revocation).
+	TrustedSites,
 }
 
 /// Inline state for the Advanced (wallet-recovery) settings page: the
@@ -284,6 +298,10 @@ impl Default for GoblinWalletView {
 			login: None,
 			authorize: None,
 			login_toast: None,
+			trust: None,
+			trust_hold: w::HoldToSend::default(),
+			money: None,
+			money_hold: w::HoldToSend::default(),
 		}
 	}
 }
@@ -427,6 +445,54 @@ struct AuthorizeState {
 	show_full: bool,
 	/// Result slot the POST worker thread fills.
 	result: std::sync::Arc<std::sync::Mutex<Option<Result<(), String>>>>,
+}
+
+/// The "Trust with Goblin" (Authorize Sessions) grant modal id. Its verb is
+/// "Trust", kept distinct from login's "Sign in" and authorize's "Authorize" so
+/// the user always knows which decision they are making.
+const TRUST_MODAL: &str = "goblin_trust_modal";
+/// The money-tier per-action approval modal id (a channel request the wallet
+/// classified as money, raised mid-session with the same shape as v1 authorize).
+const MONEY_MODAL: &str = "goblin_money_modal";
+
+/// One pending "Trust with Goblin" grant. Mirrors [`LoginState`] (it folds login
+/// in as its identity step, then establishes the session), plus the freshly
+/// generated wallet channel keypair carried into session creation on success.
+struct TrustState {
+	/// The validated request (nonce, domain, callback, channel key, relay, kinds).
+	uri: crate::nostr::trusturi::TrustUri,
+	/// The CHOSEN signing identity (pubkey hex); defaults to the active one.
+	selected: String,
+	/// When the request arrived, for the [`LOGIN_EXPIRY_SECS`] deadline.
+	created: std::time::Instant,
+	/// Wallet password typed into the modal; cleared as soon as consumed.
+	pass: String,
+	/// The typed password did not verify; the request stays pending.
+	wrong_pass: bool,
+	/// The login event is signed and its callback POST is in flight; on success
+	/// the session is created, on failure the whole grant fails (spec 4.3).
+	posting: bool,
+	/// The wallet's ephemeral channel keypair for this session, generated at
+	/// approval and carried into [`crate::nostr::session::Session::new`].
+	channel: nostr_sdk::Keys,
+	/// A friendly label for the identity (for the Trusted Sites list).
+	label: String,
+	/// Result slot the login-POST worker fills.
+	result: std::sync::Arc<std::sync::Mutex<Option<Result<(), String>>>>,
+}
+
+/// One pending money-tier approval arriving over a live session channel. The
+/// user sees exactly what they are committing to and gates it with the wallet
+/// password, hold-to-confirm, every time.
+struct MoneyState {
+	/// The request awaiting the user's decision (sign or pay-committing encrypt).
+	pending: crate::nostr::session::PendingMoney,
+	/// When it arrived, for the [`LOGIN_EXPIRY_SECS`] deadline.
+	created: std::time::Instant,
+	/// Wallet password typed into the modal; cleared as soon as consumed.
+	pass: String,
+	/// The typed password did not verify; the request stays pending.
+	wrong_pass: bool,
 }
 
 /// A password-gated identity action the modal executes. Switching no longer uses
@@ -898,6 +964,160 @@ impl GoblinWalletView {
 		if Modal::opened() == Some(AUTHORIZE_MODAL) {
 			Modal::ui(ui.ctx(), cb, |ui, modal, cb| {
 				self.authorize_modal_content(ui, modal, wallet, cb);
+			});
+		}
+
+		// A pending "Trust with Goblin" (Authorize Sessions) grant. One approval
+		// at a time: while login/authorize/trust/money is pending, drop new URIs.
+		if let Some(trust) = crate::take_pending_trust() {
+			if self.login.is_none()
+				&& self.authorize.is_none()
+				&& self.trust.is_none()
+				&& self.money.is_none()
+			{
+				if let Some(active) = wallet.active_nostr_pubkey() {
+					self.send = None;
+					let label = wallet
+						.nostr_identities()
+						.into_iter()
+						.find(|i| i.pubkey_hex == active)
+						.map(|i| i.display())
+						.unwrap_or_else(|| data::short_npub(&active));
+					self.trust = Some(TrustState {
+						uri: trust,
+						selected: active,
+						created: std::time::Instant::now(),
+						pass: String::new(),
+						wrong_pass: false,
+						posting: false,
+						channel: nostr_sdk::Keys::generate(),
+						label,
+						result: std::sync::Arc::new(std::sync::Mutex::new(None)),
+					});
+					self.trust_hold = w::HoldToSend::default();
+					Modal::new(TRUST_MODAL)
+						.position(ModalPosition::CenterTop)
+						.title(t!("goblin.trust.title"))
+						.show();
+				}
+			}
+		}
+		// An untouched grant dies after 2 minutes (posting is governed by the POST
+		// timeout, so it is exempt here).
+		let trust_expired = matches!(&self.trust, Some(st)
+			if !st.posting && st.created.elapsed().as_secs() >= LOGIN_EXPIRY_SECS);
+		if trust_expired {
+			self.trust = None;
+			if Modal::opened() == Some(TRUST_MODAL) {
+				Modal::close();
+			}
+		}
+		// Poll the login-callback POST. On success the session is created together
+		// with the identity; on failure the whole grant fails (spec 4.3).
+		let mut trust_outcome = None;
+		if let Some(st) = &self.trust {
+			if st.posting {
+				trust_outcome = st
+					.result
+					.lock()
+					.unwrap()
+					.take()
+					.map(|res| (res, st.uri.domain.clone()));
+				if trust_outcome.is_none() {
+					ui.ctx().request_repaint();
+				}
+			}
+		}
+		if let Some((res, domain)) = trust_outcome {
+			let st = self.trust.take();
+			let text = match (res, st) {
+				(Ok(()), Some(st)) => {
+					if let Some(svc) = wallet.nostr_service() {
+						if let (Ok(site_pk), Ok(id_pk)) = (
+							nostr_sdk::PublicKey::from_hex(&st.uri.site_session_pubkey),
+							nostr_sdk::PublicKey::from_hex(&st.selected),
+						) {
+							let now = std::time::SystemTime::now()
+								.duration_since(std::time::UNIX_EPOCH)
+								.map(|d| d.as_secs())
+								.unwrap_or(0);
+							let session = crate::nostr::session::Session::new(
+								st.uri.domain.clone(),
+								id_pk,
+								st.label.clone(),
+								&st.uri.requested_kinds,
+								&st.channel,
+								site_pk,
+								vec![st.uri.relay.clone()],
+								now,
+							);
+							svc.add_session(session);
+						}
+					}
+					t!("goblin.trust.sent", domain => domain).to_string()
+				}
+				(Err(e), _) => {
+					log::warn!("trust login callback failed: {e}");
+					t!("goblin.trust.failed", domain => domain).to_string()
+				}
+				(Ok(()), None) => t!("goblin.trust.sent", domain => domain).to_string(),
+			};
+			self.login_toast = Some((text, std::time::Instant::now()));
+		}
+
+		// A money-tier request arriving over a live session channel raises the
+		// per-action approval, every time (never silent). One at a time.
+		if self.money.is_none()
+			&& self.login.is_none()
+			&& self.authorize.is_none()
+			&& self.trust.is_none()
+		{
+			if let Some(pending) = wallet.nostr_service().and_then(|s| s.peek_money_prompt()) {
+				self.money = Some(MoneyState {
+					pending,
+					created: std::time::Instant::now(),
+					pass: String::new(),
+					wrong_pass: false,
+				});
+				self.money_hold = w::HoldToSend::default();
+				Modal::new(MONEY_MODAL)
+					.position(ModalPosition::CenterTop)
+					.title(t!("goblin.money.title"))
+					.show();
+			}
+		}
+		// An unanswered money prompt times out and declines the action.
+		let money_expired = matches!(&self.money, Some(st)
+			if st.created.elapsed().as_secs() >= LOGIN_EXPIRY_SECS);
+		if money_expired {
+			if let (Some(st), Some(svc)) = (self.money.as_ref(), wallet.nostr_service()) {
+				svc.answer_money_prompt(st.pending.id(), false);
+			}
+			self.money = None;
+			if Modal::opened() == Some(MONEY_MODAL) {
+				Modal::close();
+			}
+		}
+		// A session "signing a lot" notice surfaces as the quiet toast.
+		if wallet
+			.nostr_service()
+			.and_then(|s| s.take_session_notice())
+			.is_some()
+		{
+			self.login_toast = Some((
+				t!("goblin.trust.notice_volume").to_string(),
+				std::time::Instant::now(),
+			));
+		}
+		// Draw the trust and money modals.
+		if Modal::opened() == Some(TRUST_MODAL) {
+			Modal::ui(ui.ctx(), cb, |ui, modal, cb| {
+				self.trust_modal_content(ui, modal, wallet, cb);
+			});
+		}
+		if Modal::opened() == Some(MONEY_MODAL) {
+			Modal::ui(ui.ctx(), cb, |ui, modal, cb| {
+				self.money_modal_content(ui, modal, wallet, cb);
 			});
 		}
 
@@ -2969,6 +3189,7 @@ impl GoblinWalletView {
 			SettingsPage::Privacy => return self.privacy_ui(ui),
 			SettingsPage::Advanced => return self.advanced_ui(ui, wallet, cb),
 			SettingsPage::Identities => return self.identities_ui(ui, wallet, cb),
+			SettingsPage::TrustedSites => return self.trusted_sites_ui(ui, wallet, cb),
 			SettingsPage::Main => {}
 		}
 		// Minimum-confirmations edit modal (GRIM parity), opened from the
@@ -3273,6 +3494,7 @@ impl GoblinWalletView {
 				ui.add_space(16.0);
 				let mut open_node = false;
 				let mut open_slatepack = false;
+				let mut open_trusted = false;
 				settings_group(ui, &t!("goblin.settings.wallet"), |ui| {
 					if settings_row_nav(ui, &t!("goblin.settings.node"), &node_summary(wallet)) {
 						open_node = true;
@@ -3302,10 +3524,26 @@ impl GoblinWalletView {
 					) {
 						open_slatepack = true;
 					}
+					// Trusted Sites: the active Authorize Sessions, with a one-tap
+					// end. Shows the live count as the row value.
+					let session_count = wallet
+						.nostr_service()
+						.map(|s| s.session_summaries().len())
+						.unwrap_or(0);
+					if settings_row_nav(
+						ui,
+						&t!("goblin.settings.trusted_sites"),
+						&session_count.to_string(),
+					) {
+						open_trusted = true;
+					}
 				});
 				if open_slatepack {
 					self.slatepack = SlatepackManual::default();
 					self.settings_page = SettingsPage::Slatepack;
+				}
+				if open_trusted {
+					self.settings_page = SettingsPage::TrustedSites;
 				}
 				if open_relays {
 					// The ACTIVE set (override or per-identity advertised set),
@@ -6824,6 +7062,501 @@ impl GoblinWalletView {
 				}
 			}
 		}
+	}
+
+	/// The "Trust with Goblin" (Authorize Sessions) grant modal: proves identity
+	/// (folds login in) AND establishes the session in one password-gated,
+	/// hold-to-confirm decision. Shows the identity, the low-tier categories being
+	/// granted for silent signing, and the fixed line that money always asks.
+	fn trust_modal_content(
+		&mut self,
+		ui: &mut egui::Ui,
+		modal: &Modal,
+		wallet: &Wallet,
+		cb: &dyn PlatformCallbacks,
+	) {
+		let Some(st) = self.trust.as_mut() else {
+			Modal::close();
+			return;
+		};
+		if st.posting {
+			Modal::close();
+			return;
+		}
+		let domain = st.uri.domain.clone();
+		let identities = wallet.nostr_identities();
+		let display = crate::nostr::session::render_grant(&st.uri.requested_kinds);
+		let mut go = false;
+		let mut cancel = false;
+		ui.vertical_centered(|ui| {
+			ui.add_space(6.0);
+			ui.label(
+				RichText::new(t!("goblin.trust.headline", domain => domain.clone()))
+					.size(17.0)
+					.color(Colors::title(false)),
+			);
+			ui.add_space(10.0);
+			ui.label(
+				RichText::new(t!("goblin.trust.identity"))
+					.size(13.0)
+					.color(Colors::gray()),
+			);
+			ui.add_space(6.0);
+			// Identity picker (defaults to the active identity), the truncated
+			// npub always shown as the anchor.
+			if identities.len() > 1 {
+				for id in &identities {
+					let selected = st.selected == id.pubkey_hex;
+					let title = id.display();
+					let short = data::short_npub(&id.pubkey_hex);
+					let row = ui
+						.scope(|ui| {
+							ui.horizontal(|ui| {
+								ui.add_space(4.0);
+								ui.label(
+									RichText::new(if selected {
+										crate::gui::icons::CHECK_CIRCLE
+									} else {
+										crate::gui::icons::CIRCLE
+									})
+									.size(18.0)
+									.color(if selected {
+										Colors::green()
+									} else {
+										Colors::gray()
+									}),
+								);
+								ui.add_space(8.0);
+								ui.vertical(|ui| {
+									if title != short {
+										ui.label(
+											RichText::new(&title)
+												.size(15.0)
+												.color(Colors::text(false)),
+										);
+									}
+									ui.label(
+										RichText::new(&short).size(12.5).color(Colors::gray()),
+									);
+								});
+							});
+						})
+						.response
+						.rect;
+					let hit = ui.interact(
+						row,
+						egui::Id::from(modal.id).with(("trust_id", id.pubkey_hex.as_str())),
+						Sense::click(),
+					);
+					if hit
+						.on_hover_cursor(egui::CursorIcon::PointingHand)
+						.clicked()
+					{
+						st.selected = id.pubkey_hex.clone();
+					}
+					ui.add_space(4.0);
+				}
+			} else if let Some(id) = identities.first() {
+				let title = id.display();
+				let short = data::short_npub(&id.pubkey_hex);
+				if title != short {
+					ui.label(RichText::new(&title).size(15.0).color(Colors::text(false)));
+				}
+				ui.label(RichText::new(&short).size(12.5).color(Colors::gray()));
+			}
+			ui.add_space(12.0);
+			// What the silent grant covers, as human categories.
+			ui.label(
+				RichText::new(t!("goblin.trust.grant_intro", domain => domain.clone()))
+					.size(13.0)
+					.color(Colors::gray()),
+			);
+			ui.add_space(6.0);
+			for cat in &display.categories {
+				ui.label(
+					RichText::new(format!("• {}", t!(cat.key())))
+						.size(13.5)
+						.color(Colors::text(false)),
+				);
+			}
+			for kind in &display.unknown_kinds {
+				ui.label(
+					RichText::new(format!(
+						"• {}",
+						t!("goblin.trust.cat_unknown", n => kind.to_string())
+					))
+					.size(13.5)
+					.color(Colors::red()),
+				);
+			}
+			if display.stripped_login {
+				ui.label(
+					RichText::new(t!("goblin.trust.login_excluded"))
+						.size(12.5)
+						.color(Colors::red()),
+				);
+			}
+			ui.add_space(10.0);
+			// The fixed money line: the low-tier grant is not a money grant.
+			ui.label(
+				RichText::new(t!("goblin.trust.money_line"))
+					.size(13.5)
+					.color(Colors::title(false)),
+			);
+			ui.add_space(8.0);
+			ui.label(
+				RichText::new(t!("goblin.trust.duration"))
+					.size(12.5)
+					.color(Colors::gray()),
+			);
+			ui.add_space(12.0);
+			ui.label(
+				RichText::new(t!("goblin.trust.pass_prompt"))
+					.size(16.0)
+					.color(Colors::gray()),
+			);
+			ui.add_space(10.0);
+			let mut field = TextEdit::new(egui::Id::from(modal.id).with("trust_pass")).password();
+			field.ui(ui, &mut st.pass, cb);
+			if st.pass.is_empty() {
+				st.wrong_pass = false;
+			} else if st.wrong_pass {
+				ui.add_space(10.0);
+				ui.label(
+					RichText::new(t!("goblin.advanced.wrong_password"))
+						.size(16.0)
+						.color(Colors::red()),
+				);
+			}
+			ui.add_space(12.0);
+		});
+		// Hold-to-confirm: the single high-value decision cannot be a stray tap.
+		if self.trust_hold.ui(ui, &t!("goblin.trust.confirm_hold")) {
+			go = true;
+		}
+		ui.add_space(6.0);
+		ui.scope(|ui| {
+			ui.spacing_mut().item_spacing = egui::Vec2::new(8.0, 0.0);
+			ui.vertical_centered_justified(|ui| {
+				View::button(
+					ui,
+					t!("modal.cancel"),
+					Colors::white_or_black(false),
+					|| {
+						cancel = true;
+					},
+				);
+			});
+			ui.add_space(6.0);
+		});
+		if cancel {
+			self.trust = None;
+			Modal::close();
+			return;
+		}
+		if go {
+			let (pass, selected) = match self.trust.as_ref() {
+				Some(st) => (st.pass.clone(), st.selected.clone()),
+				None => return,
+			};
+			if pass.is_empty() {
+				self.trust_hold = w::HoldToSend::default();
+				return;
+			}
+			if !wallet.verify_nostr_password(&pass) {
+				if let Some(st) = self.trust.as_mut() {
+					st.wrong_pass = true;
+				}
+				self.trust_hold = w::HoldToSend::default();
+				return;
+			}
+			let keys = wallet.nostr_service().and_then(|s| {
+				s.recv_snapshot()
+					.into_iter()
+					.find(|h| h.keys.public_key().to_hex() == selected)
+					.map(|h| h.keys)
+			});
+			let Some(keys) = keys else {
+				self.trust = None;
+				Modal::close();
+				return;
+			};
+			let st = self.trust.as_mut().unwrap();
+			st.pass.clear();
+			st.wrong_pass = false;
+			// Sign and POST the kind-22242 login event exactly as Build 150 does;
+			// the session is created by the router once this POST succeeds.
+			match crate::nostr::loginuri::build_login_event(
+				&keys,
+				&st.uri.challenge,
+				&st.uri.domain,
+			) {
+				Ok(event) => {
+					st.posting = true;
+					let callback = st.uri.callback.clone();
+					let slot = st.result.clone();
+					std::thread::spawn(move || {
+						let res = match tokio::runtime::Builder::new_current_thread()
+							.enable_all()
+							.build()
+						{
+							Ok(rt) => rt.block_on(async {
+								let post =
+									crate::nostr::loginuri::post_login_event(&callback, &event);
+								match tokio::time::timeout(
+									std::time::Duration::from_secs(LOGIN_POST_TIMEOUT_SECS),
+									post,
+								)
+								.await
+								{
+									Ok(r) => r,
+									Err(_) => Err("timeout".to_string()),
+								}
+							}),
+							Err(e) => Err(e.to_string()),
+						};
+						*slot.lock().unwrap() = Some(res);
+					});
+					Modal::close();
+					cb.return_to_caller();
+				}
+				Err(e) => {
+					log::error!("trust login event signing failed: {e}");
+					self.login_toast = Some((
+						t!("goblin.trust.failed", domain => domain).to_string(),
+						std::time::Instant::now(),
+					));
+					self.trust = None;
+					Modal::close();
+				}
+			}
+		}
+	}
+
+	/// The money-tier per-action approval modal: a value-moving sign (or a
+	/// pay-committing encrypt) arriving over a live session channel. Identical
+	/// gravity to a v1 authorize — what is being done, which identity, a masked
+	/// password, hold-to-confirm — raised every time, never silent.
+	fn money_modal_content(
+		&mut self,
+		ui: &mut egui::Ui,
+		modal: &Modal,
+		wallet: &Wallet,
+		cb: &dyn PlatformCallbacks,
+	) {
+		use crate::nostr::session::ChannelOp;
+		let Some(st) = self.money.as_mut() else {
+			Modal::close();
+			return;
+		};
+		let domain = st.pending.domain.clone();
+		let req_id = st.pending.id().to_string();
+		let short_id = data::short_npub(&st.pending.identity_pubkey.to_hex());
+		// A one-line description of exactly what is being committed to.
+		let what = match &st.pending.op {
+			ChannelOp::Sign(req) => {
+				let label = crate::nostr::authuri::kind_label(req.event.kind);
+				let (preview, _) = crate::nostr::authuri::content_preview(&req.event.content);
+				let preview = crate::nostr::authuri::escape_for_display(&preview);
+				if preview.trim().is_empty() {
+					t!(label.key(), n => req.event.kind.to_string()).to_string()
+				} else {
+					format!(
+						"{}: {}",
+						t!(label.key(), n => req.event.kind.to_string()),
+						preview
+					)
+				}
+			}
+			ChannelOp::Encrypt(_) => t!("goblin.money.encrypt_desc").to_string(),
+		};
+		let mut approve = false;
+		let mut decline = false;
+		ui.vertical_centered(|ui| {
+			ui.add_space(6.0);
+			ui.label(
+				RichText::new(t!("goblin.money.headline", domain => domain.clone()))
+					.size(17.0)
+					.color(Colors::title(false)),
+			);
+			ui.add_space(8.0);
+			ui.label(RichText::new(&what).size(14.0).color(Colors::text(false)));
+			ui.add_space(8.0);
+			ui.label(
+				RichText::new(t!("goblin.money.identity", id => short_id.clone()))
+					.size(12.5)
+					.color(Colors::gray()),
+			);
+			ui.add_space(8.0);
+			ui.label(
+				RichText::new(t!("goblin.money.explain"))
+					.size(13.0)
+					.color(Colors::gray()),
+			);
+			ui.add_space(10.0);
+			ui.label(
+				RichText::new(t!("goblin.money.pass_prompt"))
+					.size(16.0)
+					.color(Colors::gray()),
+			);
+			ui.add_space(10.0);
+			let mut field = TextEdit::new(egui::Id::from(modal.id).with("money_pass")).password();
+			field.ui(ui, &mut st.pass, cb);
+			if st.pass.is_empty() {
+				st.wrong_pass = false;
+			} else if st.wrong_pass {
+				ui.add_space(10.0);
+				ui.label(
+					RichText::new(t!("goblin.advanced.wrong_password"))
+						.size(16.0)
+						.color(Colors::red()),
+				);
+			}
+			ui.add_space(12.0);
+		});
+		if self.money_hold.ui(ui, &t!("goblin.money.confirm_hold")) {
+			approve = true;
+		}
+		ui.add_space(6.0);
+		ui.vertical_centered_justified(|ui| {
+			View::button(
+				ui,
+				t!("modal.cancel"),
+				Colors::white_or_black(false),
+				|| {
+					decline = true;
+				},
+			);
+		});
+		ui.add_space(6.0);
+		if decline {
+			if let Some(svc) = wallet.nostr_service() {
+				svc.answer_money_prompt(&req_id, false);
+			}
+			self.money = None;
+			Modal::close();
+			return;
+		}
+		if approve {
+			let pass = self
+				.money
+				.as_ref()
+				.map(|s| s.pass.clone())
+				.unwrap_or_default();
+			if pass.is_empty() || !wallet.verify_nostr_password(&pass) {
+				if let Some(st) = self.money.as_mut() {
+					st.wrong_pass = true;
+				}
+				self.money_hold = w::HoldToSend::default();
+				return;
+			}
+			if let Some(svc) = wallet.nostr_service() {
+				svc.answer_money_prompt(&req_id, true);
+			}
+			self.money = None;
+			Modal::close();
+		}
+	}
+
+	/// Trusted Sites: the active Authorize Sessions, what each can sign silently,
+	/// time remaining, and a one-tap end (immediate, unilateral revocation).
+	fn trusted_sites_ui(
+		&mut self,
+		ui: &mut egui::Ui,
+		wallet: &Wallet,
+		_cb: &dyn PlatformCallbacks,
+	) {
+		let t = theme::tokens();
+		if self.sub_header(ui, &t!("goblin.trusted_sites.title")) {
+			self.settings_page = SettingsPage::Main;
+			return;
+		}
+		let summaries = wallet
+			.nostr_service()
+			.map(|s| s.session_summaries())
+			.unwrap_or_default();
+		ScrollArea::vertical()
+			.id_salt("goblin_trusted_sites_scroll")
+			.auto_shrink([false; 2])
+			.scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
+			.show(ui, |ui| {
+				ui.label(
+					RichText::new(t!("goblin.trusted_sites.intro"))
+						.font(FontId::new(13.0, fonts::regular()))
+						.color(t.text_dim),
+				);
+				ui.add_space(12.0);
+				if summaries.is_empty() {
+					ui.label(
+						RichText::new(t!("goblin.trusted_sites.empty"))
+							.font(FontId::new(13.0, fonts::regular()))
+							.color(t.text_dim),
+					);
+					return;
+				}
+				let mut to_end: Option<String> = None;
+				let mut to_resume: Option<String> = None;
+				for s in &summaries {
+					settings_group(ui, &s.domain, |ui| {
+						// The low-tier categories this session signs silently.
+						let cats: Vec<String> = s
+							.categories
+							.iter()
+							.map(|c| t!(c.key()).to_string())
+							.collect();
+						let cats = if cats.is_empty() {
+							t!("goblin.trusted_sites.none").to_string()
+						} else {
+							cats.join(", ")
+						};
+						ui.label(
+							RichText::new(t!("goblin.trusted_sites.can_sign", cats => cats))
+								.font(FontId::new(12.5, fonts::regular()))
+								.color(t.text_dim),
+						);
+						ui.add_space(4.0);
+						let mins = s.ttl_remaining_secs / 60;
+						ui.label(
+							RichText::new(
+								t!("goblin.trusted_sites.time_left", mins => mins.to_string()),
+							)
+							.font(FontId::new(12.5, fonts::regular()))
+							.color(t.text_dim),
+						);
+						if s.paused {
+							ui.add_space(4.0);
+							ui.label(
+								RichText::new(t!("goblin.trusted_sites.paused"))
+									.font(FontId::new(12.5, fonts::regular()))
+									.color(Colors::red()),
+							);
+							if settings_row_btn(
+								ui,
+								&t!("goblin.trusted_sites.resume"),
+								crate::gui::icons::PLAY,
+							) {
+								to_resume = Some(s.domain.clone());
+							}
+						}
+						if settings_row_btn(
+							ui,
+							&t!("goblin.trusted_sites.end"),
+							crate::gui::icons::X_CIRCLE,
+						) {
+							to_end = Some(s.domain.clone());
+						}
+					});
+					ui.add_space(8.0);
+				}
+				if let Some(svc) = wallet.nostr_service() {
+					if let Some(d) = to_end {
+						svc.end_session(&d);
+					}
+					if let Some(d) = to_resume {
+						svc.resume_session(&d);
+					}
+				}
+			});
 	}
 
 	/// Draw the transient login-outcome toast: the same quiet pill as the back
