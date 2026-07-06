@@ -227,6 +227,14 @@ impl WalletConfig {
 		path.to_str().unwrap().to_string()
 	}
 
+	/// Path of the per-sale proof-address index registry (a JSON allocation
+	/// counter, no secrets — see [`crate::wallet::proof_addrs`]).
+	pub fn get_proof_addrs_path(&self) -> PathBuf {
+		let mut path = PathBuf::from(self.get_base_data_path());
+		path.push("proof_addrs.json");
+		path
+	}
+
 	/// Get nostr identity directory path (holds identity.json).
 	pub fn get_nostr_path(&self) -> PathBuf {
 		let mut path = PathBuf::from(self.get_base_data_path());

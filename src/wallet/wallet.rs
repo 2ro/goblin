@@ -1132,6 +1132,33 @@ impl Wallet {
 		Ok(())
 	}
 
+	/// Mint a FRESH per-sale proof/slatepack address at the next unallocated
+	/// derivation index (index 0 stays the app's default address — nothing
+	/// changes for normal receives). The allocation counter persists in the
+	/// wallet dir and never reuses an index, so no two sales share an address;
+	/// the patched receive path detects which allocated address a
+	/// payment-proof slate is addressed to and signs the proof with the
+	/// matching key. Returns `(index, address)`.
+	pub fn mint_proof_address(&self) -> Result<(u32, String), String> {
+		let index =
+			crate::wallet::proof_addrs::allocate(&self.get_config().get_proof_addrs_path())?;
+		let r_inst = self.instance.as_ref().read();
+		let instance = r_inst
+			.clone()
+			.ok_or_else(|| "wallet is not open".to_string())?;
+		let mut w_lock = instance.lock();
+		let lc = w_lock.lc_provider().map_err(|e| e.to_string())?;
+		let w_inst = lc.wallet_inst().map_err(|e| e.to_string())?;
+		let k = w_inst
+			.keychain(self.keychain_mask().as_ref())
+			.map_err(|e| e.to_string())?;
+		let parent_key_id = w_inst.parent_key_id();
+		let sec_key = address::address_from_derivation_path(&k, &parent_key_id, index)
+			.map_err(|e| format!("{:?}", e))?;
+		let addr = SlatepackAddress::try_from(&sec_key).map_err(|e| e.to_string())?;
+		Ok((index, addr.to_string()))
+	}
+
 	/// Get unique opened wallet identifier, including current account.
 	pub fn identifier(&self) -> String {
 		let config = self.get_config();

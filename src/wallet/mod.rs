@@ -35,5 +35,7 @@ pub use utils::WalletUtils;
 mod seed;
 pub mod store;
 
+pub mod proof_addrs;
+
 #[cfg(all(test, feature = "e2e-internal"))]
 mod e2e;
