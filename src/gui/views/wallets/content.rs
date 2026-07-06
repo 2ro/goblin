@@ -491,11 +491,24 @@ impl WalletsContent {
 		if !Content::is_dual_panel_mode(ui.ctx()) && Content::is_network_panel_open() {
 			Content::toggle_network_panel();
 		}
-		// Route a Goblin payment deep link (`goblin:` / `nostr:` pay URI) to the
-		// send-review flow instead of the slatepack message handler: stash it for
-		// the Goblin surface to open, and select/open the wallet with NO message
-		// so the surface shows. Same destination as scanning a checkout QR.
+		// Dispatch order is explicit: the `login` keyword is checked FIRST, so a
+		// `goblin:login?...` deep link can never fall through to the pay path
+		// (and a pay URI is never login-shaped: an npub/nprofile recipient
+		// always starts `npub1`/`nprofile1`). A login-shaped URI that fails
+		// validation is dropped entirely: no modal, no send, no message.
+		//
+		// Then a Goblin payment deep link (`goblin:` / `nostr:` pay URI) routes
+		// to the send-review flow instead of the slatepack message handler:
+		// stash it for the Goblin surface to open, and select/open the wallet
+		// with NO message so the surface shows. Same destination as scanning a
+		// checkout QR.
 		let data = match data {
+			Some(d) if crate::nostr::loginuri::is_login_shaped(&d) => {
+				if let Some(login) = crate::nostr::loginuri::parse(&d) {
+					crate::set_pending_login(login);
+				}
+				None
+			}
 			Some(d) if crate::nostr::payuri::is_pay_uri(&d) => {
 				crate::set_pending_pay_uri(d);
 				None

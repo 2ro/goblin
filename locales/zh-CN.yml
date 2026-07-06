@@ -683,6 +683,15 @@ goblin:
     title: "批准 %{n} 张发票"
     blurb: "向 %{name} 发出 %{n} 个付款请求，每个 %{amount}，共 %{total}。每个请求都有自己全新的收款地址。"
     approve: "批准"
+  login:
+    title: "登录"
+    headline: "登录 %{domain}？"
+    identity: "登录身份"
+    explain: "这将签署一次性的登录请求。不会分享你的密钥，网站也无法以你的身份行事。"
+    pass_prompt: "输入钱包密码以登录。"
+    confirm: "登录"
+    sent: "已登录 %{domain}"
+    failed: "无法连接 %{domain}，登录未送达。"
   identities:
     title: "身份"
     switch_hint: "切换身份"

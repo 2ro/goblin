@@ -683,6 +683,15 @@ goblin:
     title: "%{n} Rechnungen bestätigen"
     blurb: "Stelle %{n} Zahlungsanforderungen über je %{amount} an %{name} — insgesamt %{total}. Jede Anforderung erhält ihre eigene neue Zahlungsadresse."
     approve: "Bestätigen"
+  login:
+    title: "Anmelden"
+    headline: "Bei %{domain} anmelden?"
+    identity: "Anmelden als"
+    explain: "Dies signiert eine einmalige Anmeldeanfrage. Dein Schlüssel wird nicht geteilt, und die Seite kann nicht in deinem Namen handeln."
+    pass_prompt: "Gib dein Wallet-Passwort ein, um dich anzumelden."
+    confirm: "Anmelden"
+    sent: "Bei %{domain} angemeldet"
+    failed: "%{domain} war nicht erreichbar. Die Anmeldung wurde nicht zugestellt."
   identities:
     title: "Identitäten"
     switch_hint: "Identität wechseln"

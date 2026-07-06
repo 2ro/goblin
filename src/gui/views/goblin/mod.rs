@@ -137,6 +137,12 @@ pub struct GoblinWalletView {
 	back_hint: Option<std::time::Instant>,
 	/// A batch invoice request awaiting approval (count=N deep link).
 	batch_invoice: Option<BatchInvoiceState>,
+	/// A "Sign in with Goblin" login request awaiting approval (deep link or
+	/// scanned QR), including the callback POST once approved. While this is
+	/// `Some`, every new incoming login URI is ignored (one at a time).
+	login: Option<LoginState>,
+	/// Quiet toast for the login outcome: text and when it appeared.
+	login_toast: Option<(String, std::time::Instant)>,
 }
 
 /// Whether the per-identity cue is drawn on activity rows (owner-approved). The
@@ -269,6 +275,8 @@ impl Default for GoblinWalletView {
 			min_conf_edit: String::new(),
 			back_hint: None,
 			batch_invoice: None,
+			login: None,
+			login_toast: None,
 		}
 	}
 }
@@ -347,6 +355,40 @@ const MIN_CONF_MODAL: &str = "goblin_min_conf_modal";
 /// Id of the batch-invoice approval modal (a `count=N` invoice-request URI):
 /// one approval for N payment requests, each on its own fresh proof address.
 const BATCH_INVOICE_MODAL: &str = "goblin_batch_invoice_modal";
+
+/// Id of the "Sign in with Goblin" approval modal: the user reviews the
+/// requesting domain, picks the signing identity, and confirms with the
+/// wallet password before the one-time challenge is signed.
+const LOGIN_MODAL: &str = "goblin_login_modal";
+
+/// A pending, untouched login approval expires after this many seconds (the
+/// modal closes and the request is dropped).
+const LOGIN_EXPIRY_SECS: u64 = 120;
+
+/// The login callback POST gives up after this many seconds.
+const LOGIN_POST_TIMEOUT_SECS: u64 = 15;
+
+/// One pending "Sign in with Goblin" approval. Single-use by construction:
+/// once the event is signed (`posting`), or on cancel/expiry, the state is
+/// dropped and only a fresh URI can start another.
+struct LoginState {
+	/// The validated request (challenge, domain, callback).
+	uri: crate::nostr::loginuri::LoginUri,
+	/// The CHOSEN signing identity (pubkey hex); defaults to the active one.
+	selected: String,
+	/// When the request arrived, for the [`LOGIN_EXPIRY_SECS`] deadline.
+	created: std::time::Instant,
+	/// Wallet password typed into the modal; cleared as soon as consumed.
+	pass: String,
+	/// The typed password did not verify: show the wrong-password line. The
+	/// request itself stays pending (a typo never consumes it).
+	wrong_pass: bool,
+	/// The event is signed and the callback POST is in flight; the request is
+	/// consumed either way once the worker reports back.
+	posting: bool,
+	/// Result slot the POST worker thread fills.
+	result: std::sync::Arc<std::sync::Mutex<Option<Result<(), String>>>>,
+}
 
 /// A password-gated identity action the modal executes. Switching no longer uses
 /// the modal (it is instant and local); only these need the wallet password.
@@ -619,7 +661,13 @@ impl GoblinWalletView {
 			self.settings_page = SettingsPage::Main;
 			self.advanced = AdvancedState::default();
 			self.identity_switch = IdentitySwitchState::default();
+			self.login = None;
+			self.login_toast = None;
 		}
+
+		// Transient login-outcome toast (drawn as a Foreground area, so it rides
+		// above whatever surface or overlay is showing).
+		self.login_toast_ui(ui.ctx());
 
 		// A pending payment deep link (`goblin:` / `nostr:` pay URI, routed here
 		// from an OS launch/open) opens a prefilled send-review flow — the exact
@@ -665,6 +713,76 @@ impl GoblinWalletView {
 		if Modal::opened() == Some(BATCH_INVOICE_MODAL) {
 			Modal::ui(ui.ctx(), cb, |ui, _modal, _cb| {
 				self.batch_invoice_modal_content(ui, wallet);
+			});
+		}
+
+		// A pending "Sign in with Goblin" request (deep link or scanned QR,
+		// already fully validated at the dispatch site). One approval at a
+		// time: while one is pending (modal open or POST in flight), any new
+		// incoming login request is dropped; re-triggering needs a fresh URI.
+		if let Some(login) = crate::take_pending_login() {
+			if self.login.is_none() {
+				if let Some(active) = wallet.active_nostr_pubkey() {
+					// The approval takes over from any open scan/send flow.
+					self.send = None;
+					self.login = Some(LoginState {
+						uri: login,
+						selected: active,
+						created: std::time::Instant::now(),
+						pass: String::new(),
+						wrong_pass: false,
+						posting: false,
+						result: std::sync::Arc::new(std::sync::Mutex::new(None)),
+					});
+					Modal::new(LOGIN_MODAL)
+						.position(ModalPosition::CenterTop)
+						.title(t!("goblin.login.title"))
+						.show();
+				}
+			}
+		}
+		// An untouched approval dies after 2 minutes: modal closed, request
+		// dropped. The signed-and-posting phase is governed by the POST
+		// timeout instead, so it is exempt here.
+		let login_expired = matches!(&self.login, Some(st)
+			if !st.posting && st.created.elapsed().as_secs() >= LOGIN_EXPIRY_SECS);
+		if login_expired {
+			self.login = None;
+			if Modal::opened() == Some(LOGIN_MODAL) {
+				Modal::close();
+			}
+		}
+		// Poll the callback POST; the request is consumed either way and the
+		// outcome shows as a quiet toast (distinct success/failure strings).
+		let mut login_outcome = None;
+		if let Some(st) = &self.login {
+			if st.posting {
+				login_outcome = st
+					.result
+					.lock()
+					.unwrap()
+					.take()
+					.map(|res| (res, st.uri.domain.clone()));
+				if login_outcome.is_none() {
+					ui.ctx().request_repaint();
+				}
+			}
+		}
+		if let Some((res, domain)) = login_outcome {
+			let text = match res {
+				Ok(()) => t!("goblin.login.sent", domain => domain).to_string(),
+				Err(e) => {
+					log::warn!("sign-in callback failed: {e}");
+					t!("goblin.login.failed", domain => domain).to_string()
+				}
+			};
+			self.login_toast = Some((text, std::time::Instant::now()));
+			self.login = None;
+		}
+		// The sign-in approval modal itself.
+		if Modal::opened() == Some(LOGIN_MODAL) {
+			Modal::ui(ui.ctx(), cb, |ui, modal, cb| {
+				self.login_modal_content(ui, modal, wallet, cb);
 			});
 		}
 
@@ -5879,6 +5997,309 @@ impl GoblinWalletView {
 			}
 			Modal::close();
 		}
+	}
+
+	/// Content of the "Sign in with Goblin" approval modal: the requesting
+	/// domain up top, the signing identity (a picker when several are held;
+	/// the truncated npub is always visible as the anchor), a one-line plain
+	/// explanation, the wallet password, and uniform paired Cancel / Sign in
+	/// buttons. Approving signs the one-time kind-22242 challenge with the
+	/// CHOSEN identity's key and POSTs it to the callback off the UI thread;
+	/// a wrong password stays in the modal without consuming the request.
+	fn login_modal_content(
+		&mut self,
+		ui: &mut egui::Ui,
+		modal: &Modal,
+		wallet: &Wallet,
+		cb: &dyn PlatformCallbacks,
+	) {
+		let Some(st) = self.login.as_mut() else {
+			Modal::close();
+			return;
+		};
+		if st.posting {
+			// Already signed and in flight; nothing left to gate here.
+			Modal::close();
+			return;
+		}
+		let domain = st.uri.domain.clone();
+		let identities = wallet.nostr_identities();
+		let mut go = false;
+		let mut cancel = false;
+		ui.vertical_centered(|ui| {
+			ui.add_space(6.0);
+			// Headline with the requesting domain prominent.
+			ui.label(
+				RichText::new(t!("goblin.login.headline", domain => domain.clone()))
+					.size(17.0)
+					.color(Colors::title(false)),
+			);
+			ui.add_space(10.0);
+			// The signing identity. Display precedence is the switcher's:
+			// private tag, else bare claimed name, else truncated npub — and
+			// the truncated npub is ALWAYS shown as the anchor.
+			ui.label(
+				RichText::new(t!("goblin.login.identity"))
+					.size(13.0)
+					.color(Colors::gray()),
+			);
+			ui.add_space(6.0);
+			if identities.len() > 1 {
+				// Identity picker: the held-identities list, tap to choose
+				// which one signs. Defaults to the active identity.
+				for id in &identities {
+					let selected = st.selected == id.pubkey_hex;
+					let title = id.display();
+					let short = data::short_npub(&id.pubkey_hex);
+					let row = ui
+						.scope(|ui| {
+							ui.horizontal(|ui| {
+								ui.add_space(4.0);
+								ui.label(
+									RichText::new(if selected {
+										crate::gui::icons::CHECK_CIRCLE
+									} else {
+										crate::gui::icons::CIRCLE
+									})
+									.size(18.0)
+									.color(if selected {
+										Colors::green()
+									} else {
+										Colors::gray()
+									}),
+								);
+								ui.add_space(8.0);
+								ui.vertical(|ui| {
+									if title != short {
+										ui.label(
+											RichText::new(&title)
+												.size(15.0)
+												.color(Colors::text(false)),
+										);
+									}
+									ui.label(
+										RichText::new(&short).size(12.5).color(Colors::gray()),
+									);
+								});
+							});
+						})
+						.response
+						.rect;
+					let hit = ui.interact(
+						row,
+						egui::Id::from(modal.id).with(("login_id", id.pubkey_hex.as_str())),
+						Sense::click(),
+					);
+					if hit
+						.on_hover_cursor(egui::CursorIcon::PointingHand)
+						.clicked()
+					{
+						st.selected = id.pubkey_hex.clone();
+					}
+					ui.add_space(4.0);
+				}
+			} else if let Some(id) = identities.first() {
+				let title = id.display();
+				let short = data::short_npub(&id.pubkey_hex);
+				if title != short {
+					ui.label(RichText::new(&title).size(15.0).color(Colors::text(false)));
+				}
+				ui.label(RichText::new(&short).size(12.5).color(Colors::gray()));
+			}
+			ui.add_space(10.0);
+			// One plain line on what approving does (and does not do).
+			ui.label(
+				RichText::new(t!("goblin.login.explain"))
+					.size(13.0)
+					.color(Colors::gray()),
+			);
+			ui.add_space(10.0);
+			// The wallet password gates the signature, mirroring the identity
+			// password modal (masked field, same wrong-password line).
+			ui.label(
+				RichText::new(t!("goblin.login.pass_prompt"))
+					.size(16.0)
+					.color(Colors::gray()),
+			);
+			ui.add_space(10.0);
+			let mut field = TextEdit::new(egui::Id::from(modal.id).with("login_pass")).password();
+			field.ui(ui, &mut st.pass, cb);
+			if field.enter_pressed {
+				go = true;
+			}
+			if st.pass.is_empty() {
+				st.wrong_pass = false;
+			} else if st.wrong_pass {
+				ui.add_space(10.0);
+				ui.label(
+					RichText::new(t!("goblin.advanced.wrong_password"))
+						.size(16.0)
+						.color(Colors::red()),
+				);
+			}
+			ui.add_space(12.0);
+		});
+		ui.scope(|ui| {
+			ui.spacing_mut().item_spacing = egui::Vec2::new(8.0, 0.0);
+			ui.columns(2, |columns| {
+				columns[0].vertical_centered_justified(|ui| {
+					View::button(
+						ui,
+						t!("modal.cancel"),
+						Colors::white_or_black(false),
+						|| {
+							cancel = true;
+						},
+					);
+				});
+				columns[1].vertical_centered_justified(|ui| {
+					View::button(
+						ui,
+						t!("goblin.login.confirm"),
+						Colors::white_or_black(false),
+						|| {
+							go = true;
+						},
+					);
+				});
+			});
+			ui.add_space(6.0);
+		});
+		if cancel {
+			// Cancel drops the request: it is single-use, no retry.
+			self.login = None;
+			Modal::close();
+			return;
+		}
+		if go {
+			let (pass, selected) = match self.login.as_ref() {
+				Some(st) => (st.pass.clone(), st.selected.clone()),
+				None => return,
+			};
+			if pass.is_empty() {
+				return;
+			}
+			if !wallet.verify_nostr_password(&pass) {
+				// Wrong password: stay in the modal, request NOT consumed.
+				if let Some(st) = self.login.as_mut() {
+					st.wrong_pass = true;
+				}
+				return;
+			}
+			// The chosen identity's unlocked in-memory keys, from the running
+			// service (the Build-145 model: every held identity is unlocked).
+			let keys = wallet.nostr_service().and_then(|s| {
+				s.recv_snapshot()
+					.into_iter()
+					.find(|h| h.keys.public_key().to_hex() == selected)
+					.map(|h| h.keys)
+			});
+			let Some(keys) = keys else {
+				// No running service / identity gone: drop the request.
+				self.login = None;
+				Modal::close();
+				return;
+			};
+			let st = self.login.as_mut().unwrap();
+			st.pass.clear();
+			st.wrong_pass = false;
+			match crate::nostr::loginuri::build_login_event(
+				&keys,
+				&st.uri.challenge,
+				&st.uri.domain,
+			) {
+				Ok(event) => {
+					// Signed: the request is consumed from here on, whatever
+					// the POST outcome. Deliver off the UI thread with the
+					// shared HTTP client and a hard timeout.
+					st.posting = true;
+					let callback = st.uri.callback.clone();
+					let slot = st.result.clone();
+					std::thread::spawn(move || {
+						let res = match tokio::runtime::Builder::new_current_thread()
+							.enable_all()
+							.build()
+						{
+							Ok(rt) => rt.block_on(async {
+								let post =
+									crate::nostr::loginuri::post_login_event(&callback, &event);
+								match tokio::time::timeout(
+									std::time::Duration::from_secs(LOGIN_POST_TIMEOUT_SECS),
+									post,
+								)
+								.await
+								{
+									Ok(r) => r,
+									Err(_) => Err("timeout".to_string()),
+								}
+							}),
+							Err(e) => Err(e.to_string()),
+						};
+						*slot.lock().unwrap() = Some(res);
+					});
+					Modal::close();
+				}
+				Err(e) => {
+					// Signing failed (never expected): consume the request and
+					// surface the quiet failure toast.
+					log::error!("login event signing failed: {e}");
+					self.login_toast = Some((
+						t!("goblin.login.failed", domain => domain).to_string(),
+						std::time::Instant::now(),
+					));
+					self.login = None;
+					Modal::close();
+				}
+			}
+		}
+	}
+
+	/// Draw the transient login-outcome toast: the same quiet pill as the back
+	/// hint (solid soft pill, no border, small dim text), bottom-anchored,
+	/// non-blocking, fading out.
+	fn login_toast_ui(&mut self, ctx: &egui::Context) {
+		const SHOW_SECS: f32 = 3.5;
+		let Some((text, at)) = &self.login_toast else {
+			return;
+		};
+		let elapsed = at.elapsed().as_secs_f32();
+		if elapsed >= SHOW_SECS {
+			self.login_toast = None;
+			return;
+		}
+		let text = text.clone();
+		let t = theme::tokens();
+		// Fade over the final 0.5s.
+		let alpha = ((SHOW_SECS - elapsed) / 0.5).clamp(0.0, 1.0);
+		let font = FontId::new(13.0, fonts::regular());
+		egui::Area::new(egui::Id::new("goblin_login_toast"))
+			.order(egui::Order::Foreground)
+			.anchor(
+				egui::Align2::CENTER_BOTTOM,
+				Vec2::new(0.0, -(View::get_bottom_inset() + 92.0)),
+			)
+			.interactable(false)
+			.show(ctx, |ui| {
+				let galley = ui
+					.painter()
+					.layout_no_wrap(text, font.clone(), t.surface_text_dim);
+				let pad = Vec2::new(16.0, 10.0);
+				let size = galley.size() + pad * 2.0;
+				let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
+				ui.painter().rect(
+					rect,
+					CornerRadius::same((size.y / 2.0) as u8),
+					t.surface2.gamma_multiply(alpha),
+					Stroke::NONE,
+					egui::StrokeKind::Inside,
+				);
+				ui.painter().galley(
+					rect.min + pad,
+					galley,
+					t.surface_text_dim.gamma_multiply(alpha),
+				);
+			});
+		ctx.request_repaint_after(std::time::Duration::from_millis(50));
 	}
 
 	/// Inline username-claim widget (availability check + registration).

@@ -559,6 +559,13 @@ lazy_static! {
 	/// slatepack message handler. Consumed by the Goblin view once a wallet is
 	/// open and showing.
 	static ref PENDING_PAY_URI: Arc<RwLock<Option<String>>> = Arc::new(RwLock::new(None));
+	/// A pending, already-VALIDATED "Sign in with Goblin" login request
+	/// (`goblin:login?...` deep link or QR), waiting for the Goblin surface to
+	/// open its approval modal. Only a fully validated [`nostr::loginuri::LoginUri`]
+	/// is ever stashed here; rejected login URIs are dropped at the dispatch
+	/// site and never reach the UI.
+	static ref PENDING_LOGIN: Arc<RwLock<Option<nostr::loginuri::LoginUri>>> =
+		Arc::new(RwLock::new(None));
 }
 
 /// Stash a payment deep link for the Goblin surface to open (see
@@ -571,6 +578,19 @@ pub fn set_pending_pay_uri(uri: String) {
 /// polls this each frame and opens a prefilled send-review flow for it.
 pub fn take_pending_pay_uri() -> Option<String> {
 	PENDING_PAY_URI.write().take()
+}
+
+/// Stash a VALIDATED login request for the Goblin surface to open its approval
+/// modal (see [`take_pending_login`]). The most recent request wins here; the
+/// surface itself ignores new requests while one approval is already pending.
+pub fn set_pending_login(login: nostr::loginuri::LoginUri) {
+	*PENDING_LOGIN.write() = Some(login);
+}
+
+/// Take (and clear) a pending login request, if any. The Goblin wallet view
+/// polls this each frame and opens the sign-in approval modal for it.
+pub fn take_pending_login() -> Option<nostr::loginuri::LoginUri> {
+	PENDING_LOGIN.write().take()
 }
 
 /// Callback from Java code with passed data.

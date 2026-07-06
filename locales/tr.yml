@@ -683,6 +683,15 @@ goblin:
     title: "%{n} faturayı onayla"
     blurb: "%{name} için her biri %{amount} olan %{n} ödeme isteği düzenle — toplam %{total}. Her istek kendi yeni ödeme adresini alır."
     approve: "Onayla"
+  login:
+    title: "Giriş yap"
+    headline: "%{domain} sitesine giriş yapılsın mı?"
+    identity: "Giriş yapılacak kimlik"
+    explain: "Bu, tek seferlik bir giriş isteğini imzalar. Anahtarın paylaşılmaz ve site senin adına işlem yapamaz."
+    pass_prompt: "Giriş yapmak için cüzdan parolanı gir."
+    confirm: "Giriş yap"
+    sent: "%{domain} girişi yapıldı"
+    failed: "%{domain} adresine ulaşılamadı. Giriş iletilemedi."
   identities:
     title: "Kimlikler"
     switch_hint: "Kimlik değiştir"

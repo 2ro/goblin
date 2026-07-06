@@ -239,6 +239,17 @@ impl SendFlow {
 	/// handler so both spell the same destination. `now` seeds the search-box
 	/// debounce.
 	fn apply_scan(&mut self, text: &str, wallet: &Wallet, now: f64) {
+		// A "Sign in with Goblin" login URI is grabbed BEFORE any pay parsing
+		// (mirroring the deep-link dispatcher): it is never a payment, and a
+		// login-shaped payload that fails validation is dropped entirely. A
+		// valid one is stashed for the Goblin surface, whose per-frame router
+		// closes this flow and opens the approval modal.
+		if crate::nostr::loginuri::is_login_shaped(text) {
+			if let Some(login) = crate::nostr::loginuri::parse(text) {
+				crate::set_pending_login(login);
+			}
+			return;
+		}
 		// Proof-on-request context (frozen contract 4.1) rides alongside the
 		// recipient/amount/memo routing and is independent of whether we land on
 		// Review or Search, so pull it from the same pure parse. `order` is a

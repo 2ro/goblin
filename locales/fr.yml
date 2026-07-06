@@ -683,6 +683,15 @@ goblin:
     title: "Approuver %{n} factures"
     blurb: "Émettre %{n} demandes de paiement de %{amount} chacune à %{name} — %{total} au total. Chaque demande reçoit sa propre adresse de paiement."
     approve: "Approuver"
+  login:
+    title: "Connexion"
+    headline: "Se connecter à %{domain} ?"
+    identity: "Se connecter en tant que"
+    explain: "Ceci signe une demande de connexion à usage unique. Votre clé n'est pas partagée et le site ne peut pas agir en votre nom."
+    pass_prompt: "Saisissez le mot de passe de votre portefeuille pour vous connecter."
+    confirm: "Se connecter"
+    sent: "Connecté à %{domain}"
+    failed: "Impossible de joindre %{domain}. La connexion n'a pas été transmise."
   identities:
     title: "Identités"
     switch_hint: "Changer d'identité"

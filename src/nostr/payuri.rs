@@ -189,8 +189,10 @@ fn validate_count(raw: &str) -> Option<u32> {
 
 /// Strip a case-insensitive payment scheme prefix (`goblin:` or `nostr:`),
 /// returning the remainder. Byte-safe against a leading multibyte char (the
-/// `text.get(..n)` guards against a `[..n]` slice panic).
-fn strip_pay_scheme(text: &str) -> Option<&str> {
+/// `text.get(..n)` guards against a `[..n]` slice panic). Crate-visible so the
+/// login-URI parser (see [`crate::nostr::loginuri`]) shares the exact same
+/// scheme handling.
+pub(crate) fn strip_pay_scheme(text: &str) -> Option<&str> {
 	for scheme in PAY_SCHEMES {
 		let n = scheme.len();
 		if let Some(head) = text.get(..n) {
@@ -348,7 +350,8 @@ fn truncate_on_char_boundary(s: String, max: usize) -> String {
 /// byte; a stray `%` or a non-hex escape is passed through literally. No new
 /// dependency — the wallet has no direct percent-encoding crate and this is a
 /// few lines. `+` is left literal (RFC-3986 query, not form-encoding).
-fn percent_decode(s: &str) -> Vec<u8> {
+/// Crate-visible so the login-URI parser decodes identically.
+pub(crate) fn percent_decode(s: &str) -> Vec<u8> {
 	let bytes = s.as_bytes();
 	let mut out = Vec::with_capacity(bytes.len());
 	let mut i = 0;

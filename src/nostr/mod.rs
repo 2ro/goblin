@@ -48,4 +48,5 @@ pub use client::{HeldIdentityKeys, NostrProfile, NostrService, send_phase};
 pub mod avatar;
 pub mod nip05;
 
+pub mod loginuri;
 pub mod payuri;
