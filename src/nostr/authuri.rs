@@ -262,7 +262,10 @@ fn is_localhost_authority(rest: &str) -> bool {
 /// server legitimately serves any domain's flow. This is what makes the
 /// attacker-supplied `d` trustworthy: the signed event can only ever travel to
 /// a host that belongs to the domain the user approved.
-fn domain_bound(callback: &str, domain: &str) -> bool {
+///
+/// Shared with [`crate::nostr::loginuri`], which applies the exact same binding
+/// so a login callback can only reach a host belonging to the approved domain.
+pub(crate) fn domain_bound(callback: &str, domain: &str) -> bool {
 	// The localhost dev callback is validated already and exempt from binding.
 	if strip_prefix_ignore_case(callback, "http://").is_some() {
 		return true;

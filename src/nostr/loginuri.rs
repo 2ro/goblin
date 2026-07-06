@@ -116,6 +116,14 @@ pub fn parse(scanned: &str) -> Option<LoginUri> {
 	let challenge = validate_challenge(challenge?)?;
 	let domain = validate_domain(domain?)?;
 	let callback = validate_callback(callback?)?;
+	// Domain binding: the callback host must belong to the displayed domain, so a
+	// site cannot show `d=magick.market` while pointing `cb` at its own host and
+	// harvest a login event for a domain it does not control. Same rule as
+	// authorize (case-insensitive, ports/userinfo stripped, label-boundary
+	// subdomains allowed, http://localhost dev callback exempt).
+	if !super::authuri::domain_bound(&callback, &domain) {
+		return None;
+	}
 	Some(LoginUri {
 		challenge,
 		domain,
@@ -354,6 +362,29 @@ mod tests {
 			let out = parse(&uri).unwrap_or_else(|| panic!("expected cb={ok:?} accepted"));
 			assert_eq!(out.callback, ok);
 		}
+	}
+
+	#[test]
+	fn callback_domain_binding_enforced() {
+		// d=magick.market with a callback on an unrelated host: rejected, so a
+		// login event can never be harvested by a domain the site does not control.
+		let bad = format!("goblin:login?c={C}&d=magick.market&cb=https://evil.com/x");
+		assert_eq!(parse(&bad), None, "cross-domain callback must be rejected");
+		// Host equals the domain: accepted.
+		let ok = format!("goblin:login?c={C}&d=magick.market&cb=https://magick.market/cb");
+		assert_eq!(parse(&ok).unwrap().callback, "https://magick.market/cb");
+		// Subdomain on a label boundary: accepted.
+		let ok = format!("goblin:login?c={C}&d=magick.market&cb=https://auth.magick.market/cb");
+		assert!(
+			parse(&ok).is_some(),
+			"label-boundary subdomain must be accepted"
+		);
+		// Suffix without a label boundary: rejected.
+		let bad = format!("goblin:login?c={C}&d=magick.market&cb=https://notmagick.market/cb");
+		assert_eq!(parse(&bad), None, "non-boundary suffix must be rejected");
+		// The http://localhost dev callback is exempt regardless of the domain.
+		let ok = format!("goblin:login?c={C}&d=magick.market&cb=http://localhost:8080/cb");
+		assert_eq!(parse(&ok).unwrap().callback, "http://localhost:8080/cb");
 	}
 
 	#[test]
