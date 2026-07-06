@@ -130,6 +130,8 @@ pub struct GoblinWalletView {
 	/// "Wipe payment history" tap-twice confirm: armed after the first tap,
 	/// wipes on the second (cleared once fired).
 	wipe_confirm: bool,
+	/// Minimum-confirmations value being edited in its modal (GRIM parity).
+	min_conf_edit: String,
 }
 
 /// Whether the per-identity cue is drawn on activity rows (owner-approved). The
@@ -259,6 +261,7 @@ impl Default for GoblinWalletView {
 			cancel_msg: None,
 			copy_flash: None,
 			wipe_confirm: false,
+			min_conf_edit: String::new(),
 		}
 	}
 }
@@ -329,6 +332,10 @@ const IDENTITY_MANAGE_MODAL: &str = "goblin_identity_manage_modal";
 /// Id of the step-1 delete-confirmation modal (danger text before the
 /// wallet-password modal executes the delete). Also background-locking.
 const IDENTITY_DELETE_MODAL: &str = "goblin_identity_delete_modal";
+
+/// Id of the minimum-confirmations edit modal (GRIM parity: numeric input,
+/// Cancel/Save), opened from the Settings wallet group.
+const MIN_CONF_MODAL: &str = "goblin_min_conf_modal";
 
 /// A password-gated identity action the modal executes. Switching no longer uses
 /// the modal (it is instant and local); only these need the wallet password.
@@ -2608,6 +2615,13 @@ impl GoblinWalletView {
 			SettingsPage::Identities => return self.identities_ui(ui, wallet, cb),
 			SettingsPage::Main => {}
 		}
+		// Minimum-confirmations edit modal (GRIM parity), opened from the
+		// wallet group below.
+		if Modal::opened() == Some(MIN_CONF_MODAL) {
+			Modal::ui(ui.ctx(), cb, |ui, modal, cb| {
+				self.min_conf_modal_content(ui, wallet, modal, cb);
+			});
+		}
 		ui.add_space(8.0);
 		ui.label(
 			RichText::new(t!("goblin.settings.title"))
@@ -2902,22 +2916,26 @@ impl GoblinWalletView {
 
 				ui.add_space(16.0);
 				let mut open_node = false;
-				let mut open_integrated = false;
 				let mut open_slatepack = false;
 				settings_group(ui, &t!("goblin.settings.wallet"), |ui| {
 					if settings_row_nav(ui, &t!("goblin.settings.node"), &node_summary(wallet)) {
 						open_node = true;
 					}
-					// GRIM's integrated-node tabs (info, metrics, mining, node
-					// settings), shown in Goblin chrome. Live sync status when
-					// the node runs, like the Node row above.
-					let node_value = if crate::node::Node::is_running() {
-						crate::node::Node::get_sync_status_text()
-					} else {
-						String::new()
-					};
-					if settings_row_nav(ui, &t!("goblin.settings.integrated_node"), &node_value) {
-						open_integrated = true;
+					// Minimum confirmations before received funds are spendable
+					// (GRIM parity, default 10). Prominent, just below the node
+					// row; tapping opens the numeric edit modal. The value feeds
+					// the wallet's spendable/send logic via
+					// WalletConfig::min_confirmations.
+					if settings_row_nav(
+						ui,
+						&t!("goblin.settings.min_conf"),
+						&wallet.get_config().min_confirmations.to_string(),
+					) {
+						self.min_conf_edit = wallet.get_config().min_confirmations.to_string();
+						Modal::new(MIN_CONF_MODAL)
+							.position(ModalPosition::CenterTop)
+							.title(t!("goblin.settings.min_conf"))
+							.show();
 					}
 					// GRIM's native by-hand slatepack exchange, for when a payment
 					// can't go through a username.
@@ -2947,11 +2965,6 @@ impl GoblinWalletView {
 					self.node_url_input.clear();
 					self.node_secret_input.clear();
 					self.settings_page = SettingsPage::Node;
-				}
-				if open_integrated {
-					self.node_tab = Box::new(crate::gui::views::network::NetworkNode);
-					self.node_tab_back = SettingsPage::Main;
-					self.settings_page = SettingsPage::IntegratedNode;
 				}
 
 				ui.add_space(16.0);
@@ -3369,6 +3382,7 @@ impl GoblinWalletView {
 		let progress = wallet.repairing_progress();
 		let mut leave = false;
 		let mut open_node = false;
+		let mut open_integrated = false;
 		{
 			let adv = &mut self.advanced;
 			ScrollArea::vertical()
@@ -3404,6 +3418,23 @@ impl GoblinWalletView {
 						}
 						if w::big_action_on_card(ui, &t!("goblin.advanced.manage_node")).clicked() {
 							open_node = true;
+						}
+						ui.add_space(10.0);
+						// GRIM's integrated-node tabs (info, metrics, mining with
+						// stratum, node settings) in Goblin chrome. Their ONE home
+						// (single-home rule): Goblin is the lighter client, so they
+						// live here under Advanced, not in main Settings.
+						let node_label = if crate::node::Node::is_running() {
+							format!(
+								"{} · {}",
+								t!("goblin.settings.integrated_node"),
+								crate::node::Node::get_sync_status_text()
+							)
+						} else {
+							t!("goblin.settings.integrated_node").to_string()
+						};
+						if w::big_action_on_card(ui, &node_label).clicked() {
+							open_integrated = true;
 						}
 					});
 					ui.add_space(12.0);
@@ -3660,11 +3691,17 @@ impl GoblinWalletView {
 			self.settings_page = SettingsPage::Main;
 		}
 		if open_node {
-			// Advanced → "Manage node connection" opens Goblin's own Node screen
-			// (its Advanced button reaches the integrated-node tabs from there).
+			// Advanced → "Manage node connection" opens Goblin's own Node screen.
 			self.node_url_input.clear();
 			self.node_secret_input.clear();
 			self.settings_page = SettingsPage::Node;
+		}
+		if open_integrated {
+			// Advanced is the one home of the integrated-node tabs; back
+			// returns here.
+			self.node_tab = Box::new(crate::gui::views::network::NetworkNode);
+			self.node_tab_back = SettingsPage::Advanced;
+			self.settings_page = SettingsPage::IntegratedNode;
 		}
 	}
 
@@ -3855,14 +3892,8 @@ impl GoblinWalletView {
 					self.node_url_input.clear();
 					self.node_secret_input.clear();
 				}
-				ui.add_space(10.0);
-				// Advanced: GRIM's integrated-node tabs (info, metrics, mining
-				// with stratum, node settings) inside Goblin chrome.
-				if w::big_action(ui, &t!("goblin.settings.node_advanced"), true).clicked() {
-					self.node_tab = Box::new(crate::gui::views::network::NetworkNode);
-					self.node_tab_back = SettingsPage::Node;
-					self.settings_page = SettingsPage::IntegratedNode;
-				}
+				// (The integrated-node tabs' single home is Settings → Advanced;
+				// no duplicate entry here.)
 				ui.add_space(16.0);
 			});
 	}
@@ -5559,6 +5590,69 @@ impl GoblinWalletView {
 				.title(t!("goblin.identities.delete_short"))
 				.show();
 		}
+	}
+
+	/// Content of the minimum-confirmations edit modal — a direct port of GRIM's
+	/// min_conf_modal_ui (numeric input, invalid-value error, Cancel/Save). The
+	/// saved value persists in WalletConfig::min_confirmations and feeds the
+	/// wallet's spendable/send logic on the next balance refresh.
+	fn min_conf_modal_content(
+		&mut self,
+		ui: &mut egui::Ui,
+		wallet: &Wallet,
+		modal: &Modal,
+		cb: &dyn PlatformCallbacks,
+	) {
+		let on_save = |s: &mut GoblinWalletView| {
+			if let Ok(min_conf) = s.min_conf_edit.parse::<u64>() {
+				wallet.update_min_confirmations(min_conf);
+				Modal::close();
+			}
+		};
+		ui.add_space(6.0);
+		ui.vertical_centered(|ui| {
+			ui.label(
+				RichText::new(t!("wallets.min_tx_conf_count"))
+					.size(17.0)
+					.color(Colors::gray()),
+			);
+			ui.add_space(8.0);
+			let mut edit = TextEdit::new(egui::Id::from(modal.id)).h_center().numeric();
+			edit.ui(ui, &mut self.min_conf_edit, cb);
+			if edit.enter_pressed {
+				on_save(self);
+			}
+			if self.min_conf_edit.parse::<u64>().is_err() {
+				ui.add_space(12.0);
+				ui.label(
+					RichText::new(t!("network_settings.not_valid_value"))
+						.size(17.0)
+						.color(Colors::red()),
+				);
+			}
+			ui.add_space(12.0);
+		});
+		ui.scope(|ui| {
+			ui.spacing_mut().item_spacing = egui::Vec2::new(8.0, 0.0);
+			ui.columns(2, |columns| {
+				columns[0].vertical_centered_justified(|ui| {
+					View::button(
+						ui,
+						t!("modal.cancel"),
+						Colors::white_or_black(false),
+						|| {
+							Modal::close();
+						},
+					);
+				});
+				columns[1].vertical_centered_justified(|ui| {
+					View::button(ui, t!("modal.save"), Colors::white_or_black(false), || {
+						on_save(self);
+					});
+				});
+			});
+			ui.add_space(6.0);
+		});
 	}
 
 	/// Inline username-claim widget (availability check + registration).

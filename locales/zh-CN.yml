@@ -470,6 +470,7 @@ goblin:
     relays: "中继"
     nostr_relays: "Nostr 中继"
     node: "节点"
+    min_conf: "最少确认数"
     integrated_node: "集成节点设置"
     node_advanced: "高级"
     slatepacks: "Slatepack"

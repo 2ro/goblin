@@ -470,6 +470,7 @@ goblin:
     relays: "Реле"
     nostr_relays: "Реле Nostr"
     node: "Узел"
+    min_conf: "Минимум подтверждений"
     integrated_node: "Настройки встроенного узла"
     node_advanced: "Дополнительно"
     slatepacks: "Slatepacks"

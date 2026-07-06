@@ -470,6 +470,7 @@ goblin:
     relays: "Relays"
     nostr_relays: "Nostr-Relays"
     node: "Node"
+    min_conf: "Mindestbestätigungen"
     integrated_node: "Einstellungen des integrierten Nodes"
     node_advanced: "Erweitert"
     slatepacks: "Slatepacks"

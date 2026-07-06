@@ -470,6 +470,7 @@ goblin:
     relays: "Relais"
     nostr_relays: "Relais Nostr"
     node: "Nœud"
+    min_conf: "Confirmations minimales"
     integrated_node: "Paramètres du nœud intégré"
     node_advanced: "Avancé"
     slatepacks: "Slatepacks"

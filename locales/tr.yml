@@ -470,6 +470,7 @@ goblin:
     relays: "Relaylar"
     nostr_relays: "Nostr Relayları"
     node: "Düğüm"
+    min_conf: "Asgari onay sayısı"
     integrated_node: "Tümleşik düğüm ayarları"
     node_advanced: "Gelişmiş"
     slatepacks: "Slatepackler"
