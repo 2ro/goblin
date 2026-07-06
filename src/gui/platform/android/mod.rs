@@ -286,6 +286,12 @@ impl PlatformCallbacks for Android {
 	fn vibrate_copy(&self) {
 		let _ = self.call_java_method("vibrateCopy", "()V", &[]);
 	}
+
+	fn return_to_caller(&self) {
+		// Background our task (Activity.moveTaskToBack(true), wrapped Java-side)
+		// so the OS brings the app that deep-linked into us back to the front.
+		let _ = self.call_java_method("returnToCaller", "()V", &[]);
+	}
 }
 
 lazy_static! {

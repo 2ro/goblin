@@ -6379,6 +6379,10 @@ impl GoblinWalletView {
 						*slot.lock().unwrap() = Some(res);
 					});
 					Modal::close();
+					// Signed and handed to the POST worker: return the user to
+					// the app that deep-linked in (the polling browser tab),
+					// without waiting on the HTTP response. Success path only.
+					cb.return_to_caller();
 				}
 				Err(e) => {
 					// Signing failed (never expected): consume the request and
@@ -6799,6 +6803,10 @@ impl GoblinWalletView {
 						*slot.lock().unwrap() = Some(res);
 					});
 					Modal::close();
+					// Signed and handed to the POST worker: return the user to
+					// the app that deep-linked in (the polling browser tab),
+					// without waiting on the HTTP response. Success path only.
+					cb.return_to_caller();
 				}
 				Err(e) => {
 					// Signing failed (never expected): consume the request and

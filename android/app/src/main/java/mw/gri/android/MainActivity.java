@@ -402,6 +402,15 @@ public class MainActivity extends GameActivity {
         finishAndRemoveTask();
     }
 
+    // Called from native code after a successful same-device sign-in/authorize
+    // to hand focus back to the app that deep-linked into us (the browser tab
+    // that is polling the callback). Backgrounds our task so the OS surfaces the
+    // previous app; keeps the process alive (unlike exit()) so the callback POST
+    // finishes and the success toast shows on next foreground.
+    public void returnToCaller() {
+        moveTaskToBack(true);
+    }
+
     @Override
     protected void onDestroy() {
         unregisterReceiver(mBroadcastReceiver);

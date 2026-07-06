@@ -76,4 +76,12 @@ pub trait PlatformCallbacks {
 
 	/// Play a tiny "tick" haptic confirming a successful copy. No-op off Android.
 	fn vibrate_copy(&self) {}
+
+	/// Return the user to the app that deep-linked into Goblin (the same-device
+	/// app-switch flow: a browser hands off a `goblin:login`/`goblin:authorize`
+	/// URI, we sign, then hand focus back). On Android this backgrounds our task
+	/// so the OS surfaces the previous app (the polling browser tab). Best-effort
+	/// and a no-op off Android, where there is no clean "return focus" primitive
+	/// (egui/winit); desktop leaves the window where it is.
+	fn return_to_caller(&self) {}
 }
