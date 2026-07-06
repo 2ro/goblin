@@ -702,8 +702,8 @@ goblin:
     add_title: "添加一个身份"
     nsec_hint: "粘贴 nsec"
     generate_note: "将为此钱包创建一个全新的匿名密钥。"
-    import_instead: "改为导入现有身份"
-    generate_instead: "改为创建新密钥"
+    generate: "创建"
+    import: "导入"
     choose_backup: "选择 .backup 文件"
     backup_selected: "已选择备份文件"
     delete_short: "删除身份"
@@ -715,7 +715,6 @@ goblin:
     tag_note: "给它起一个私密名称。只有你能看到——绝不会被分享。"
     tag_hint: "私密名称"
     tag_save: "保存"
-    add_confirm: "添加"
     pass_prompt: "钱包密码用于加密和解锁每个身份。输入以继续。"
     working: "处理中…"
   onboarding:

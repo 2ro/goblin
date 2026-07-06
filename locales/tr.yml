@@ -702,8 +702,8 @@ goblin:
     add_title: "Bir kimlik ekle"
     nsec_hint: "Bir nsec yapıştır"
     generate_note: "Bu cüzdan için yeni, anonim bir anahtar oluşturulacak."
-    import_instead: "Bunun yerine mevcut bir kimliği içe aktar"
-    generate_instead: "Bunun yerine yeni bir anahtar oluştur"
+    generate: "Oluştur"
+    import: "İçe aktar"
     choose_backup: "Bir .backup dosyası seç"
     backup_selected: "Yedek dosyası seçildi"
     delete_short: "Kimliği sil"
@@ -715,7 +715,6 @@ goblin:
     tag_note: "Ona özel bir ad ver. Sadece sen görürsün — asla paylaşılmaz."
     tag_hint: "Özel ad"
     tag_save: "Kaydet"
-    add_confirm: "Ekle"
     pass_prompt: "Cüzdan parolan her kimliği şifreler ve açar. Devam etmek için gir."
     working: "Çalışıyor…"
   onboarding:

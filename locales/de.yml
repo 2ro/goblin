@@ -702,8 +702,8 @@ goblin:
     add_title: "Eine Identität hinzufügen"
     nsec_hint: "Nsec einfügen"
     generate_note: "Ein neuer, anonymer Schlüssel wird für diese Wallet erstellt."
-    import_instead: "Stattdessen eine bestehende Identität importieren"
-    generate_instead: "Stattdessen einen neuen Schlüssel erstellen"
+    generate: "Erstellen"
+    import: "Importieren"
     choose_backup: "Eine .backup-Datei wählen"
     backup_selected: "Backup-Datei ausgewählt"
     delete_short: "Identität löschen"
@@ -715,7 +715,6 @@ goblin:
     tag_note: "Gib ihr einen privaten Namen. Nur du siehst ihn — er wird nie geteilt."
     tag_hint: "Privater Name"
     tag_save: "Speichern"
-    add_confirm: "Hinzufügen"
     pass_prompt: "Dein Wallet-Passwort verschlüsselt und entsperrt jede Identität. Gib es ein, um fortzufahren."
     working: "Arbeite…"
   onboarding:

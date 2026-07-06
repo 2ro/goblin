@@ -5432,40 +5432,96 @@ impl GoblinWalletView {
 							});
 						}
 						ui.add_space(10.0);
-						// ONE mode toggle instead of the old Generate/Import pair (whose
-						// "Generate new" half was the already-active default and read as
-						// a dead button). Tapping switches the sheet's mode, revealing or
-						// hiding the import inputs; the label always names the OTHER mode.
-						let toggle_label = if self.identity_switch.import {
-							t!("goblin.identities.generate_instead")
-						} else {
-							t!("goblin.identities.import_instead")
-						};
-						if w::big_action_on_card(ui, &toggle_label).clicked() {
-							self.identity_switch.import = !self.identity_switch.import;
-							self.identity_switch.error.clear();
-						}
-						ui.add_space(10.0);
 						let import = self.identity_switch.import;
-						// Generate is always ready; import needs either a selected
-						// .backup or a pasted nsec. The password is entered in the modal.
+						let busy = self.identity_switch.busy;
+						// Two real actions instead of a mode toggle: Generate is always
+						// ready; Import first reveals the .backup/nsec inputs, then
+						// confirms once one of them is filled. The password is entered
+						// in the modal.
 						let has_import = !self.identity_switch.backup_input.trim().is_empty()
 							|| self.identity_switch.nsec.trim().starts_with("nsec1");
-						let armed = (!import || has_import) && !self.identity_switch.busy;
+						let import_armed = (!import || has_import) && !busy;
+						// The password-gated add to launch this frame: `Some(None)` for
+						// a fresh key, `Some(Some(blob))` for an import.
+						let mut open_add: Option<Option<String>> = None;
 						ui.horizontal(|ui| {
 							let half = (ui.available_width() - 10.0) / 2.0;
+							// Generate on the LEFT, the positive (green) action: a
+							// fresh anonymous key via the existing password step.
 							ui.scope_builder(
 								egui::UiBuilder::new().max_rect(egui::Rect::from_min_size(
 									ui.cursor().min,
 									Vec2::new(half, 44.0),
 								)),
 								|ui| {
-									// Uniform paired buttons (the Generate/Import toggle
-									// pattern): same widget, size and shape for both halves.
+									ui.add_enabled_ui(!busy, |ui| {
+										if w::big_action_on_card_ink(
+											ui,
+											&t!("goblin.identities.generate"),
+											if busy { t.surface_text_mute } else { t.pos },
+										)
+										.clicked()
+										{
+											open_add = Some(None);
+										}
+									});
+								},
+							);
+							ui.add_space(10.0);
+							// Import on the RIGHT, neutral: reveal-then-confirm.
+							ui.scope_builder(
+								egui::UiBuilder::new().max_rect(egui::Rect::from_min_size(
+									ui.cursor().min,
+									Vec2::new(half, 44.0),
+								)),
+								|ui| {
+									ui.add_enabled_ui(import_armed, |ui| {
+										if w::big_action_on_card_ink(
+											ui,
+											&t!("goblin.identities.import"),
+											if import_armed {
+												t.surface_text
+											} else {
+												t.surface_text_mute
+											},
+										)
+										.clicked()
+										{
+											if !import {
+												// First tap: reveal the import inputs.
+												self.identity_switch.import = true;
+												self.identity_switch.error.clear();
+											} else {
+												// Confirm: the selected .backup wins over
+												// a pasted nsec.
+												let b = self.identity_switch.backup_input.trim();
+												let blob = if b.is_empty() {
+													self.identity_switch.nsec.trim().to_string()
+												} else {
+													b.to_string()
+												};
+												open_add = Some(Some(blob));
+											}
+										}
+									});
+								},
+							);
+						});
+						// Cancel centered BENEATH the pair: red, same uniform size.
+						ui.add_space(10.0);
+						ui.horizontal(|ui| {
+							let half = (ui.available_width() - 10.0) / 2.0;
+							ui.add_space((ui.available_width() - half) / 2.0);
+							ui.scope_builder(
+								egui::UiBuilder::new().max_rect(egui::Rect::from_min_size(
+									ui.cursor().min,
+									Vec2::new(half, 44.0),
+								)),
+								|ui| {
 									if w::big_action_on_card_ink(
 										ui,
 										&t!("goblin.settings.cancel"),
-										t.surface_text,
+										t.neg,
 									)
 									.clicked()
 									{
@@ -5477,55 +5533,21 @@ impl GoblinWalletView {
 									}
 								},
 							);
-							ui.add_space(10.0);
-							ui.scope_builder(
-								egui::UiBuilder::new().max_rect(egui::Rect::from_min_size(
-									ui.cursor().min,
-									Vec2::new(half, 44.0),
-								)),
-								|ui| {
-									ui.add_enabled_ui(armed, |ui| {
-										if w::big_action_on_card_ink(
-											ui,
-											&t!("goblin.identities.add_confirm"),
-											if armed { t.pos } else { t.surface_text_mute },
-										)
-										.clicked()
-										{
-											// Open the password modal to encrypt+store the
-											// new identity. It is added WITHOUT switching;
-											// the user activates it later by tapping it. The
-											// import blob is the selected .backup if any,
-											// else the pasted nsec.
-											let import_blob = if import {
-												let b = self.identity_switch.backup_input.trim();
-												if b.is_empty() {
-													Some(
-														self.identity_switch
-															.nsec
-															.trim()
-															.to_string(),
-													)
-												} else {
-													Some(b.to_string())
-												}
-											} else {
-												None
-											};
-											self.identity_switch.error.clear();
-											self.identity_switch.pass.clear();
-											self.identity_switch.wrong_pass = false;
-											self.identity_switch.pending =
-												Some(PendingPassAction::Add(import_blob));
-											Modal::new(IDENTITY_PASS_MODAL)
-												.position(ModalPosition::CenterTop)
-												.title(t!("goblin.identities.add_title"))
-												.show();
-										}
-									});
-								},
-							);
 						});
+						if let Some(import_blob) = open_add {
+							// Open the password modal to encrypt+store the new
+							// identity. It is added WITHOUT switching; the user
+							// activates it later by tapping it.
+							self.identity_switch.error.clear();
+							self.identity_switch.pass.clear();
+							self.identity_switch.wrong_pass = false;
+							self.identity_switch.pending =
+								Some(PendingPassAction::Add(import_blob));
+							Modal::new(IDENTITY_PASS_MODAL)
+								.position(ModalPosition::CenterTop)
+								.title(t!("goblin.identities.add_title"))
+								.show();
+						}
 					});
 				}
 

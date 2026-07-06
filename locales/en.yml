@@ -702,8 +702,8 @@ goblin:
     add_title: "Add an identity"
     nsec_hint: "Paste an nsec"
     generate_note: "A fresh, anonymous key will be created for this wallet."
-    import_instead: "Import an existing identity instead"
-    generate_instead: "Create a new key instead"
+    generate: "Generate"
+    import: "Import"
     choose_backup: "Choose a .backup file"
     backup_selected: "Backup file selected"
     delete_short: "Delete identity"
@@ -715,7 +715,6 @@ goblin:
     tag_note: "Give it a private name. Only you see it — it is never shared."
     tag_hint: "Private name"
     tag_save: "Save"
-    add_confirm: "Add"
     pass_prompt: "Your wallet password encrypts and unlocks each identity. Enter it to continue."
     working: "Working…"
   onboarding:

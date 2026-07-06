@@ -702,8 +702,8 @@ goblin:
     add_title: "Ajouter une identité"
     nsec_hint: "Coller un nsec"
     generate_note: "Une nouvelle clé anonyme sera créée pour ce portefeuille."
-    import_instead: "Importer plutôt une identité existante"
-    generate_instead: "Créer plutôt une nouvelle clé"
+    generate: "Créer"
+    import: "Importer"
     choose_backup: "Choisir un fichier .backup"
     backup_selected: "Fichier de sauvegarde sélectionné"
     delete_short: "Supprimer l'identité"
@@ -715,7 +715,6 @@ goblin:
     tag_note: "Donnez-lui un nom privé. Vous seul le voyez — il n’est jamais partagé."
     tag_hint: "Nom privé"
     tag_save: "Enregistrer"
-    add_confirm: "Ajouter"
     pass_prompt: "Le mot de passe de votre portefeuille chiffre et déverrouille chaque identité. Saisissez-le pour continuer."
     working: "En cours…"
   onboarding:
