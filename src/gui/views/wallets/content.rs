@@ -43,6 +43,7 @@ use crate::gui::views::wallets::wallet::RecoverySettings;
 use crate::gui::views::wallets::wallet::types::{WalletContentContainer, wallet_status_text};
 use crate::gui::views::{Content, Modal, TitlePanel, View};
 use crate::http::{ReleaseInfo, retrieve_release};
+use crate::node::Node;
 use crate::settings::AppUpdate;
 use crate::wallet::types::{ConnectionMethod, WalletTask};
 use crate::wallet::{Wallet, WalletList};
@@ -51,6 +52,10 @@ use crate::wallet::{Wallet, WalletList};
 pub struct WalletsContent {
 	/// List of wallets.
 	wallets: WalletList,
+
+	/// When Android back was last swallowed at the wallet Home, arming the
+	/// standard double-back-to-exit window (the first press shows a hint).
+	back_exit_at: Option<std::time::Instant>,
 
 	/// Initial wallet creation [`Modal`] content.
 	add_wallet_modal_content: AddWalletModal,
@@ -92,6 +97,7 @@ impl Default for WalletsContent {
 	fn default() -> Self {
 		Self {
 			wallets: WalletList::default(),
+			back_exit_at: None,
 			wallet_selection_content: WalletListModal::new(None, None, true),
 			open_wallet_content: OpenWalletModal::new(),
 			add_wallet_modal_content: AddWalletModal::default(),
@@ -411,7 +417,26 @@ impl WalletsContent {
 			// never a back fallback to the chooser.
 			if self.wallet_content.can_back() {
 				self.wallet_content.back(cb);
+				return false;
 			}
+			// Wallet Home with nothing to pop: double-back to the WALLET
+			// SWITCHER. The first press arms a short window and shows a "press
+			// back again" hint; a second press inside it DESELECTS the wallet —
+			// it stays UNLOCKED (no close, no logout; its nostr listener keeps
+			// running) and the chooser shows. Quitting the app lives only at
+			// the switcher, via GRIM's native exit-confirmation on back.
+			// Sub-screens above kept normal back navigation, no hint.
+			if self
+				.back_exit_at
+				.map(|at| at.elapsed() <= Duration::from_secs(2))
+				.unwrap_or(false)
+			{
+				self.back_exit_at = None;
+				self.wallets.select(None);
+				return false;
+			}
+			self.back_exit_at = Some(std::time::Instant::now());
+			self.wallet_content.show_back_hint();
 			return false;
 		}
 		true

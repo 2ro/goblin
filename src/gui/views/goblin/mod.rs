@@ -132,6 +132,9 @@ pub struct GoblinWalletView {
 	wipe_confirm: bool,
 	/// Minimum-confirmations value being edited in its modal (GRIM parity).
 	min_conf_edit: String,
+	/// When the first back of the double-back was pressed at Home, for the
+	/// brief "press back again for the wallet switcher" hint. Display only.
+	back_hint: Option<std::time::Instant>,
 }
 
 /// Whether the per-identity cue is drawn on activity rows (owner-approved). The
@@ -262,6 +265,7 @@ impl Default for GoblinWalletView {
 			copy_flash: None,
 			wipe_confirm: false,
 			min_conf_edit: String::new(),
+			back_hint: None,
 		}
 	}
 }
@@ -471,6 +475,57 @@ impl GoblinWalletView {
 		std::mem::take(&mut self.switch_requested)
 	}
 
+	/// Show the brief "press back again for the wallet switcher" hint. Called
+	/// by the host when the first back of the double-back lands at the wallet
+	/// Home (the second deselects to the switcher, wallet left unlocked).
+	pub fn show_back_hint(&mut self) {
+		self.back_hint = Some(std::time::Instant::now());
+	}
+
+	/// Draw the transient back hint as a small bottom-anchored pill above the
+	/// tab bar, non-blocking, fading out with the double-back window.
+	fn back_hint_ui(&mut self, ctx: &egui::Context) {
+		const SHOW_SECS: f32 = 2.0;
+		let Some(at) = self.back_hint else {
+			return;
+		};
+		let elapsed = at.elapsed().as_secs_f32();
+		if elapsed >= SHOW_SECS {
+			self.back_hint = None;
+			return;
+		}
+		let t = theme::tokens();
+		// Fade over the final 0.5s.
+		let alpha = ((SHOW_SECS - elapsed) / 0.5).clamp(0.0, 1.0);
+		let text = t!("goblin.home.back_again");
+		let font = FontId::new(14.0, fonts::medium());
+		egui::Area::new(egui::Id::new("goblin_back_hint"))
+			.order(egui::Order::Foreground)
+			.anchor(
+				egui::Align2::CENTER_BOTTOM,
+				Vec2::new(0.0, -(View::get_bottom_inset() + 92.0)),
+			)
+			.interactable(false)
+			.show(ctx, |ui| {
+				let galley =
+					ui.painter()
+						.layout_no_wrap(text.to_string(), font.clone(), t.surface_text);
+				let pad = Vec2::new(16.0, 10.0);
+				let size = galley.size() + pad * 2.0;
+				let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
+				ui.painter().rect(
+					rect,
+					CornerRadius::same((size.y / 2.0) as u8),
+					t.surface2.gamma_multiply(alpha),
+					Stroke::new(1.0, t.line.gamma_multiply(alpha)),
+					egui::StrokeKind::Inside,
+				);
+				ui.painter()
+					.galley(rect.min + pad, galley, t.surface_text.gamma_multiply(alpha));
+			});
+		ctx.request_repaint_after(std::time::Duration::from_millis(50));
+	}
+
 	/// Whether back navigation has anything left to consume: an overlay, a
 	/// settings sub-page, or a non-Home tab (back routes to Home). Mirrors
 	/// [`Self::on_back`], so the host never falls back to the wallet chooser.
@@ -667,6 +722,9 @@ impl GoblinWalletView {
 					Tab::Me => self.me_ui(ui, wallet, cb),
 				});
 			});
+		// Transient "press back again" hint (first back at Home; the second
+		// goes to the wallet switcher, wallet left unlocked).
+		self.back_hint_ui(ui.ctx());
 	}
 
 	/// 3-item bar: Wallet · Pay (center ツ) · Activity. A floating pill on most

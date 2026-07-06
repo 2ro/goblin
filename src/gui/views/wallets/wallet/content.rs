@@ -325,6 +325,12 @@ impl WalletContent {
 		self.goblin.take_switch_request()
 	}
 
+	/// Show the goblin surface's brief "press back again" hint (first back of
+	/// the double-back-to-switcher at the wallet Home).
+	pub fn show_back_hint(&mut self) {
+		self.goblin.show_back_hint();
+	}
+
 	/// Navigate back on navigation stack. Returns true if not consumed.
 	pub fn back(&mut self, cb: &dyn PlatformCallbacks) -> bool {
 		if self.goblin.overlay_active() {

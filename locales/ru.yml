@@ -376,6 +376,7 @@ goblin:
     nav_activity: "Действия"
     nav_receive: "Получить"
     nav_settings: "Настройки"
+    back_again: "Нажмите «назад» ещё раз, чтобы выйти из этого кошелька"
     activity: "Действия"
     news: "Новости"
     empty_title: "Пока нет действий"
