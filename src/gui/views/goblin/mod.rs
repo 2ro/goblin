@@ -2779,6 +2779,34 @@ impl GoblinWalletView {
 		wallet: &Wallet,
 	) {
 		let t = theme::tokens();
+		// While an approved request is being paid, the whole card becomes one
+		// centered spinner labelled with the action, sitting exactly where the card
+		// was: no Decline, no amount, no buttons. It vanishes once the send
+		// completes and the request clears from the pending list.
+		if self.approving.contains(&req.rumor_id) {
+			let working = wallet
+				.nostr_service()
+				.map(|s| s.send_phase() == crate::nostr::send_phase::WORKING)
+				.unwrap_or(false);
+			w::card(ui, |ui| {
+				ui.vertical_centered(|ui| {
+					ui.add_space(6.0);
+					View::small_loading_spinner(ui);
+					ui.add_space(2.0);
+					ui.label(
+						RichText::new(t!("goblin.receipt.paying"))
+							.font(FontId::new(12.0, fonts::regular()))
+							.color(t.text_dim),
+					);
+					ui.add_space(6.0);
+				});
+			});
+			if working {
+				ui.ctx().request_repaint();
+			}
+			ui.add_space(10.0);
+			return;
+		}
 		let name = wallet
 			.nostr_service()
 			.map(|s| data::contact_title(&s.store, &req.npub))
@@ -2848,32 +2876,11 @@ impl GoblinWalletView {
 						Vec2::new(half, 44.0),
 					)),
 					|ui| {
-						let already = self.approving.contains(&req.rumor_id);
-						let working = already
-							&& wallet
-								.nostr_service()
-								.map(|s| s.send_phase() == crate::nostr::send_phase::WORKING)
-								.unwrap_or(false);
-						if already {
-							// Paying: show a centered spinner so the tap clearly
-							// registered (the card clears itself once it's sent).
-							ui.vertical_centered(|ui| {
-								ui.add_space(6.0);
-								View::small_loading_spinner(ui);
-								ui.add_space(2.0);
-								ui.label(
-									RichText::new(t!("goblin.receipt.paying"))
-										.font(FontId::new(12.0, fonts::regular()))
-										.color(t.text_dim),
-								);
-							});
-							if working {
-								ui.ctx().request_repaint();
-							}
-						} else if approve_button(ui) {
+						if approve_button(ui) {
 							// Don't pay on the tap — open the review screen and make
 							// the user hold-to-accept there, like a send. The actual
-							// NostrPayRequest is dispatched from approve_review_ui.
+							// NostrPayRequest is dispatched from approve_review_ui. Once
+							// approved, the in-flight branch above takes over this card.
 							self.request_error = None;
 							self.approve_hold = w::HoldToSend::default();
 							self.approve_fee_for = None;
