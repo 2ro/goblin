@@ -376,7 +376,7 @@ goblin:
     nav_activity: "Aktivität"
     nav_receive: "Empfangen"
     nav_settings: "Einstellungen"
-    back_again: "Erneut Zurück drücken, um diese Wallet zu verlassen"
+    back_again: "Erneut Zurück drücken, um die Wallet zu wechseln"
     activity: "Aktivität"
     news: "Neuigkeiten"
     empty_title: "Noch keine Aktivität"

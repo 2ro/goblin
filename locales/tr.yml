@@ -376,7 +376,7 @@ goblin:
     nav_activity: "Etkinlik"
     nav_receive: "Al"
     nav_settings: "Ayarlar"
-    back_again: "Bu cüzdandan ayrılmak için tekrar geri bas"
+    back_again: "Cüzdan değiştirmek için tekrar geri bas"
     activity: "Etkinlik"
     news: "Haberler"
     empty_title: "Henüz etkinlik yok"

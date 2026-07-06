@@ -498,7 +498,9 @@ impl GoblinWalletView {
 		// Fade over the final 0.5s.
 		let alpha = ((SHOW_SECS - elapsed) / 0.5).clamp(0.0, 1.0);
 		let text = t!("goblin.home.back_again");
-		let font = FontId::new(14.0, fonts::medium());
+		// Native quiet-toast look: a solid soft pill, no border, small regular
+		// dim text — no accent, nothing loud.
+		let font = FontId::new(13.0, fonts::regular());
 		egui::Area::new(egui::Id::new("goblin_back_hint"))
 			.order(egui::Order::Foreground)
 			.anchor(
@@ -509,7 +511,7 @@ impl GoblinWalletView {
 			.show(ctx, |ui| {
 				let galley =
 					ui.painter()
-						.layout_no_wrap(text.to_string(), font.clone(), t.surface_text);
+						.layout_no_wrap(text.to_string(), font.clone(), t.surface_text_dim);
 				let pad = Vec2::new(16.0, 10.0);
 				let size = galley.size() + pad * 2.0;
 				let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
@@ -517,11 +519,14 @@ impl GoblinWalletView {
 					rect,
 					CornerRadius::same((size.y / 2.0) as u8),
 					t.surface2.gamma_multiply(alpha),
-					Stroke::new(1.0, t.line.gamma_multiply(alpha)),
+					Stroke::NONE,
 					egui::StrokeKind::Inside,
 				);
-				ui.painter()
-					.galley(rect.min + pad, galley, t.surface_text.gamma_multiply(alpha));
+				ui.painter().galley(
+					rect.min + pad,
+					galley,
+					t.surface_text_dim.gamma_multiply(alpha),
+				);
 			});
 		ctx.request_repaint_after(std::time::Duration::from_millis(50));
 	}

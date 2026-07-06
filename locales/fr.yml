@@ -376,7 +376,7 @@ goblin:
     nav_activity: "Activité"
     nav_receive: "Recevoir"
     nav_settings: "Réglages"
-    back_again: "Appuyez à nouveau sur retour pour quitter ce portefeuille"
+    back_again: "Appuyez à nouveau sur retour pour changer de portefeuille"
     activity: "Activité"
     news: "Actualités"
     empty_title: "Aucune activité"
