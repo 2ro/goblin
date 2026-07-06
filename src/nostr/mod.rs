@@ -51,3 +51,5 @@ pub mod nip05;
 pub mod authuri;
 pub mod loginuri;
 pub mod payuri;
+pub mod session;
+pub mod trusturi;
