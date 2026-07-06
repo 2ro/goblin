@@ -680,7 +680,7 @@ goblin:
   identities:
     title: "Identitäten"
     switch_hint: "Identität wechseln"
-    blurb: "Eine Wallet, ein Guthaben, viele Nostr-Identitäten. Jede ist ein eigener Name und Schlüssel, unter dem du bezahlt werden kannst, und alle empfangen gleichzeitig in dein eines gemeinsames Guthaben. Wechsle, um zu wählen, als welche du auftrittst und sendest."
+    blurb: "Deine Identitäten sind die Namen, unter denen du bezahlt wirst. Alle zahlen in diese eine Wallet. Füge eine neue hinzu, wechsle zwischen ihnen oder entferne eine, die du nicht mehr brauchst."
     privacy_note: "Diese Identitäten teilen sich eine Wallet und ein Guthaben — getrennte Eingänge, keine getrennten Gelder. Für wirklich getrenntes Geld nutze eine separate Wallet."
     held: "Vorhandene Identitäten"
     add: "Identität hinzufügen"

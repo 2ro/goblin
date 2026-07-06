@@ -680,7 +680,7 @@ goblin:
   identities:
     title: "Identities"
     switch_hint: "Switch identity"
-    blurb: "One wallet, one balance, many nostr identities. Each is a separate name and key you can be paid under, and they all receive into your one shared balance at the same time. Switch to choose which one you present and send as."
+    blurb: "Your identities are the names you get paid under. They all pay into this one wallet. Add a new one, switch between them, or remove one you don't need."
     privacy_note: "These identities share one wallet and one balance — separate front doors, not separate funds. For truly separate money, use a separate wallet."
     held: "Held identities"
     add: "Add identity"

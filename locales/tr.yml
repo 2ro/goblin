@@ -680,7 +680,7 @@ goblin:
   identities:
     title: "Kimlikler"
     switch_hint: "Kimlik değiştir"
-    blurb: "Tek cüzdan, tek bakiye, birçok nostr kimliği. Her biri, altında ödeme alabileceğin ayrı bir ad ve anahtardır ve hepsi aynı anda tek ortak bakiyene alır. Hangisi olarak görünüp göndereceğini seçmek için geçiş yap."
+    blurb: "Kimliklerin, ödeme aldığın adlardır. Hepsi bu tek cüzdana öder. Yeni bir tane ekle, aralarında geçiş yap veya ihtiyacın olmayanı kaldır."
     privacy_note: "Bu kimlikler tek cüzdanı ve tek bakiyeyi paylaşır — ayrı kapılar, ayrı paralar değil. Gerçekten ayrı para için ayrı bir cüzdan kullan."
     held: "Mevcut kimlikler"
     add: "Kimlik ekle"

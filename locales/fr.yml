@@ -680,7 +680,7 @@ goblin:
   identities:
     title: "Identités"
     switch_hint: "Changer d'identité"
-    blurb: "Un portefeuille, un solde, plusieurs identités nostr. Chacune est un nom et une clé distincts sous lesquels on peut vous payer, et elles reçoivent toutes en même temps dans votre solde unique et partagé. Changez pour choisir celle que vous présentez et avec laquelle vous envoyez."
+    blurb: "Vos identités sont les noms sous lesquels on vous paie. Elles alimentent toutes ce même portefeuille. Ajoutez-en une nouvelle, passez de l'une à l'autre, ou supprimez celle dont vous n'avez plus besoin."
     privacy_note: "Ces identités partagent un portefeuille et un solde — des portes d'entrée distinctes, pas des fonds distincts. Pour un argent vraiment séparé, utilisez un portefeuille distinct."
     held: "Identités détenues"
     add: "Ajouter une identité"
