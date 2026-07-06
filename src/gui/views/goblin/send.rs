@@ -35,6 +35,22 @@ use super::avatars::AvatarTextures;
 use super::data::{self, display_name, recent_peers, search_contacts, short_npub};
 use super::widgets::{self as w, HoldToSend};
 
+/// GRIM parity: the network fee is reserved out of the spendable balance before
+/// a send. The largest amount that can be sent while leaving room for `fee` is
+/// `spendable - fee` (GRIM's send modal caps its "max" at exactly this value).
+fn max_sendable(spendable: u64, fee: u64) -> u64 {
+	spendable.saturating_sub(fee)
+}
+
+/// GRIM parity: a send may only be dispatched when the amount PLUS its network
+/// fee fits inside the spendable balance. GRIM refuses to build a slate when
+/// `amount + fee > max`; mirroring that here stops the wallet from creating a
+/// full-balance payment that can never cover its own fee (the slate build fails
+/// with NotEnoughFunds, or the tx sits unconfirmed). A zero amount never fits.
+fn amount_fits(amount: u64, fee: u64, spendable: u64) -> bool {
+	amount != 0 && amount <= max_sendable(spendable, fee)
+}
+
 /// Avatar texture for a display handle, if one is cached. Handles no longer
 /// carry an '@'; bare-npub / empty names have no avatar on the server.
 fn tex_for(
@@ -1023,13 +1039,31 @@ impl SendFlow {
 
 		// Block sends over the spendable balance: red amount + a message + an
 		// error buzz on tap, rather than letting it fail later at the node.
+		// GRIM parity: reserve the network fee, so the "whole balance" is never
+		// offered as sendable. Price this exact amount (one async CalculateFee
+		// per amount, like GRIM's send modal) and, once priced, refuse it unless
+		// amount + fee fits. Until the fee lands, fall back to the balance-only
+		// check so ordinary sub-balance sends flow while pricing catches up.
 		let spendable = wallet
 			.get_data()
 			.map(|d| d.info.amount_currently_spendable)
 			.unwrap_or(0);
-		let over = amount_from_hr_string(&self.amount)
-			.map(|a| a > spendable)
-			.unwrap_or(false);
+		let amount_nano = amount_from_hr_string(&self.amount).unwrap_or(0);
+		if amount_nano > 0 && self.fee_requested_for != Some(amount_nano) {
+			self.fee_requested_for = Some(amount_nano);
+			wallet.task(WalletTask::CalculateFee(amount_nano, 0));
+		}
+		let over = match wallet.calculated_fee(amount_nano) {
+			Some(fee) => amount_nano != 0 && !amount_fits(amount_nano, fee, spendable),
+			None => {
+				if amount_nano > 0 {
+					// Fee lands on a worker thread; poll so the guard updates.
+					ui.ctx()
+						.request_repaint_after(std::time::Duration::from_millis(120));
+				}
+				amount_nano > spendable
+			}
+		};
 
 		// Recipient chip, centered per the design.
 		let name_label = t!("goblin.send.to_name", "name" => recipient.name).to_string();
@@ -1195,11 +1229,25 @@ impl SendFlow {
 			.get_data()
 			.map(|d| d.info.amount_currently_spendable)
 			.unwrap_or(0);
+		// GRIM parity: price this exact amount (one async CalculateFee per amount,
+		// like GRIM's send modal) and reserve the fee before offering the send.
 		// Requests never spend our balance, so the guard does not apply to them.
+		let amount_nano = amount_from_hr_string(&amount).unwrap_or(0);
+		if !self.request && amount_nano > 0 && self.fee_requested_for != Some(amount_nano) {
+			self.fee_requested_for = Some(amount_nano);
+			wallet.task(WalletTask::CalculateFee(amount_nano, 0));
+		}
+		let fee_opt = wallet.calculated_fee(amount_nano);
+		// Not yet priced: hold-to-send stays disabled rather than dispatching a
+		// full-balance payment with no room for the fee.
+		let pricing = !self.request && amount_nano > 0 && fee_opt.is_none();
+		// Over-balance (fee-aware): the send cannot cover its own fee. GRIM
+		// refuses `amount + fee > max`; mirror that exactly.
 		let over = !self.request
-			&& amount_from_hr_string(&amount)
-				.map(|a| a > spendable)
-				.unwrap_or(false);
+			&& match fee_opt {
+				Some(fee) => !amount_fits(amount_nano, fee, spendable),
+				None => false,
+			};
 
 		w::card(ui, |ui| {
 			ui.set_min_width(ui.available_width());
@@ -1285,15 +1333,10 @@ impl SendFlow {
 				&t!("goblin.send.row_delivery_val"),
 			);
 		} else {
-			// Live network fee for this exact amount, priced by the wallet (one
-			// async CalculateFee per amount, like GRIM's send modal). Until the
-			// first result lands we show an ellipsis rather than a wrong number.
-			let amount_nano = amount_from_hr_string(&amount).unwrap_or(0);
-			if amount_nano > 0 && self.fee_requested_for != Some(amount_nano) {
-				self.fee_requested_for = Some(amount_nano);
-				wallet.task(WalletTask::CalculateFee(amount_nano, 0));
-			}
-			let fee_val = match wallet.calculated_fee(amount_nano) {
+			// Live network fee for this exact amount, priced above (one async
+			// CalculateFee per amount, like GRIM's send modal). Until the first
+			// result lands we show an ellipsis rather than a wrong number.
+			let fee_val = match fee_opt {
 				Some(fee) => format!("{}{}", w::amount_str(fee), w::TSU),
 				None => {
 					// Result lands on a worker thread; poll until it does.
@@ -1343,10 +1386,12 @@ impl SendFlow {
 			});
 			ui.add_space(8.0);
 		}
-		// Greyed out while over balance; the `&& !over` also refuses the send in
-		// case the hold widget ignores the disabled state.
-		ui.add_enabled_ui(!over, |ui| {
-			if self.hold.ui(ui, &t!("goblin.send.hold_to_send")) && !over {
+		// Greyed out while over balance or still pricing the fee; the `&& !over
+		// && !pricing` also refuses the send in case the hold widget ignores the
+		// disabled state, so a full-balance payment is never dispatched with no
+		// room for its fee (GRIM parity).
+		ui.add_enabled_ui(!over && !pricing, |ui| {
+			if self.hold.ui(ui, &t!("goblin.send.hold_to_send")) && !over && !pricing {
 				self.dispatch(wallet);
 				self.stage = Stage::Sending;
 			}
@@ -1824,5 +1869,69 @@ mod tests {
 		// A name / @handle is not a concrete key.
 		assert!(decode_recipient_key("alice@goblin.st").is_none());
 		assert!(decode_recipient_key("@alice").is_none());
+	}
+
+	// ---- Money path: send-max fee reservation (GRIM parity) ----
+
+	// 2 GRIN and a typical whole-balance fee (~0.015 GRIN), in nanogrin.
+	const SPENDABLE: u64 = 2_000_000_000;
+	const FEE: u64 = 15_000_000;
+
+	#[test]
+	fn amount_fits_reserves_the_fee() {
+		// GRIM refuses `amount + fee > max`: the whole balance never fits, and
+		// neither does anything above `spendable - fee`.
+		assert!(
+			!amount_fits(SPENDABLE, FEE, SPENDABLE),
+			"the full balance must not fit: no room for the fee"
+		);
+		assert!(
+			!amount_fits(SPENDABLE - FEE + 1, FEE, SPENDABLE),
+			"one nanogrin over the cap must not fit"
+		);
+		assert!(
+			amount_fits(SPENDABLE - FEE, FEE, SPENDABLE),
+			"exactly spendable - fee is the largest that fits"
+		);
+		assert!(
+			amount_fits(SPENDABLE - FEE - 1, FEE, SPENDABLE),
+			"comfortably under the cap fits"
+		);
+		// A zero amount never fits; a zero fee still requires amount <= spendable.
+		assert!(!amount_fits(0, FEE, SPENDABLE));
+		assert!(amount_fits(SPENDABLE, 0, SPENDABLE));
+		assert!(!amount_fits(SPENDABLE + 1, 0, SPENDABLE));
+	}
+
+	#[test]
+	fn max_sendable_leaves_room_for_fee() {
+		assert_eq!(max_sendable(SPENDABLE, FEE), SPENDABLE - FEE);
+		// Saturates to zero instead of underflowing when the fee exceeds balance.
+		assert_eq!(max_sendable(10_000, FEE), 0);
+		assert_eq!(max_sendable(0, 0), 0);
+		// The value max_sendable yields is exactly the largest amount that fits.
+		assert!(amount_fits(max_sendable(SPENDABLE, FEE), FEE, SPENDABLE));
+		assert!(!amount_fits(
+			max_sendable(SPENDABLE, FEE) + 1,
+			FEE,
+			SPENDABLE
+		));
+	}
+
+	#[test]
+	fn full_balance_send_is_refused_unlike_the_old_balance_only_guard() {
+		// The pre-fix guard was `amount > spendable`, which let a send of the
+		// whole balance through (it is not strictly greater), so the wallet built
+		// a slate with no room for the fee. The fee-aware guard refuses it.
+		let amount = SPENDABLE; // "send max" — the whole balance
+		let old_balance_only_guard_allows = !(amount > SPENDABLE);
+		assert!(
+			old_balance_only_guard_allows,
+			"the old balance-only guard let the full balance through"
+		);
+		assert!(
+			!amount_fits(amount, FEE, SPENDABLE),
+			"the fee-aware guard refuses the full-balance send"
+		);
 	}
 }
