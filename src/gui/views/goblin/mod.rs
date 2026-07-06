@@ -349,6 +349,10 @@ struct IdentitySwitchState {
 	backup_input: String,
 	/// A native .backup file pick is in flight (Android returns it asynchronously).
 	picking: bool,
+	/// A held identity whose management sheet (rename / delete) is open (hex).
+	manage: Option<String>,
+	/// Private-tag text being edited in the management sheet.
+	tag_input: String,
 	/// A held identity awaiting the step-1 delete confirmation (pubkey hex).
 	confirm_delete: Option<String>,
 	/// The password-gated action the modal is currently gating.
@@ -1636,11 +1640,7 @@ impl GoblinWalletView {
 									// convention), else the truncated npub. Never a
 									// placeholder word.
 									let id_label = owner
-										.map(|i| {
-											i.name
-												.clone()
-												.unwrap_or_else(|| data::short_npub(&i.pubkey_hex))
-										})
+										.map(|i| i.display())
 										.or_else(|| owning_hex.as_deref().map(data::short_npub))
 										.unwrap_or_default();
 									if !id_label.is_empty() {
@@ -4913,18 +4913,14 @@ impl GoblinWalletView {
 				w::kicker(ui, &t!("goblin.identities.held"));
 				ui.add_space(8.0);
 				let busy = self.identity_switch.busy;
-				// A wallet must keep at least one identity, so delete is only offered
-				// when more than one is held.
-				let can_delete = identities.len() > 1 && !busy;
 				let mut switch_to: Option<String> = None;
-				let mut delete_target: Option<String> = None;
+				let mut manage_target: Option<String> = None;
 				for id in &identities {
-					// A claimed name (no leading @, per the project convention), else
-					// the truncated npub. Never a placeholder word.
+					// Display precedence: private tag, else claimed name (bare, no
+					// leading @), else truncated npub. Never a placeholder word.
 					let short = data::short_npub(&id.pubkey_hex);
-					let title = id.name.clone().unwrap_or_else(|| short.clone());
-					let named = id.name.is_some();
-					let mut delete_this = false;
+					let title = id.display();
+					let mut pencil_hit = false;
 					let row = w::card(ui, |ui| {
 						ui.set_min_width(ui.available_width());
 						ui.horizontal(|ui| {
@@ -4936,9 +4932,9 @@ impl GoblinWalletView {
 										.font(FontId::new(15.0, fonts::semibold()))
 										.color(t.surface_text),
 								);
-								// Show the npub underneath only when the title is a name,
-								// so an unnamed identity isn't the npub twice.
-								if named {
+								// The npub underneath, unless the title already IS the
+								// npub (unnamed, untagged identity).
+								if title != short {
 									ui.label(
 										RichText::new(&short)
 											.font(FontId::new(12.0, fonts::regular()))
@@ -4960,24 +4956,25 @@ impl GoblinWalletView {
 											.color(t.surface_text_dim),
 									);
 								}
-								// A trash affordance to the LEFT of that indicator; its
-								// own tap target so it doesn't trigger the row switch.
-								if can_delete {
+								// Edit (pencil) affordance: opens the per-identity
+								// management sheet (rename / delete). Its own tap target
+								// so it never triggers the row switch.
+								if !busy {
 									ui.add_space(8.0);
 									let (r, resp) =
 										ui.allocate_exact_size(Vec2::splat(28.0), Sense::click());
 									ui.painter().text(
 										r.center(),
 										egui::Align2::CENTER_CENTER,
-										crate::gui::icons::TRASH,
+										crate::gui::icons::PENCIL_SIMPLE,
 										FontId::new(16.0, fonts::regular()),
-										t.neg,
+										t.surface_text_dim,
 									);
 									if resp
 										.on_hover_cursor(egui::CursorIcon::PointingHand)
 										.clicked()
 									{
-										delete_this = true;
+										pencil_hit = true;
 									}
 								}
 							});
@@ -4985,15 +4982,15 @@ impl GoblinWalletView {
 						.response
 						.rect
 					});
-					// Tap anywhere else on a non-active row = switch (skip when the
-					// trash was tapped, whose rect overlaps the row interact).
+					// Tap anywhere else on a non-active row = INSTANT switch (skip
+					// when the pencil was tapped, whose rect overlaps the row).
 					if !id.active && !busy {
 						let hit = ui.interact(
 							row,
 							egui::Id::new(("id_switch", id.pubkey_hex.as_str())),
 							Sense::click(),
 						);
-						if !delete_this
+						if !pencil_hit
 							&& hit
 								.on_hover_cursor(egui::CursorIcon::PointingHand)
 								.clicked()
@@ -5001,8 +4998,8 @@ impl GoblinWalletView {
 							switch_to = Some(id.pubkey_hex.clone());
 						}
 					}
-					if delete_this {
-						delete_target = Some(id.pubkey_hex.clone());
+					if pencil_hit {
+						manage_target = Some(id.pubkey_hex.clone());
 					}
 					ui.add_space(6.0);
 				}
@@ -5015,10 +5012,109 @@ impl GoblinWalletView {
 						self.identity_switch.error = e;
 					}
 				}
-				// Tapping the trash opens the step-1 danger confirmation.
-				if let Some(target) = delete_target {
+				// The pencil opens the management sheet, pre-filled with the tag.
+				if let Some(target) = manage_target {
 					self.identity_switch.error.clear();
-					self.identity_switch.confirm_delete = Some(target);
+					self.identity_switch.confirm_delete = None;
+					self.identity_switch.tag_input = identities
+						.iter()
+						.find(|i| i.pubkey_hex == target)
+						.and_then(|i| i.tag.clone())
+						.unwrap_or_default();
+					self.identity_switch.manage = Some(target);
+				}
+
+				// Per-identity management sheet: Rename (the private, app-only tag —
+				// never published) on top; Delete, visually separated and
+				// destructive-styled, at the bottom (double-gated: danger card, then
+				// the wallet-password modal).
+				if let Some(target) = self.identity_switch.manage.clone() {
+					ui.add_space(8.0);
+					w::card(ui, |ui| {
+						ui.set_min_width(ui.available_width());
+						ui.label(
+							RichText::new(t!("goblin.identities.manage_title"))
+								.font(FontId::new(15.0, fonts::semibold()))
+								.color(t.surface_text),
+						);
+						ui.add_space(6.0);
+						ui.label(
+							RichText::new(t!("goblin.identities.tag_note"))
+								.font(FontId::new(12.5, fonts::regular()))
+								.color(t.surface_text_dim),
+						);
+						ui.add_space(8.0);
+						w::field_well(ui, |ui| {
+							TextEdit::new(egui::Id::from("identity_tag_input"))
+								.focus(false)
+								.hint_text(t!("goblin.identities.tag_hint"))
+								.text_color(t.surface_text)
+								.body()
+								.ui(ui, &mut self.identity_switch.tag_input, cb);
+						});
+						ui.add_space(10.0);
+						ui.horizontal(|ui| {
+							let half = (ui.available_width() - 10.0) / 2.0;
+							ui.scope_builder(
+								egui::UiBuilder::new().max_rect(egui::Rect::from_min_size(
+									ui.cursor().min,
+									Vec2::new(half, 44.0),
+								)),
+								|ui| {
+									if w::big_action_on_card(ui, &t!("goblin.settings.cancel"))
+										.clicked()
+									{
+										self.identity_switch.manage = None;
+										self.identity_switch.tag_input.clear();
+									}
+								},
+							);
+							ui.add_space(10.0);
+							ui.scope_builder(
+								egui::UiBuilder::new().max_rect(egui::Rect::from_min_size(
+									ui.cursor().min,
+									Vec2::new(half, 44.0),
+								)),
+								|ui| {
+									if w::big_action(ui, &t!("goblin.identities.tag_save"), false)
+										.clicked()
+									{
+										let tag =
+											std::mem::take(&mut self.identity_switch.tag_input);
+										if let Err(e) =
+											wallet.rename_nostr_identity(target.clone(), tag)
+										{
+											self.identity_switch.error = e;
+										}
+										self.identity_switch.manage = None;
+									}
+								},
+							);
+						});
+						// Delete, clearly separated from rename and destructive-styled.
+						// Only offered while more than one identity is held (a wallet
+						// must keep at least one).
+						if identities.len() > 1 {
+							ui.add_space(12.0);
+							let line_y = ui.cursor().min.y;
+							ui.painter().hline(
+								ui.max_rect().x_range(),
+								line_y,
+								eframe::epaint::Stroke::new(1.0, t.line),
+							);
+							ui.add_space(12.0);
+							if w::big_action_on_card_ink(
+								ui,
+								&t!("goblin.identities.delete_short"),
+								t.neg,
+							)
+							.clicked()
+							{
+								self.identity_switch.manage = None;
+								self.identity_switch.confirm_delete = Some(target.clone());
+							}
+						}
+					});
 				}
 
 				// Step-1 delete confirmation: a clear danger card naming the
@@ -5029,11 +5125,7 @@ impl GoblinWalletView {
 					let display = identities
 						.iter()
 						.find(|i| i.pubkey_hex == target)
-						.map(|i| {
-							i.name
-								.clone()
-								.unwrap_or_else(|| data::short_npub(&i.pubkey_hex))
-						})
+						.map(|i| i.display())
 						.unwrap_or_else(|| data::short_npub(&target));
 					ui.add_space(8.0);
 					w::card(ui, |ui| {

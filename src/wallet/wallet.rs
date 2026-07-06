@@ -76,10 +76,26 @@ pub struct HeldIdentitySummary {
 	/// Full NIP-05 identifier ("user@domain") when this identity has a claimed
 	/// name, for the transaction detail view.
 	pub nip05: Option<String>,
-	/// Short human label (its @name, or "Primary").
+	/// PRIVATE, app-only label the user set for this identity. Local metadata
+	/// only, never published. Display precedence: tag, else claimed name, else
+	/// truncated npub.
+	pub tag: Option<String>,
+	/// Convenience label from the index (claimed name's local part, or empty).
 	pub label: String,
 	/// Whether this is the currently active identity.
 	pub active: bool,
+}
+
+impl HeldIdentitySummary {
+	/// What the UI shows for this identity: the private tag if set, else the
+	/// claimed name (bare, no leading @), else the truncated npub.
+	pub fn display(&self) -> String {
+		self.tag
+			.clone()
+			.filter(|s| !s.trim().is_empty())
+			.or_else(|| self.name.clone())
+			.unwrap_or_else(|| crate::gui::views::goblin::data::short_npub(&self.pubkey_hex))
+	}
 }
 
 /// Contains wallet instance, configuration and state, handles wallet commands.
@@ -692,6 +708,7 @@ impl Wallet {
 			ident.nip05 = backup.nip05.clone();
 			ident.anonymous = backup.anonymous;
 			ident.prev_npubs = backup.prev_npubs.clone();
+			ident.private_tag = backup.private_tag.clone();
 			(ident, keys)
 		} else if input.starts_with('{') {
 			// Legacy plaintext identity-backup JSON (pre-.backup-file): decrypt
@@ -709,6 +726,7 @@ impl Wallet {
 			ident.nip05 = backup.nip05.clone();
 			ident.anonymous = backup.anonymous;
 			ident.prev_npubs = backup.prev_npubs.clone();
+			ident.private_tag = backup.private_tag.clone();
 			(ident, keys)
 		} else {
 			NostrIdentity::create_imported(input, &password)
@@ -799,6 +817,7 @@ impl Wallet {
 					npub: identity.npub.clone(),
 					name,
 					nip05: identity.nip05.clone(),
+					tag: identity.private_tag.clone(),
 					label: entry.label.clone(),
 					active: entry.pubkey == index.active,
 				})
@@ -865,6 +884,7 @@ impl Wallet {
 					ident.nip05 = backup.nip05.clone();
 					ident.anonymous = backup.anonymous;
 					ident.prev_npubs = backup.prev_npubs.clone();
+					ident.private_tag = backup.private_tag.clone();
 					(ident, keys)
 				} else {
 					NostrIdentity::create_imported(blob, &password)
@@ -936,6 +956,34 @@ impl Wallet {
 		let new_npub = svc.npub();
 		info!("nostr: switched active identity to {}", new_npub);
 		Ok(new_npub)
+	}
+
+	/// Set (or clear, with an empty string) a held identity's PRIVATE tag — the
+	/// local, app-only name the user gives it. Persisted in its 0600 identity
+	/// file (and thus inside future sealed .backups) and updated in the running
+	/// service so the switcher re-renders immediately. NEVER published to nostr.
+	/// Local metadata only, so no password is required (the ncryptsec is untouched).
+	pub fn rename_nostr_identity(&self, target_hex: String, tag: String) -> Result<(), String> {
+		let svc = self
+			.nostr_service()
+			.ok_or_else(|| "nostr is not running".to_string())?;
+		let nostr_dir = self.get_config().get_nostr_path();
+		let index = HeldIdentities::load(&nostr_dir)
+			.ok_or_else(|| "identity index unavailable".to_string())?;
+		let entry = index
+			.entry(&target_hex)
+			.ok_or_else(|| "identity not held by this wallet".to_string())?;
+		let mut identity = entry
+			.load(&nostr_dir)
+			.ok_or_else(|| "identity file unreadable".to_string())?;
+		let tag = tag.trim().to_string();
+		let tag = if tag.is_empty() { None } else { Some(tag) };
+		identity.private_tag = tag.clone();
+		identity
+			.save_at(&entry.abs_path(&nostr_dir))
+			.map_err(|e| format!("save failed: {e}"))?;
+		svc.set_private_tag(&target_hex, tag);
+		Ok(())
 	}
 
 	/// PERMANENTLY delete a held identity: drop it from the held-identity index,

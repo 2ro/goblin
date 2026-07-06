@@ -59,6 +59,12 @@ pub struct NostrIdentity {
 	/// the first service start selects them.
 	#[serde(default)]
 	pub dm_relays: Vec<String>,
+	/// PRIVATE, app-only label the user sets to name this identity for
+	/// themselves. Stays local: it lives in this 0600 file (and rides inside the
+	/// NIP-44-sealed .backup envelope, which serializes the whole struct), and is
+	/// NEVER published — not in kind-0 metadata, not in any event.
+	#[serde(default)]
+	pub private_tag: Option<String>,
 }
 
 /// NIP-49 scrypt work factor (~64 MiB, interactive-grade).
@@ -236,6 +242,7 @@ impl NostrIdentity {
 			anonymous: true,
 			prev_npubs: Vec::new(),
 			dm_relays: Vec::new(),
+			private_tag: None,
 		})
 	}
 

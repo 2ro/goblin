@@ -231,6 +231,20 @@ impl NostrService {
 		self.recv.read().iter().any(|h| &h.keys.public_key() == pk)
 	}
 
+	/// Update a held identity's PRIVATE tag in the in-memory set (and the active
+	/// copy when it is the same identity), so the switcher re-renders immediately
+	/// after a rename without a service rebuild. The caller persists the file.
+	pub fn set_private_tag(&self, hex: &str, tag: Option<String>) {
+		for h in self.recv.write().iter_mut() {
+			if h.keys.public_key().to_hex() == hex {
+				h.identity.private_tag = tag.clone();
+			}
+		}
+		if self.public_key().to_hex() == hex {
+			self.identity.write().private_tag = tag;
+		}
+	}
+
 	/// Instant, purely-local identity switch: re-point the active keys/identity to
 	/// a held identity already unlocked and already listening. No password, no
 	/// teardown, no catch-up. `false` if `hex` is not held.
