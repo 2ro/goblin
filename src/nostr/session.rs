@@ -576,7 +576,7 @@ pub fn sign_session_event(keys: &Keys, ev: &RequestEvent, now: u64) -> Result<Ev
 
 /// `|a - b|` on unsigned clocks without overflow.
 fn abs_diff(a: u64, b: u64) -> u64 {
-	if a > b { a - b } else { b - a }
+	a.abs_diff(b)
 }
 
 // ---------------------------------------------------------------------------

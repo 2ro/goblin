@@ -1544,15 +1544,15 @@ async fn run_service(svc: Arc<NostrService>, wallet: Wallet) {
 				// the encrypted channel and publish `session-open` for new sessions;
 				// then sign/decline any money-tier prompts the user answered.
 				if svc.sessions_dirty.swap(false, Ordering::SeqCst) {
-					resubscribe_channel(&client, &relays, &svc).await;
-					announce_new_sessions(&svc, &client, &relays).await;
+					resubscribe_channel(&client, &svc).await;
+					announce_new_sessions(&svc, &client).await;
 				}
 				serve_money_answers(&svc, &client).await;
 				// Drain requests queued while backgrounded on a resume (the Build-95
 				// frame-heartbeat pattern), gated on the app being foregrounded.
 				let fg = crate::app_foreground();
 				if fg && !was_foreground && svc.has_sessions() {
-					drain_channel(&svc, &client, &relays).await;
+					drain_channel(&svc, &client).await;
 				}
 				was_foreground = fg;
 			}
@@ -2151,7 +2151,7 @@ async fn handle_channel(svc: &Arc<NostrService>, client: &Client, event: &Event)
 		svc.money_pending.lock().push(p);
 	}
 	if let Some(ev) = publish {
-		let urls = svc.relays();
+		let urls = channel_relays(svc);
 		let _ = tokio::time::timeout(SEND_TIMEOUT, client.send_event_to(&urls, &ev)).await;
 	}
 }
@@ -2186,10 +2186,30 @@ async fn serve_money_answers(svc: &Arc<NostrService>, client: &Client) {
 			}
 		}
 		if let Some(ev) = publish {
-			let urls = svc.relays();
+			let urls = channel_relays(svc);
 			let _ = tokio::time::timeout(SEND_TIMEOUT, client.send_event_to(&urls, &ev)).await;
 		}
 	}
+}
+
+/// The relays the session channel runs on: the wallet's own configured relays
+/// UNION every live session's relay hint, deduplicated. Honouring the site's
+/// hint (spec 5.9) while keeping the wallet's own relays as fallback is what lets
+/// the wallet and a site meet even when they share no default relay.
+fn channel_relays(svc: &Arc<NostrService>) -> Vec<String> {
+	let mut out = svc.relays();
+	for hint in svc
+		.sessions
+		.read()
+		.iter()
+		.filter(|s| !s.ended)
+		.flat_map(|s| s.relays.clone())
+	{
+		if !out.contains(&hint) {
+			out.push(hint);
+		}
+	}
+	out
 }
 
 /// The channel subscription/fetch filter over the live sessions' wallet channel
@@ -2216,22 +2236,27 @@ fn channel_filter(svc: &Arc<NostrService>) -> Option<Filter> {
 	)
 }
 
-/// (Re)subscribe the encrypted session channel over the current session set.
-async fn resubscribe_channel(client: &Client, relays: &[String], svc: &Arc<NostrService>) {
-	if let Some(filter) = channel_filter(svc) {
-		if let Err(e) = client
-			.subscribe_with_id_to(relays, SubscriptionId::new(CHANNEL_SUB), filter, None)
+/// (Re)subscribe the encrypted session channel over the current session set,
+/// dialing any relay hint the wallet is not already connected to first.
+async fn resubscribe_channel(client: &Client, svc: &Arc<NostrService>) {
+	let relays = channel_relays(svc);
+	// `add_relay`/`connect` are idempotent, so re-dialing already-live relays is
+	// cheap; this brings up any newly hinted relay.
+	connect_relays(client, &relays).await;
+	if let Some(filter) = channel_filter(svc)
+		&& let Err(e) = client
+			.subscribe_with_id_to(&relays, SubscriptionId::new(CHANNEL_SUB), filter, None)
 			.await
-		{
-			warn!("nostr: session-channel subscribe failed: {e}");
-		}
+	{
+		warn!("nostr: session-channel subscribe failed: {e}");
 	}
 }
 
 /// Publish the one-time `session-open` for every session not yet announced, and
 /// mark them announced. Called when the session set changes.
-async fn announce_new_sessions(svc: &Arc<NostrService>, client: &Client, relays: &[String]) {
+async fn announce_new_sessions(svc: &Arc<NostrService>, client: &Client) {
 	let now = unix_time() as u64;
+	let relays = channel_relays(svc);
 	let mut events = Vec::new();
 	{
 		let mut sessions = svc.sessions.write();
@@ -2243,19 +2268,20 @@ async fn announce_new_sessions(svc: &Arc<NostrService>, client: &Client, relays:
 		}
 	}
 	for ev in events {
-		let _ = tokio::time::timeout(SEND_TIMEOUT, client.send_event_to(relays, &ev)).await;
+		let _ = tokio::time::timeout(SEND_TIMEOUT, client.send_event_to(&relays, &ev)).await;
 	}
 }
 
 /// Drain any channel requests queued on the relay while the wallet was asleep,
 /// serving each. Called on a background→foreground transition (the Build-95
 /// frame-heartbeat resume pattern) and once at loop start.
-async fn drain_channel(svc: &Arc<NostrService>, client: &Client, relays: &[String]) {
+async fn drain_channel(svc: &Arc<NostrService>, client: &Client) {
 	let Some(filter) = channel_filter(svc) else {
 		return;
 	};
+	let relays = channel_relays(svc);
 	if let Ok(events) = client
-		.fetch_events_from(relays, filter, FETCH_TIMEOUT)
+		.fetch_events_from(&relays, filter, FETCH_TIMEOUT)
 		.await
 	{
 		for ev in events.into_iter() {

@@ -199,10 +199,10 @@ fn validate_callback(raw: &str) -> Option<String> {
 		}
 		return None;
 	}
-	if let Some(rest) = strip_prefix_ignore_case(decoded, "http://") {
-		if is_localhost_authority(rest) {
-			return Some(decoded.to_string());
-		}
+	if let Some(rest) = strip_prefix_ignore_case(decoded, "http://")
+		&& is_localhost_authority(rest)
+	{
+		return Some(decoded.to_string());
 	}
 	None
 }
@@ -239,10 +239,10 @@ fn validate_relay(raw: &str) -> Option<String> {
 		}
 		return None;
 	}
-	if let Some(rest) = strip_prefix_ignore_case(decoded, "ws://") {
-		if is_localhost_authority(rest) {
-			return Some(decoded.to_string());
-		}
+	if let Some(rest) = strip_prefix_ignore_case(decoded, "ws://")
+		&& is_localhost_authority(rest)
+	{
+		return Some(decoded.to_string());
 	}
 	None
 }
@@ -295,9 +295,7 @@ fn strip_prefix_ignore_case<'a>(s: &'a str, prefix: &str) -> Option<&'a str> {
 /// `localhost`, optionally with a `:port` (a valid non-zero u16), followed by
 /// nothing or a `/ ? #` delimiter. `localhost.evil.com` and friends do NOT pass.
 fn is_localhost_authority(rest: &str) -> bool {
-	let authority_end = rest
-		.find(|c| c == '/' || c == '?' || c == '#')
-		.unwrap_or(rest.len());
+	let authority_end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
 	let authority = &rest[..authority_end];
 	let (host, port) = match authority.split_once(':') {
 		Some((h, p)) => (h, Some(p)),
