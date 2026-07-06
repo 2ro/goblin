@@ -38,6 +38,7 @@ pub enum IdentitySource {
 }
 
 /// Identity file stored at `wallet_data/nostr/identity.json`.
+// TODO(audit L2): redact secret material (the ncryptsec) from Debug output.
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct NostrIdentity {
 	pub ver: u8,

@@ -300,6 +300,8 @@ pub(crate) fn domain_bound(callback: &str, domain: &str) -> bool {
 /// arrays of strings. A `delegation` tag is rejected outright (defense in depth,
 /// even though delegation tokens are unreachable here). Any deviation rejects.
 fn validate_template(raw: &str) -> Option<Template> {
+	// TODO(audit M6): consider byte-exact template echo vs structural
+	// re-serialization; needs magick server co-design.
 	// Percent-decode for parity with the other params (base64url never needs
 	// encoding, so this is a no-op on well-formed input), then enforce the
 	// strict unpadded-base64url charset ourselves.
@@ -478,6 +480,8 @@ pub fn content_preview(content: &str) -> (String, usize) {
 /// passes through unchanged. Used on ALL requester-controlled strings (content,
 /// tag values, titles) before they reach a label.
 pub fn escape_for_display(s: &str) -> String {
+	// TODO(audit M5): widen escaping to category-based (all C0/C1, bidi controls)
+	// rather than the current explicit list.
 	let mut out = String::with_capacity(s.len());
 	for c in s.chars() {
 		let code = c as u32;

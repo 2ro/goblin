@@ -588,6 +588,8 @@ impl Wallet {
 	/// wrong password can never leak the key. The value is derived on demand and
 	/// never persisted.
 	pub fn get_nostr_nsec(&self, password: String) -> Result<String, String> {
+		// TODO(audit L3): carry secrets (the password and the returned nsec) as
+		// ZeroingString end-to-end rather than plain String.
 		let svc = self
 			.nostr_service()
 			.ok_or_else(|| "nostr identity not ready".to_string())?;

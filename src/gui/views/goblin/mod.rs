@@ -664,6 +664,8 @@ impl GoblinWalletView {
 			if self.settings_page == SettingsPage::Identities {
 				self.identity_switch = IdentitySwitchState::default();
 			}
+			// TODO(audit L4): reset AdvancedState on back navigation too, so a
+			// revealed nsec/password does not survive leaving the Advanced page.
 			self.settings_page = SettingsPage::Main;
 			return false;
 		}
