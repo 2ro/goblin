@@ -1140,6 +1140,10 @@ impl Wallet {
 	/// payment-proof slate is addressed to and signs the proof with the
 	/// matching key. Returns `(index, address)`.
 	pub fn mint_proof_address(&self) -> Result<(u32, String), String> {
+		// `allocate` is called before we take the wallet instance lock, but that is
+		// safe: the allocator serializes its whole read-modify-write behind its own
+		// process-wide lock, so two concurrent mints can never be handed the same
+		// index regardless of the instance-lock ordering here.
 		let index =
 			crate::wallet::proof_addrs::allocate(&self.get_config().get_proof_addrs_path())?;
 		let r_inst = self.instance.as_ref().read();
