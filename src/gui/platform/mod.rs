@@ -25,6 +25,14 @@ pub trait PlatformCallbacks {
 	fn set_context(&mut self, ctx: &egui::Context);
 	fn exit(&self);
 	fn copy_string_to_buffer(&self, data: String);
+	/// Copy a SECRET (e.g. a revealed nsec) to the clipboard, then auto-clear it
+	/// after a short delay so it does not linger there forever. The clear is
+	/// compare-then-clear: it only wipes the clipboard if it STILL holds exactly
+	/// this secret, so whatever the user copied since is never clobbered.
+	/// Defaults to a plain copy on platforms without a timed clear.
+	fn copy_secret_to_buffer(&self, data: String) {
+		self.copy_string_to_buffer(data);
+	}
 	fn get_string_from_buffer(&self) -> String;
 	fn start_camera(&self);
 	fn stop_camera(&self);

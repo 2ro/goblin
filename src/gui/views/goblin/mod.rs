@@ -3948,7 +3948,9 @@ impl GoblinWalletView {
 							ui.add_space(10.0);
 							if w::big_action_on_card(ui, &t!("goblin.advanced.copy_nsec")).clicked()
 							{
-								cb.copy_string_to_buffer(nsec.clone());
+								// Secret: auto-clears from the clipboard after a delay
+								// (compare-then-clear) so it does not linger there.
+								cb.copy_secret_to_buffer(nsec.clone());
 							}
 							ui.add_space(8.0);
 							let qr_label = if adv.nsec_qr {
@@ -4789,7 +4791,9 @@ impl GoblinWalletView {
 					ui.add_space(10.0);
 					if w::big_action_on_card(ui, &t!("goblin.settings.copy_new_nsec")).clicked() {
 						if let Some(nsec) = wallet.nostr_service().and_then(|s| s.nsec()) {
-							cb.copy_string_to_buffer(nsec);
+							// Secret: auto-clears from the clipboard after a delay
+							// (compare-then-clear) so it does not linger there.
+							cb.copy_secret_to_buffer(nsec);
 							cb.vibrate_copy();
 						}
 					}

@@ -24,6 +24,11 @@ use std::thread;
 
 use crate::gui::platform::PlatformCallbacks;
 
+/// How long a revealed secret (e.g. an nsec) may sit in the clipboard before it
+/// is auto-cleared, if it is still there. Long enough to paste into another app,
+/// short enough that it does not linger.
+const CLIPBOARD_SECRET_TTL_SECS: u64 = 45;
+
 /// Desktop platform related actions.
 #[derive(Clone)]
 pub struct Desktop {
@@ -252,6 +257,35 @@ impl PlatformCallbacks for Desktop {
 			},
 			(),
 		);
+	}
+
+	fn copy_secret_to_buffer(&self, data: String) {
+		// Copy now, then clear after a delay, but only if the clipboard still
+		// holds exactly this secret, so we never clobber whatever the user copied
+		// since. A revealed nsec must not sit in the clipboard forever.
+		self.copy_string_to_buffer(data.clone());
+		let clip = self.clipboard.clone();
+		thread::spawn(move || {
+			thread::sleep(std::time::Duration::from_secs(CLIPBOARD_SECRET_TTL_SECS));
+			let mut guard = clip.lock();
+			// Open the shared instance lazily (mirrors `with_clipboard`); clearing
+			// through the long-lived owner is what actually relinquishes the
+			// selection on Linux.
+			if guard.is_none() {
+				match arboard::Clipboard::new() {
+					Ok(c) => *guard = Some(c),
+					Err(e) => {
+						log::error!("clipboard: failed to open for secret clear: {e}");
+						return;
+					}
+				}
+			}
+			if let Some(clipboard) = guard.as_mut()
+				&& clipboard.get_text().map(|t| t == data).unwrap_or(false)
+			{
+				let _ = clipboard.set_text(String::new());
+			}
+		});
 	}
 
 	fn get_string_from_buffer(&self) -> String {

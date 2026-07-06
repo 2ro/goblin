@@ -27,6 +27,11 @@ use winit::platform::android::activity::AndroidApp;
 
 use crate::gui::platform::PlatformCallbacks;
 
+/// How long a revealed secret (e.g. an nsec) may sit in the clipboard before it
+/// is auto-cleared, if it is still there. Long enough to paste into another app,
+/// short enough that it does not linger.
+const CLIPBOARD_SECRET_TTL_SECS: u64 = 45;
+
 /// Android platform implementation.
 #[derive(Clone)]
 pub struct Android {
@@ -84,6 +89,21 @@ impl PlatformCallbacks for Android {
 			"(Ljava/lang/String;)V",
 			&[JValue::Object(&JObject::from(arg_value))],
 		);
+	}
+
+	fn copy_secret_to_buffer(&self, data: String) {
+		// Copy now, then clear after a delay if the clipboard still holds exactly
+		// this secret (compare-then-clear), so a revealed nsec does not linger.
+		// Runs on a detached thread that reaches Java via the cloned app handle,
+		// the same non-GUI JNI path as the payment notifications.
+		self.copy_string_to_buffer(data.clone());
+		let platform = self.clone();
+		std::thread::spawn(move || {
+			std::thread::sleep(std::time::Duration::from_secs(CLIPBOARD_SECRET_TTL_SECS));
+			if platform.get_string_from_buffer() == data {
+				platform.copy_string_to_buffer(String::new());
+			}
+		});
 	}
 
 	fn get_string_from_buffer(&self) -> String {
