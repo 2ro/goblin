@@ -843,9 +843,34 @@ impl Wallet {
 			.read()
 			.unlock(&password)
 			.map_err(|_| "Wrong password".to_string())?;
+		// The import blob may be a bare nsec OR a sealed GOBLIN-*.backup file
+		// (reusing the same open path as `import_nostr_identity`). Either becomes a
+		// held identity re-encrypted under THIS wallet's password.
 		let (identity, _keys) = match import {
-			Some(nsec) => NostrIdentity::create_imported(nsec.trim(), &password)
-				.map_err(|_| "Invalid nsec".to_string())?,
+			Some(blob) => {
+				let blob = blob.trim();
+				if NostrIdentity::is_encrypted_backup(blob) {
+					// A .backup: open it (same wallet password, since a backup made
+					// by this wallet is sealed under it), then re-encrypt under the
+					// wallet password and restore its name/history.
+					let (backup, keys) = NostrIdentity::from_encrypted_backup(blob, &password)
+						.map_err(|_| {
+							"Couldn't open the backup — it may have been made under a \
+							 different wallet password."
+								.to_string()
+						})?;
+					let mut ident =
+						NostrIdentity::from_unlocked_keys(&keys, &password, backup.source)
+							.map_err(|e| format!("re-encryption failed: {e}"))?;
+					ident.nip05 = backup.nip05.clone();
+					ident.anonymous = backup.anonymous;
+					ident.prev_npubs = backup.prev_npubs.clone();
+					(ident, keys)
+				} else {
+					NostrIdentity::create_imported(blob, &password)
+						.map_err(|_| "Invalid nsec".to_string())?
+				}
+			}
 			None => NostrIdentity::create_random(&password)
 				.map_err(|e| format!("key generation failed: {e}"))?,
 		};
@@ -911,6 +936,121 @@ impl Wallet {
 		let new_npub = svc.npub();
 		info!("nostr: switched active identity to {}", new_npub);
 		Ok(new_npub)
+	}
+
+	/// PERMANENTLY delete a held identity: drop it from the held-identity index,
+	/// delete its on-disk encrypted file, and rebuild the running service without
+	/// it (so its pubkey leaves the multi-pubkey gift-wrap subscription and its key
+	/// leaves the in-memory set). The one shared grin balance and every other
+	/// identity are untouched. Unrecoverable unless its nsec/.backup was saved.
+	///
+	/// Edge cases:
+	/// - Refuses to delete the LAST identity (a wallet must keep >= 1).
+	/// - Deleting the ACTIVE identity first switches active to a survivor.
+	/// - Deleting the legacy primary (the `identity.json` entry, which `init_nostr`
+	///   falls back to and an older build opens) PROMOTES a survivor into
+	///   `identity.json` so that fallback still resolves — never leaving a hole
+	///   that would spawn a fresh identity on next open.
+	pub fn delete_nostr_identity(
+		&self,
+		target_hex: String,
+		password: String,
+	) -> Result<(), String> {
+		let svc = self
+			.nostr_service()
+			.ok_or_else(|| "nostr is not running".to_string())?;
+		if !self.verify_nostr_password(&password) {
+			return Err("Wrong password".to_string());
+		}
+		let config = self.get_config();
+		let nostr_dir = config.get_nostr_path();
+		let mut index = HeldIdentities::load(&nostr_dir)
+			.ok_or_else(|| "identity index unavailable".to_string())?;
+		// (a) Never delete the only identity.
+		if index.len() <= 1 {
+			return Err("You must keep at least one identity".to_string());
+		}
+		let entry = index
+			.entry(&target_hex)
+			.cloned()
+			.ok_or_else(|| "identity not held by this wallet".to_string())?;
+		// A survivor to take over the active pointer / primary role.
+		let survivor = index
+			.identities
+			.iter()
+			.find(|e| e.pubkey != target_hex)
+			.map(|e| e.pubkey.clone())
+			.ok_or_else(|| "no other identity".to_string())?;
+
+		// (c) Deleting the legacy primary: promote the survivor into identity.json
+		// so init_nostr's fallback/rollback anchor still resolves. Otherwise just
+		// delete the target's own file.
+		if entry.path == "identity.json" {
+			let survivor_entry = index
+				.entry(&survivor)
+				.cloned()
+				.ok_or_else(|| "survivor missing".to_string())?;
+			let survivor_id = survivor_entry
+				.load(&nostr_dir)
+				.ok_or_else(|| "survivor unreadable".to_string())?;
+			// Overwrite identity.json with the survivor (its old content = the
+			// deleted key is gone), and repoint the survivor entry to identity.json.
+			survivor_id
+				.save(&nostr_dir)
+				.map_err(|e| format!("promote failed: {e}"))?;
+			if survivor_entry.path != "identity.json" {
+				let old_abs = survivor_entry.abs_path(&nostr_dir);
+				for e in index.identities.iter_mut() {
+					if e.pubkey == survivor {
+						e.path = "identity.json".to_string();
+					}
+				}
+				let _ = std::fs::remove_file(old_abs);
+			}
+		} else {
+			let _ = std::fs::remove_file(entry.abs_path(&nostr_dir));
+		}
+
+		// Remove the target from the index (entries + order); repoint active if it
+		// was the deleted one.
+		index.identities.retain(|e| e.pubkey != target_hex);
+		index.order.retain(|h| h != &target_hex);
+		if index.active == target_hex {
+			index.active = survivor.clone();
+		}
+		index
+			.save(&nostr_dir)
+			.map_err(|e| format!("index save failed: {e}"))?;
+
+		// (b) If the deleted identity was active, the survivor becomes active.
+		let active_hex = if svc.public_key().to_hex() == target_hex {
+			survivor
+		} else {
+			svc.public_key().to_hex()
+		};
+
+		// Rebuild the service WITHOUT the deleted identity: unlock_all_identities now
+		// excludes it, so it leaves both the subscription and the in-memory key set.
+		let nostr_config = NostrConfig::load(PathBuf::from(config.get_data_path()));
+		let store = NostrStore::new(config.get_nostr_db_path());
+		let (recv, _) = self
+			.unlock_all_identities(&nostr_dir, &password)
+			.ok_or_else(|| "identity unlock failed".to_string())?;
+		svc.stop();
+		for _ in 0..100 {
+			if !svc.is_running() {
+				break;
+			}
+			thread::sleep(Duration::from_millis(100));
+		}
+		let new_svc = NostrService::new(recv, &active_hex, nostr_config, store, nostr_dir);
+		{
+			let mut w_nostr = self.nostr.write();
+			*w_nostr = Some(new_svc.clone());
+		}
+		new_svc.start(self.clone());
+		info!("nostr: deleted held identity {target_hex}");
+		Ok(())
 	}
 
 	/// Get keychain mask [`SecretKey`].

@@ -321,11 +321,16 @@ impl Default for ImportState {
 /// mirroring the wallet-open password modal.
 const IDENTITY_PASS_MODAL: &str = "goblin_identity_pass_modal";
 
-/// A pending add the wallet-password modal is gating: generate a fresh key
-/// (`None`) or import an nsec (`Some`). Switching no longer uses the modal (it is
-/// instant and local), so this is the only action the modal encrypts for.
+/// A password-gated identity action the modal executes. Switching no longer uses
+/// the modal (it is instant and local); only these need the wallet password.
 #[derive(Clone)]
-struct PendingAdd(Option<String>);
+enum PendingPassAction {
+	/// Add a held identity: generate a fresh key (`None`) or import an nsec / a
+	/// sealed .backup blob (`Some`).
+	Add(Option<String>),
+	/// Permanently delete this held identity (pubkey hex).
+	Delete(String),
+}
 
 /// Identity switcher page state: the add-identity sub-form and the wallet-password
 /// modal buffer (the encrypt step for ADDING an identity — switching is instant
@@ -335,12 +340,19 @@ struct PendingAdd(Option<String>);
 struct IdentitySwitchState {
 	/// Add-identity sub-form is open.
 	adding: bool,
-	/// Add mode is import-an-nsec (else generate a fresh one).
+	/// Add mode is import (else generate a fresh one). Import offers a .backup
+	/// file picker AND a paste-an-nsec field.
 	import: bool,
 	/// Pasted nsec when importing.
 	nsec: String,
-	/// The add the password modal is currently gating.
-	pending: Option<PendingAdd>,
+	/// Contents of a selected .backup file (import path); wins over `nsec`.
+	backup_input: String,
+	/// A native .backup file pick is in flight (Android returns it asynchronously).
+	picking: bool,
+	/// A held identity awaiting the step-1 delete confirmation (pubkey hex).
+	confirm_delete: Option<String>,
+	/// The password-gated action the modal is currently gating.
+	pending: Option<PendingPassAction>,
 	/// Password typed into the modal; cleared as soon as it is consumed.
 	pass: String,
 	/// The modal password didn't unlock — show the wrong-password line.
@@ -4858,6 +4870,8 @@ impl GoblinWalletView {
 					self.identity_switch.adding = false;
 					self.identity_switch.import = false;
 					self.identity_switch.nsec.clear();
+					self.identity_switch.backup_input.clear();
+					self.identity_switch.confirm_delete = None;
 				}
 				Err(e) => {
 					self.identity_switch.error = e;
@@ -4899,13 +4913,18 @@ impl GoblinWalletView {
 				w::kicker(ui, &t!("goblin.identities.held"));
 				ui.add_space(8.0);
 				let busy = self.identity_switch.busy;
+				// A wallet must keep at least one identity, so delete is only offered
+				// when more than one is held.
+				let can_delete = identities.len() > 1 && !busy;
 				let mut switch_to: Option<String> = None;
+				let mut delete_target: Option<String> = None;
 				for id in &identities {
 					// A claimed name (no leading @, per the project convention), else
 					// the truncated npub. Never a placeholder word.
 					let short = data::short_npub(&id.pubkey_hex);
 					let title = id.name.clone().unwrap_or_else(|| short.clone());
 					let named = id.name.is_some();
+					let mut delete_this = false;
 					let row = w::card(ui, |ui| {
 						ui.set_min_width(ui.available_width());
 						ui.horizontal(|ui| {
@@ -4941,23 +4960,49 @@ impl GoblinWalletView {
 											.color(t.surface_text_dim),
 									);
 								}
+								// A trash affordance to the LEFT of that indicator; its
+								// own tap target so it doesn't trigger the row switch.
+								if can_delete {
+									ui.add_space(8.0);
+									let (r, resp) =
+										ui.allocate_exact_size(Vec2::splat(28.0), Sense::click());
+									ui.painter().text(
+										r.center(),
+										egui::Align2::CENTER_CENTER,
+										crate::gui::icons::TRASH,
+										FontId::new(16.0, fonts::regular()),
+										t.neg,
+									);
+									if resp
+										.on_hover_cursor(egui::CursorIcon::PointingHand)
+										.clicked()
+									{
+										delete_this = true;
+									}
+								}
 							});
 						})
 						.response
 						.rect
 					});
+					// Tap anywhere else on a non-active row = switch (skip when the
+					// trash was tapped, whose rect overlaps the row interact).
 					if !id.active && !busy {
 						let hit = ui.interact(
 							row,
 							egui::Id::new(("id_switch", id.pubkey_hex.as_str())),
 							Sense::click(),
 						);
-						if hit
-							.on_hover_cursor(egui::CursorIcon::PointingHand)
-							.clicked()
+						if !delete_this
+							&& hit
+								.on_hover_cursor(egui::CursorIcon::PointingHand)
+								.clicked()
 						{
 							switch_to = Some(id.pubkey_hex.clone());
 						}
+					}
+					if delete_this {
+						delete_target = Some(id.pubkey_hex.clone());
 					}
 					ui.add_space(6.0);
 				}
@@ -4969,6 +5014,91 @@ impl GoblinWalletView {
 					if let Err(e) = wallet.switch_nostr_identity(target) {
 						self.identity_switch.error = e;
 					}
+				}
+				// Tapping the trash opens the step-1 danger confirmation.
+				if let Some(target) = delete_target {
+					self.identity_switch.error.clear();
+					self.identity_switch.confirm_delete = Some(target);
+				}
+
+				// Step-1 delete confirmation: a clear danger card naming the
+				// identity, stating the delete is PERMANENT, and reminding the user
+				// to back it up first. Continuing opens the wallet-password modal
+				// (step 2), which actually executes the delete.
+				if let Some(target) = self.identity_switch.confirm_delete.clone() {
+					let display = identities
+						.iter()
+						.find(|i| i.pubkey_hex == target)
+						.map(|i| {
+							i.name
+								.clone()
+								.unwrap_or_else(|| data::short_npub(&i.pubkey_hex))
+						})
+						.unwrap_or_else(|| data::short_npub(&target));
+					ui.add_space(8.0);
+					w::card(ui, |ui| {
+						ui.set_min_width(ui.available_width());
+						ui.label(
+							RichText::new(t!("goblin.identities.delete_title", name => display))
+								.font(FontId::new(15.0, fonts::semibold()))
+								.color(t.neg),
+						);
+						ui.add_space(6.0);
+						ui.label(
+							RichText::new(t!("goblin.identities.delete_blurb"))
+								.font(FontId::new(13.0, fonts::regular()))
+								.color(t.surface_text_dim),
+						);
+						ui.add_space(6.0);
+						ui.label(
+							RichText::new(t!("goblin.identities.delete_backup_note"))
+								.font(FontId::new(13.0, fonts::semibold()))
+								.color(t.neg),
+						);
+						ui.add_space(10.0);
+						ui.horizontal(|ui| {
+							let half = (ui.available_width() - 10.0) / 2.0;
+							ui.scope_builder(
+								egui::UiBuilder::new().max_rect(egui::Rect::from_min_size(
+									ui.cursor().min,
+									Vec2::new(half, 44.0),
+								)),
+								|ui| {
+									if w::big_action_on_card(ui, &t!("goblin.settings.cancel"))
+										.clicked()
+									{
+										self.identity_switch.confirm_delete = None;
+									}
+								},
+							);
+							ui.add_space(10.0);
+							ui.scope_builder(
+								egui::UiBuilder::new().max_rect(egui::Rect::from_min_size(
+									ui.cursor().min,
+									Vec2::new(half, 44.0),
+								)),
+								|ui| {
+									if w::big_action_on_card_ink(
+										ui,
+										&t!("goblin.identities.delete_confirm"),
+										t.neg,
+									)
+									.clicked()
+									{
+										// Step 2: the wallet-password modal executes it.
+										self.identity_switch.pass.clear();
+										self.identity_switch.wrong_pass = false;
+										self.identity_switch.pending =
+											Some(PendingPassAction::Delete(target.clone()));
+										Modal::new(IDENTITY_PASS_MODAL)
+											.position(ModalPosition::CenterTop)
+											.title(t!("goblin.identities.delete_short"))
+											.show();
+									}
+								},
+							);
+						});
+					});
 				}
 
 				ui.add_space(8.0);
@@ -5041,6 +5171,55 @@ impl GoblinWalletView {
 						});
 						if self.identity_switch.import {
 							ui.add_space(8.0);
+							// (a) Select a .backup file. Desktop returns the path now;
+							// Android returns it asynchronously (poll picked_file()).
+							if self.identity_switch.picking {
+								if let Some(path) = cb.picked_file() {
+									self.identity_switch.picking = false;
+									if !path.is_empty() {
+										match std::fs::read_to_string(&path) {
+											Ok(c) => {
+												self.identity_switch.backup_input =
+													c.trim().to_string()
+											}
+											Err(_) => {
+												self.identity_switch.error =
+													t!("goblin.settings.backup_read_failed")
+														.to_string()
+											}
+										}
+									}
+								} else {
+									ui.ctx().request_repaint();
+								}
+							}
+							let file_label = if self.identity_switch.backup_input.is_empty() {
+								t!("goblin.identities.choose_backup").to_string()
+							} else {
+								t!("goblin.identities.backup_selected").to_string()
+							};
+							if w::big_action_on_card(ui, &file_label).clicked() {
+								self.identity_switch.error.clear();
+								match cb.pick_file() {
+									Some(path) if !path.is_empty() => {
+										match std::fs::read_to_string(&path) {
+											Ok(c) => {
+												self.identity_switch.backup_input =
+													c.trim().to_string()
+											}
+											Err(_) => {
+												self.identity_switch.error =
+													t!("goblin.settings.backup_read_failed")
+														.to_string()
+											}
+										}
+									}
+									Some(_) => self.identity_switch.picking = true,
+									None => {}
+								}
+							}
+							ui.add_space(8.0);
+							// (b) Or paste an nsec.
 							w::field_well(ui, |ui| {
 								TextEdit::new(egui::Id::from("identity_add_nsec"))
 									.focus(false)
@@ -5053,11 +5232,11 @@ impl GoblinWalletView {
 						}
 						ui.add_space(10.0);
 						let import = self.identity_switch.import;
-						// Generate is always ready; import needs a plausible nsec. The
-						// password is entered in the modal (opened on Add), not here.
-						let armed = (!import
-							|| self.identity_switch.nsec.trim().starts_with("nsec1"))
-							&& !self.identity_switch.busy;
+						// Generate is always ready; import needs either a selected
+						// .backup or a pasted nsec. The password is entered in the modal.
+						let has_import = !self.identity_switch.backup_input.trim().is_empty()
+							|| self.identity_switch.nsec.trim().starts_with("nsec1");
+						let armed = (!import || has_import) && !self.identity_switch.busy;
 						ui.horizontal(|ui| {
 							let half = (ui.available_width() - 10.0) / 2.0;
 							ui.scope_builder(
@@ -5072,6 +5251,7 @@ impl GoblinWalletView {
 										self.identity_switch.adding = false;
 										self.identity_switch.import = false;
 										self.identity_switch.nsec.clear();
+										self.identity_switch.backup_input.clear();
 										self.identity_switch.error.clear();
 									}
 								},
@@ -5093,9 +5273,21 @@ impl GoblinWalletView {
 										{
 											// Open the password modal to encrypt+store the
 											// new identity. It is added WITHOUT switching;
-											// the user activates it later via tap → modal.
-											let import_nsec = if import {
-												Some(self.identity_switch.nsec.trim().to_string())
+											// the user activates it later by tapping it. The
+											// import blob is the selected .backup if any,
+											// else the pasted nsec.
+											let import_blob = if import {
+												let b = self.identity_switch.backup_input.trim();
+												if b.is_empty() {
+													Some(
+														self.identity_switch
+															.nsec
+															.trim()
+															.to_string(),
+													)
+												} else {
+													Some(b.to_string())
+												}
 											} else {
 												None
 											};
@@ -5103,7 +5295,7 @@ impl GoblinWalletView {
 											self.identity_switch.pass.clear();
 											self.identity_switch.wrong_pass = false;
 											self.identity_switch.pending =
-												Some(PendingAdd(import_nsec));
+												Some(PendingPassAction::Add(import_blob));
 											Modal::new(IDENTITY_PASS_MODAL)
 												.position(ModalPosition::CenterTop)
 												.title(t!("goblin.identities.add_title"))
@@ -5211,16 +5403,22 @@ impl GoblinWalletView {
 		if go && !self.identity_switch.pass.is_empty() {
 			if !wallet.verify_nostr_password(&self.identity_switch.pass) {
 				self.identity_switch.wrong_pass = true;
-			} else if let Some(PendingAdd(import_nsec)) = self.identity_switch.pending.take() {
+			} else if let Some(action) = self.identity_switch.pending.take() {
 				let password = std::mem::take(&mut self.identity_switch.pass);
 				self.identity_switch.wrong_pass = false;
 				self.identity_switch.error.clear();
 				self.identity_switch.busy = true;
 				let slot = self.identity_switch.result.clone();
 				let w = wallet.clone();
-				// Add only — never auto-switch into the new identity.
 				std::thread::spawn(move || {
-					let r = w.add_nostr_identity(import_nsec, password);
+					let r = match action {
+						// Add only — never auto-switch into the new identity.
+						PendingPassAction::Add(import) => w.add_nostr_identity(import, password),
+						// Delete returns the surviving active npub for the result slot.
+						PendingPassAction::Delete(hex) => w
+							.delete_nostr_identity(hex, password)
+							.map(|_| String::new()),
+					};
 					*slot.lock().unwrap() = Some(r);
 				});
 				Modal::close();
