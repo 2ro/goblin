@@ -41,6 +41,7 @@
         <activity
             android:launchMode="singleTask"
             android:name=".MainActivity"
+            android:screenOrientation="portrait"
             android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|uiMode|density|locale|layoutDirection|fontScale|colorMode"
             android:exported="true">
 

@@ -473,11 +473,11 @@ mod tests {
 	use super::*;
 
 	/// Render a QR the way the goblin receive card paints it (dark modules
-	/// on a white plate with ~5% padding, goblin mark covering the center)
-	/// and prove the camera scanner pipeline (rqrr) decodes it. Guards both
-	/// the scan path and the card's scannability by third-party apps.
+	/// on a white plate with ~5% padding, plain — no center mark) and prove
+	/// the camera scanner pipeline (rqrr) decodes it. Guards both the scan
+	/// path and the card's scannability by third-party apps.
 	#[test]
-	fn goblin_receive_qr_decodes_with_center_mark() {
+	fn goblin_receive_qr_decodes() {
 		let uri = "nostr:npub15l60z00nm4ptmnsj9lcp4husnaltytw85eu05dt7ksdmsje0p98su2f0ch";
 		let qr = qrcodegen::QrCode::encode_text(uri, qrcodegen::QrCodeEcc::High).unwrap();
 		let n = qr.size();
@@ -502,11 +502,6 @@ mod tests {
 				}
 			}
 		}
-		// The goblin mark backing square over the center modules.
-		let backing = size * 0.19;
-		let c = dim as f32 / 2.0;
-		fill(c - backing / 2.0, c - backing / 2.0, backing, backing, 255);
-
 		let mut prepared = rqrr::PreparedImage::prepare(img);
 		let grids = prepared.detect_grids();
 		assert_eq!(grids.len(), 1, "scanner should find exactly one QR");
