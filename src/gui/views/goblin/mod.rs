@@ -3403,7 +3403,10 @@ impl GoblinWalletView {
 						crate::gui::theme::ThemeKind::Dark => t!("goblin.settings.theme_dark"),
 						crate::gui::theme::ThemeKind::Yellow => t!("goblin.settings.theme_yellow"),
 					};
-					if settings_row_btn(ui, &t!("goblin.settings.theme"), &theme_label) {
+					// Cycle-in-place (not a nav/icon row) so the value ("Dark") is
+					// drawn in the same small/dim style as the Language value beside
+					// it, instead of the larger icon size settings_row_btn uses.
+					if settings_row_cycle(ui, &t!("goblin.settings.theme"), &theme_label) {
 						cycle_theme(ui.ctx());
 					}
 					// Language sits beside theme under Appearance; the value is the

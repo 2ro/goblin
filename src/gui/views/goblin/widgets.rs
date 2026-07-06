@@ -591,27 +591,28 @@ pub fn balance_hero(
 		BalanceSubline::None => {}
 	}
 	if let Some(fiat) = fiat {
-		// Loading and Unavailable both render a subtle dim line — never a stale
-		// number. While loading, nudge egui to re-poll so the rate pops in once the
-		// live fetch lands even if the view is otherwise idle (bounded to the time
-		// the balance is actually on screen — not a background timer).
-		let text = match fiat {
-			FiatLine::Text(s) => s,
+		// The fiat subline only appears once a real rate lands: no placeholder
+		// for a rate that is still loading or could not be fetched. While a fetch
+		// is in flight, nudge egui to re-poll so the line pops in the moment it
+		// arrives (bounded to the time the balance is on screen, not a background
+		// timer); loading and unavailable both paint nothing.
+		match fiat {
+			FiatLine::Text(text) => {
+				ui.add_space(4.0);
+				ui.vertical_centered(|ui| {
+					ui.label(
+						RichText::new(text)
+							.font(FontId::new(13.0, fonts::regular()))
+							.color(t.text_dim),
+					);
+				});
+			}
 			FiatLine::Loading => {
 				ui.ctx()
 					.request_repaint_after(std::time::Duration::from_millis(300));
-				"≈ …".to_string()
 			}
-			FiatLine::Unavailable => t!("goblin.home.fiat_unavailable").to_string(),
-		};
-		ui.add_space(4.0);
-		ui.vertical_centered(|ui| {
-			ui.label(
-				RichText::new(text)
-					.font(FontId::new(13.0, fonts::regular()))
-					.color(t.text_dim),
-			);
-		});
+			FiatLine::Unavailable => {}
+		}
 	}
 }
 
