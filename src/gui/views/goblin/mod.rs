@@ -141,7 +141,13 @@ pub struct GoblinWalletView {
 	/// scanned QR), including the callback POST once approved. While this is
 	/// `Some`, every new incoming login URI is ignored (one at a time).
 	login: Option<LoginState>,
-	/// Quiet toast for the login outcome: text and when it appeared.
+	/// An "Authorize with Goblin" request awaiting approval (deep link or scanned
+	/// QR): the wallet signs one arbitrary event and hands it to the site. While
+	/// this OR `login` is `Some`, every new incoming authorize/login URI is
+	/// ignored (one approval at a time).
+	authorize: Option<AuthorizeState>,
+	/// Quiet toast for the login outcome: text and when it appeared. Reused for
+	/// the authorize outcome (same quiet pill, different strings).
 	login_toast: Option<(String, std::time::Instant)>,
 }
 
@@ -276,6 +282,7 @@ impl Default for GoblinWalletView {
 			back_hint: None,
 			batch_invoice: None,
 			login: None,
+			authorize: None,
 			login_toast: None,
 		}
 	}
@@ -361,6 +368,12 @@ const BATCH_INVOICE_MODAL: &str = "goblin_batch_invoice_modal";
 /// wallet password before the one-time challenge is signed.
 const LOGIN_MODAL: &str = "goblin_login_modal";
 
+/// Id of the "Authorize with Goblin" approval modal: the user reviews the
+/// requesting domain and the exact event to be signed, picks the signing
+/// identity, and confirms with the wallet password before the one event is
+/// signed and handed to the site. Shares the login expiry and POST timeout.
+const AUTHORIZE_MODAL: &str = "goblin_authorize_modal";
+
 /// A pending, untouched login approval expires after this many seconds (the
 /// modal closes and the request is dropped).
 const LOGIN_EXPIRY_SECS: u64 = 120;
@@ -386,6 +399,32 @@ struct LoginState {
 	/// The event is signed and the callback POST is in flight; the request is
 	/// consumed either way once the worker reports back.
 	posting: bool,
+	/// Result slot the POST worker thread fills.
+	result: std::sync::Arc<std::sync::Mutex<Option<Result<(), String>>>>,
+}
+
+/// One pending "Authorize with Goblin" approval. Mirrors [`LoginState`]
+/// field-for-field, plus a `show_full` toggle for the complete-content view.
+/// Single-use by construction: once the event is signed (`posting`), or on
+/// cancel/expiry, the state is dropped and only a fresh URI can start another.
+struct AuthorizeState {
+	/// The validated request (challenge, domain, callback, event template).
+	uri: crate::nostr::authuri::AuthorizeUri,
+	/// The CHOSEN signing identity (pubkey hex); defaults to the active one.
+	selected: String,
+	/// When the request arrived, for the [`LOGIN_EXPIRY_SECS`] deadline.
+	created: std::time::Instant,
+	/// Wallet password typed into the modal; cleared as soon as consumed.
+	pass: String,
+	/// The typed password did not verify: show the wrong-password line. The
+	/// request itself stays pending (a typo never consumes it).
+	wrong_pass: bool,
+	/// The event is signed and the callback POST is in flight; the request is
+	/// consumed either way once the worker reports back.
+	posting: bool,
+	/// Whether the complete (escaped) content is expanded in a scrollable view.
+	/// Approval is never blocked on it; it only reveals what truncation hid.
+	show_full: bool,
 	/// Result slot the POST worker thread fills.
 	result: std::sync::Arc<std::sync::Mutex<Option<Result<(), String>>>>,
 }
@@ -662,6 +701,7 @@ impl GoblinWalletView {
 			self.advanced = AdvancedState::default();
 			self.identity_switch = IdentitySwitchState::default();
 			self.login = None;
+			self.authorize = None;
 			self.login_toast = None;
 		}
 
@@ -721,7 +761,7 @@ impl GoblinWalletView {
 		// time: while one is pending (modal open or POST in flight), any new
 		// incoming login request is dropped; re-triggering needs a fresh URI.
 		if let Some(login) = crate::take_pending_login() {
-			if self.login.is_none() {
+			if self.login.is_none() && self.authorize.is_none() {
 				if let Some(active) = wallet.active_nostr_pubkey() {
 					// The approval takes over from any open scan/send flow.
 					self.send = None;
@@ -783,6 +823,79 @@ impl GoblinWalletView {
 		if Modal::opened() == Some(LOGIN_MODAL) {
 			Modal::ui(ui.ctx(), cb, |ui, modal, cb| {
 				self.login_modal_content(ui, modal, wallet, cb);
+			});
+		}
+
+		// A pending "Authorize with Goblin" request (deep link or scanned QR,
+		// already fully validated at the dispatch site: kind on the allowlist,
+		// template shape and domain binding checked). One approval at a time:
+		// while a login OR an authorize is pending, any new incoming request is
+		// dropped; re-triggering needs a fresh URI.
+		if let Some(authorize) = crate::take_pending_authorize() {
+			if self.login.is_none() && self.authorize.is_none() {
+				if let Some(active) = wallet.active_nostr_pubkey() {
+					// The approval takes over from any open scan/send flow.
+					self.send = None;
+					self.authorize = Some(AuthorizeState {
+						uri: authorize,
+						selected: active,
+						created: std::time::Instant::now(),
+						pass: String::new(),
+						wrong_pass: false,
+						posting: false,
+						show_full: false,
+						result: std::sync::Arc::new(std::sync::Mutex::new(None)),
+					});
+					Modal::new(AUTHORIZE_MODAL)
+						.position(ModalPosition::CenterTop)
+						.title(t!("goblin.authorize.title"))
+						.show();
+				}
+			}
+		}
+		// An untouched approval dies after 2 minutes: modal closed, request
+		// dropped. The signed-and-posting phase is governed by the POST timeout
+		// instead, so it is exempt here.
+		let authorize_expired = matches!(&self.authorize, Some(st)
+			if !st.posting && st.created.elapsed().as_secs() >= LOGIN_EXPIRY_SECS);
+		if authorize_expired {
+			self.authorize = None;
+			if Modal::opened() == Some(AUTHORIZE_MODAL) {
+				Modal::close();
+			}
+		}
+		// Poll the callback POST; the request is consumed either way and the
+		// outcome shows as the same quiet toast (distinct success/failure
+		// strings).
+		let mut authorize_outcome = None;
+		if let Some(st) = &self.authorize {
+			if st.posting {
+				authorize_outcome = st
+					.result
+					.lock()
+					.unwrap()
+					.take()
+					.map(|res| (res, st.uri.domain.clone()));
+				if authorize_outcome.is_none() {
+					ui.ctx().request_repaint();
+				}
+			}
+		}
+		if let Some((res, domain)) = authorize_outcome {
+			let text = match res {
+				Ok(()) => t!("goblin.authorize.sent", domain => domain).to_string(),
+				Err(e) => {
+					log::warn!("authorize callback failed: {e}");
+					t!("goblin.authorize.failed", domain => domain).to_string()
+				}
+			};
+			self.login_toast = Some((text, std::time::Instant::now()));
+			self.authorize = None;
+		}
+		// The authorize approval modal itself.
+		if Modal::opened() == Some(AUTHORIZE_MODAL) {
+			Modal::ui(ui.ctx(), cb, |ui, modal, cb| {
+				self.authorize_modal_content(ui, modal, wallet, cb);
 			});
 		}
 
@@ -6270,6 +6383,426 @@ impl GoblinWalletView {
 						std::time::Instant::now(),
 					));
 					self.login = None;
+					Modal::close();
+				}
+			}
+		}
+	}
+
+	/// The "Authorize with Goblin" approval modal: headline, the rendered event
+	/// (kind label, escaped content preview with an optional show-full view, and
+	/// per-kind key-tag summary), the identity picker, the password gate, and the
+	/// Cancel/Authorize buttons. Mirrors [`Self::login_modal_content`]; on
+	/// confirm it signs one event with the chosen identity and POSTs it off the
+	/// UI thread. Signed = consumed, whatever the POST outcome.
+	fn authorize_modal_content(
+		&mut self,
+		ui: &mut egui::Ui,
+		modal: &Modal,
+		wallet: &Wallet,
+		cb: &dyn PlatformCallbacks,
+	) {
+		use crate::nostr::authuri;
+		let Some(st) = self.authorize.as_mut() else {
+			Modal::close();
+			return;
+		};
+		if st.posting {
+			// Already signed and in flight; nothing left to gate here.
+			Modal::close();
+			return;
+		}
+		let domain = st.uri.domain.clone();
+		// Clone the small template once so the read-only render borrows nothing
+		// from `st` while its password/show-full fields are mutated below.
+		let template = st.uri.template.clone();
+		let kind = template.kind;
+		let label = authuri::kind_label(kind);
+		let (preview, remaining) = authuri::content_preview(&template.content);
+		let preview_esc = authuri::escape_for_display(&preview);
+		let full_esc = authuri::escape_for_display(&template.content);
+		// Key tags, all escaped before display.
+		let e_tag = template
+			.first_tag_value("e")
+			.map(|v| authuri::escape_for_display(&authuri::truncate_id(v)));
+		let p_tag = template
+			.first_tag_value("p")
+			.map(|v| authuri::escape_for_display(&authuri::truncate_id(v)));
+		let title = template
+			.first_tag_value("title")
+			.map(authuri::escape_for_display);
+		let identities = wallet.nostr_identities();
+		let mut go = false;
+		let mut cancel = false;
+		ui.vertical_centered(|ui| {
+			ui.add_space(6.0);
+			// Headline with the requesting domain prominent.
+			ui.label(
+				RichText::new(t!("goblin.authorize.headline", domain => domain.clone()))
+					.size(17.0)
+					.color(Colors::title(false)),
+			);
+			ui.add_space(10.0);
+			// The plain-language kind label (and, for an off-allowlist kind that
+			// v1 cannot actually reach, a caution line).
+			let kind_text = match label {
+				authuri::KindLabel::Post => t!("goblin.authorize.kind_post"),
+				authuri::KindLabel::Repost => t!("goblin.authorize.kind_repost"),
+				authuri::KindLabel::Reaction => t!("goblin.authorize.kind_reaction"),
+				authuri::KindLabel::Article => t!("goblin.authorize.kind_article"),
+				authuri::KindLabel::Unknown => {
+					t!("goblin.authorize.kind_unknown", n => kind.to_string())
+				}
+			};
+			ui.label(
+				RichText::new(kind_text)
+					.size(15.0)
+					.color(Colors::text(false)),
+			);
+			if label == authuri::KindLabel::Unknown {
+				ui.add_space(4.0);
+				ui.label(
+					RichText::new(t!("goblin.authorize.unknown_caution", domain => domain.clone()))
+						.size(12.5)
+						.color(Colors::red()),
+				);
+			}
+			ui.add_space(8.0);
+			// Per-kind rendering of the event body and its key tags. All
+			// requester-controlled text is escaped before it hits a label.
+			let show_preview = |ui: &mut egui::Ui| {
+				if !preview_esc.is_empty() {
+					ui.label(RichText::new(&preview_esc).size(13.5).color(Colors::gray()));
+				}
+			};
+			match kind {
+				7 => {
+					// Reaction: the reaction glyph (emoji or "+"), then target.
+					let reaction = if full_esc.is_empty() {
+						"+".to_string()
+					} else {
+						full_esc.clone()
+					};
+					ui.label(
+						RichText::new(reaction)
+							.size(20.0)
+							.color(Colors::text(false)),
+					);
+					ui.add_space(4.0);
+					if let Some(id) = &e_tag {
+						ui.label(
+							RichText::new(t!("goblin.authorize.reacts_to", id => id.clone()))
+								.size(12.5)
+								.color(Colors::gray()),
+						);
+					}
+					if let Some(id) = &p_tag {
+						ui.label(
+							RichText::new(t!("goblin.authorize.by_author", id => id.clone()))
+								.size(12.5)
+								.color(Colors::gray()),
+						);
+					}
+				}
+				6 => {
+					// Repost: reposted event id and author.
+					if let Some(id) = &e_tag {
+						ui.label(
+							RichText::new(t!("goblin.authorize.repost_of", id => id.clone()))
+								.size(12.5)
+								.color(Colors::gray()),
+						);
+					}
+					if let Some(id) = &p_tag {
+						ui.label(
+							RichText::new(t!("goblin.authorize.by_author", id => id.clone()))
+								.size(12.5)
+								.color(Colors::gray()),
+						);
+					}
+				}
+				30023 => {
+					// Article: title tag if present, then the content preview.
+					if let Some(t) = &title {
+						ui.label(
+							RichText::new(t!("goblin.authorize.article_title", title => t.clone()))
+								.size(14.0)
+								.color(Colors::text(false)),
+						);
+						ui.add_space(4.0);
+					}
+					show_preview(ui);
+				}
+				_ => {
+					// Kind 1 (and the unreachable fallback): content preview, then
+					// the reply/mention tags.
+					show_preview(ui);
+					if let Some(id) = &e_tag {
+						ui.add_space(4.0);
+						ui.label(
+							RichText::new(t!("goblin.authorize.replying_to", id => id.clone()))
+								.size(12.5)
+								.color(Colors::gray()),
+						);
+					}
+					if let Some(id) = &p_tag {
+						ui.label(
+							RichText::new(t!("goblin.authorize.mentions", id => id.clone()))
+								.size(12.5)
+								.color(Colors::gray()),
+						);
+					}
+				}
+			}
+			// Truncation marker plus the mandatory show-full affordance. Approval
+			// is never blocked on opening it.
+			if remaining > 0 {
+				ui.add_space(6.0);
+				ui.label(
+					RichText::new(t!("goblin.authorize.truncated", n => remaining.to_string()))
+						.size(12.0)
+						.color(Colors::gray()),
+				);
+				let toggle = if st.show_full {
+					t!("goblin.authorize.show_less")
+				} else {
+					t!("goblin.authorize.show_full")
+				};
+				let rect = ui
+					.label(RichText::new(toggle).size(13.0).color(Colors::green()))
+					.rect;
+				let hit = ui.interact(
+					rect,
+					egui::Id::from(modal.id).with("auth_showfull"),
+					Sense::click(),
+				);
+				if hit
+					.on_hover_cursor(egui::CursorIcon::PointingHand)
+					.clicked()
+				{
+					st.show_full = !st.show_full;
+				}
+				if st.show_full {
+					ui.add_space(6.0);
+					ScrollArea::vertical()
+						.max_height(160.0)
+						.auto_shrink([false, true])
+						.show(ui, |ui| {
+							ui.label(RichText::new(&full_esc).size(13.0).color(Colors::gray()));
+						});
+				}
+			}
+			ui.add_space(10.0);
+			// The signing identity. Display precedence is the switcher's: private
+			// tag, else bare claimed name, else truncated npub, and the truncated
+			// npub is ALWAYS shown as the anchor. Defaults to the active identity.
+			ui.label(
+				RichText::new(t!("goblin.authorize.identity"))
+					.size(13.0)
+					.color(Colors::gray()),
+			);
+			ui.add_space(6.0);
+			if identities.len() > 1 {
+				for id in &identities {
+					let selected = st.selected == id.pubkey_hex;
+					let name = id.display();
+					let short = data::short_npub(&id.pubkey_hex);
+					let row = ui
+						.scope(|ui| {
+							ui.horizontal(|ui| {
+								ui.add_space(4.0);
+								ui.label(
+									RichText::new(if selected {
+										crate::gui::icons::CHECK_CIRCLE
+									} else {
+										crate::gui::icons::CIRCLE
+									})
+									.size(18.0)
+									.color(if selected {
+										Colors::green()
+									} else {
+										Colors::gray()
+									}),
+								);
+								ui.add_space(8.0);
+								ui.vertical(|ui| {
+									if name != short {
+										ui.label(
+											RichText::new(&name)
+												.size(15.0)
+												.color(Colors::text(false)),
+										);
+									}
+									ui.label(
+										RichText::new(&short).size(12.5).color(Colors::gray()),
+									);
+								});
+							});
+						})
+						.response
+						.rect;
+					let hit = ui.interact(
+						row,
+						egui::Id::from(modal.id).with(("auth_id", id.pubkey_hex.as_str())),
+						Sense::click(),
+					);
+					if hit
+						.on_hover_cursor(egui::CursorIcon::PointingHand)
+						.clicked()
+					{
+						st.selected = id.pubkey_hex.clone();
+					}
+					ui.add_space(4.0);
+				}
+			} else if let Some(id) = identities.first() {
+				let name = id.display();
+				let short = data::short_npub(&id.pubkey_hex);
+				if name != short {
+					ui.label(RichText::new(&name).size(15.0).color(Colors::text(false)));
+				}
+				ui.label(RichText::new(&short).size(12.5).color(Colors::gray()));
+			}
+			ui.add_space(10.0);
+			// One plain line on what approving does (and does not do).
+			ui.label(
+				RichText::new(t!("goblin.authorize.explain", domain => domain.clone()))
+					.size(13.0)
+					.color(Colors::gray()),
+			);
+			ui.add_space(10.0);
+			// The wallet password gates the signature, mirroring the identity
+			// password modal (masked field, same wrong-password line).
+			ui.label(
+				RichText::new(t!("goblin.authorize.pass_prompt"))
+					.size(16.0)
+					.color(Colors::gray()),
+			);
+			ui.add_space(10.0);
+			let mut field = TextEdit::new(egui::Id::from(modal.id).with("auth_pass")).password();
+			field.ui(ui, &mut st.pass, cb);
+			if field.enter_pressed {
+				go = true;
+			}
+			if st.pass.is_empty() {
+				st.wrong_pass = false;
+			} else if st.wrong_pass {
+				ui.add_space(10.0);
+				ui.label(
+					RichText::new(t!("goblin.advanced.wrong_password"))
+						.size(16.0)
+						.color(Colors::red()),
+				);
+			}
+			ui.add_space(12.0);
+		});
+		ui.scope(|ui| {
+			ui.spacing_mut().item_spacing = egui::Vec2::new(8.0, 0.0);
+			ui.columns(2, |columns| {
+				columns[0].vertical_centered_justified(|ui| {
+					View::button(
+						ui,
+						t!("modal.cancel"),
+						Colors::white_or_black(false),
+						|| {
+							cancel = true;
+						},
+					);
+				});
+				columns[1].vertical_centered_justified(|ui| {
+					View::button(
+						ui,
+						t!("goblin.authorize.confirm"),
+						Colors::white_or_black(false),
+						|| {
+							go = true;
+						},
+					);
+				});
+			});
+			ui.add_space(6.0);
+		});
+		if cancel {
+			// Cancel drops the request: it is single-use, no retry.
+			self.authorize = None;
+			Modal::close();
+			return;
+		}
+		if go {
+			let (pass, selected) = match self.authorize.as_ref() {
+				Some(st) => (st.pass.clone(), st.selected.clone()),
+				None => return,
+			};
+			if pass.is_empty() {
+				return;
+			}
+			if !wallet.verify_nostr_password(&pass) {
+				// Wrong password: stay in the modal, request NOT consumed.
+				if let Some(st) = self.authorize.as_mut() {
+					st.wrong_pass = true;
+				}
+				return;
+			}
+			// The chosen identity's unlocked in-memory keys, from the running
+			// service (the Build-145 model: every held identity is unlocked).
+			let keys = wallet.nostr_service().and_then(|s| {
+				s.recv_snapshot()
+					.into_iter()
+					.find(|h| h.keys.public_key().to_hex() == selected)
+					.map(|h| h.keys)
+			});
+			let Some(keys) = keys else {
+				// No running service / identity gone: drop the request.
+				self.authorize = None;
+				Modal::close();
+				return;
+			};
+			let st = self.authorize.as_mut().unwrap();
+			st.pass.clear();
+			st.wrong_pass = false;
+			match crate::nostr::authuri::build_authorize_event(&keys, &st.uri.template) {
+				Ok(event) => {
+					// Signed: the request is consumed from here on, whatever the
+					// POST outcome. Deliver off the UI thread with the shared HTTP
+					// client and a hard timeout.
+					st.posting = true;
+					let callback = st.uri.callback.clone();
+					let challenge = st.uri.challenge.clone();
+					let domain = st.uri.domain.clone();
+					let slot = st.result.clone();
+					std::thread::spawn(move || {
+						let res = match tokio::runtime::Builder::new_current_thread()
+							.enable_all()
+							.build()
+						{
+							Ok(rt) => rt.block_on(async {
+								let post = crate::nostr::authuri::post_authorize_event(
+									&callback, &challenge, &domain, &event,
+								);
+								match tokio::time::timeout(
+									std::time::Duration::from_secs(LOGIN_POST_TIMEOUT_SECS),
+									post,
+								)
+								.await
+								{
+									Ok(r) => r,
+									Err(_) => Err("timeout".to_string()),
+								}
+							}),
+							Err(e) => Err(e.to_string()),
+						};
+						*slot.lock().unwrap() = Some(res);
+					});
+					Modal::close();
+				}
+				Err(e) => {
+					// Signing failed (never expected): consume the request and
+					// surface the quiet failure toast.
+					log::error!("authorize event signing failed: {e}");
+					self.login_toast = Some((
+						t!("goblin.authorize.failed", domain => domain).to_string(),
+						std::time::Instant::now(),
+					));
+					self.authorize = None;
 					Modal::close();
 				}
 			}

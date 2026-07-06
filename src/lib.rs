@@ -566,6 +566,14 @@ lazy_static! {
 	/// site and never reach the UI.
 	static ref PENDING_LOGIN: Arc<RwLock<Option<nostr::loginuri::LoginUri>>> =
 		Arc::new(RwLock::new(None));
+	/// A pending, already-VALIDATED "Authorize with Goblin" request
+	/// (`goblin:authorize?...` deep link or QR), waiting for the Goblin surface
+	/// to open its approval modal. Only a fully validated
+	/// [`nostr::authuri::AuthorizeUri`] (kind on the allowlist, template shape
+	/// and domain binding checked) is ever stashed here; rejected authorize URIs
+	/// are dropped at the dispatch site and never reach the UI.
+	static ref PENDING_AUTHORIZE: Arc<RwLock<Option<nostr::authuri::AuthorizeUri>>> =
+		Arc::new(RwLock::new(None));
 }
 
 /// Stash a payment deep link for the Goblin surface to open (see
@@ -591,6 +599,20 @@ pub fn set_pending_login(login: nostr::loginuri::LoginUri) {
 /// polls this each frame and opens the sign-in approval modal for it.
 pub fn take_pending_login() -> Option<nostr::loginuri::LoginUri> {
 	PENDING_LOGIN.write().take()
+}
+
+/// Stash a VALIDATED authorize request for the Goblin surface to open its
+/// approval modal (see [`take_pending_authorize`]). The most recent request
+/// wins here; the surface itself ignores new requests while one approval (login
+/// or authorize) is already pending.
+pub fn set_pending_authorize(authorize: nostr::authuri::AuthorizeUri) {
+	*PENDING_AUTHORIZE.write() = Some(authorize);
+}
+
+/// Take (and clear) a pending authorize request, if any. The Goblin wallet view
+/// polls this each frame and opens the one-shot event-signing approval modal.
+pub fn take_pending_authorize() -> Option<nostr::authuri::AuthorizeUri> {
+	PENDING_AUTHORIZE.write().take()
 }
 
 /// Callback from Java code with passed data.

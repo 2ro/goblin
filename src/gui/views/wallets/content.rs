@@ -497,6 +497,11 @@ impl WalletsContent {
 		// always starts `npub1`/`nprofile1`). A login-shaped URI that fails
 		// validation is dropped entirely: no modal, no send, no message.
 		//
+		// Then the `authorize` keyword, checked BEFORE the pay path for the same
+		// reason: a `goblin:authorize?...` request signs one arbitrary event and
+		// is never a payment. An authorize-shaped URI that fails validation is
+		// likewise dropped entirely (no modal, no send, no fallthrough to pay).
+		//
 		// Then a Goblin payment deep link (`goblin:` / `nostr:` pay URI) routes
 		// to the send-review flow instead of the slatepack message handler:
 		// stash it for the Goblin surface to open, and select/open the wallet
@@ -506,6 +511,12 @@ impl WalletsContent {
 			Some(d) if crate::nostr::loginuri::is_login_shaped(&d) => {
 				if let Some(login) = crate::nostr::loginuri::parse(&d) {
 					crate::set_pending_login(login);
+				}
+				None
+			}
+			Some(d) if crate::nostr::authuri::is_authorize_shaped(&d) => {
+				if let Some(a) = crate::nostr::authuri::parse(&d) {
+					crate::set_pending_authorize(a);
 				}
 				None
 			}

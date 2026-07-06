@@ -250,6 +250,17 @@ impl SendFlow {
 			}
 			return;
 		}
+		// An "Authorize with Goblin" request is likewise grabbed BEFORE any pay
+		// parsing: it signs one arbitrary event, never a payment, and an
+		// authorize-shaped payload that fails validation is dropped entirely. A
+		// valid one is stashed for the Goblin surface, whose per-frame router
+		// closes this flow and opens the approval modal.
+		if crate::nostr::authuri::is_authorize_shaped(text) {
+			if let Some(a) = crate::nostr::authuri::parse(text) {
+				crate::set_pending_authorize(a);
+			}
+			return;
+		}
 		// Proof-on-request context (frozen contract 4.1) rides alongside the
 		// recipient/amount/memo routing and is independent of whether we land on
 		// Review or Search, so pull it from the same pure parse. `order` is a
