@@ -737,6 +737,7 @@ goblin:
     sent: "%{domain} bu oturum için güveniliyor"
     failed: "%{domain} sitesine ulaşılamadı. Oturum başlatılmadı."
     notice_volume: "Güvenilen bir site çok fazla imzalıyor."
+    notice_decrypt: "Güvenilen bir site mesajlarınızı okuyor."
   money:
     title: "Onayla"
     headline: "%{domain} içinde onaylansın mı?"

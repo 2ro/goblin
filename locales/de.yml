@@ -737,6 +737,7 @@ goblin:
     sent: "%{domain} wird für diese Sitzung vertraut"
     failed: "%{domain} konnte nicht erreicht werden. Die Sitzung wurde nicht gestartet."
     notice_volume: "Eine vertrauenswürdige Seite signiert sehr viel."
+    notice_decrypt: "Eine vertrauenswürdige Seite liest deine Nachrichten."
   money:
     title: "Bestätigen"
     headline: "In %{domain} bestätigen?"

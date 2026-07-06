@@ -290,7 +290,7 @@ impl NostrService {
 			let mut sessions = self.sessions.write();
 			if let Some(s) = sessions.iter_mut().find(|s| s.domain == domain) {
 				s.end();
-				end_event = s.session_end_event(now).ok();
+				end_event = s.session_end_event(now, "revoked").ok();
 			}
 			sessions.retain(|s| s.domain != domain);
 		}
@@ -1543,6 +1543,9 @@ async fn run_service(svc: Arc<NostrService>, wallet: Wallet) {
 				// Authorize Sessions (v2): when the session set changed, re-subscribe
 				// the encrypted channel and publish `session-open` for new sessions;
 				// then sign/decline any money-tier prompts the user answered.
+				if svc.has_sessions() {
+					sweep_expired_sessions(&svc, &client).await;
+				}
 				if svc.sessions_dirty.swap(false, Ordering::SeqCst) {
 					resubscribe_channel(&client, &svc).await;
 					announce_new_sessions(&svc, &client).await;
@@ -2068,6 +2071,7 @@ async fn handle_channel(svc: &Arc<NostrService>, client: &Client, event: &Event)
 	let mut publish: Option<Event> = None;
 	let mut money: Option<PendingMoney> = None;
 	let mut notice = false;
+	let mut decrypt_notice = false;
 	let mut ended = false;
 	{
 		let mut sessions = svc.sessions.write();
@@ -2099,44 +2103,63 @@ async fn handle_channel(svc: &Arc<NostrService>, client: &Client, event: &Event)
 				.into_iter()
 				.find(|h| h.keys.public_key() == s.identity_pubkey)
 				.map(|h| h.keys);
-			let (served, op) = match (msg_type.as_deref(), &keys) {
-				(Some("sign"), Some(keys)) => match serde_json::from_value::<SignRequest>(val) {
-					Ok(req) => (
-						session::serve(s, &req, keys, now),
-						Some(session::ChannelOp::Sign(req)),
-					),
-					Err(_) => return,
-				},
-				(Some("encrypt"), Some(keys)) => {
-					match serde_json::from_value::<session::EncryptRequest>(val) {
-						Ok(e) => (
-							session::serve_encrypt(s, &e, keys, now),
-							Some(session::ChannelOp::Encrypt(e)),
-						),
-						Err(_) => return,
+			match keys {
+				Some(keys) => {
+					let (served, op) = match msg_type.as_deref() {
+						Some("sign") => match serde_json::from_value::<SignRequest>(val) {
+							Ok(req) => (
+								session::serve(s, &req, &keys, now),
+								Some(session::ChannelOp::Sign(req)),
+							),
+							Err(_) => return,
+						},
+						Some("encrypt") => {
+							match serde_json::from_value::<session::EncryptRequest>(val) {
+								Ok(e) => (
+									session::serve_encrypt(s, &e, &keys, now),
+									Some(session::ChannelOp::Encrypt(e)),
+								),
+								Err(_) => return,
+							}
+						}
+						Some("decrypt") => {
+							match serde_json::from_value::<session::DecryptRequest>(val) {
+								Ok(d) => (session::serve_decrypt(s, &d, &keys, now), None),
+								Err(_) => return,
+							}
+						}
+						_ => return,
+					};
+					notice = served.notify_high_volume;
+					decrypt_notice = served.notify_decrypt_volume;
+					if served.money_pending {
+						if let Some(op) = op {
+							money = Some(PendingMoney {
+								domain: s.domain.clone(),
+								site_session_pubkey: s.site_session_pubkey,
+								identity_pubkey: s.identity_pubkey,
+								op,
+							});
+						}
+					} else if let Some(json) = served.response {
+						publish = s.wrap_channel_event(&json, now).ok();
 					}
 				}
-				(Some("decrypt"), Some(keys)) => {
-					match serde_json::from_value::<session::DecryptRequest>(val) {
-						Ok(d) => (session::serve_decrypt(s, &d, keys, now), None),
-						Err(_) => return,
+				None => {
+					// Identity no longer held mid-session: answer identity_mismatch
+					// so the site fails fast (re-login) instead of waiting out its
+					// request timeout.
+					if let (Some(op_type), Some(id)) =
+						(msg_type.as_deref(), val.get("id").and_then(|i| i.as_str()))
+					{
+						let json = session::refusal_json(
+							op_type,
+							id,
+							session::SignError::IdentityMismatch,
+						);
+						publish = s.wrap_channel_event(&json, now).ok();
 					}
 				}
-				// Identity no longer held: cannot act; drop silently (the session
-				// will end and the site re-grants).
-				_ => return,
-			};
-			notice = served.notify_high_volume;
-			if served.money_pending {
-				if let Some(op) = op {
-					money = Some(PendingMoney {
-						domain: s.domain.clone(),
-						identity_pubkey: s.identity_pubkey,
-						op,
-					});
-				}
-			} else if let Some(json) = served.response {
-				publish = s.wrap_channel_event(&json, now).ok();
 			}
 		}
 	}
@@ -2144,7 +2167,10 @@ async fn handle_channel(svc: &Arc<NostrService>, client: &Client, event: &Event)
 		svc.sessions.write().retain(|s| !s.ended);
 		svc.sessions_dirty.store(true, Ordering::SeqCst);
 	}
-	if notice {
+	// Distinct notices: heavy silent signing vs heavy DM reading (honest wording).
+	if decrypt_notice {
+		*svc.session_notice.write() = Some("reading".to_string());
+	} else if notice {
 		*svc.session_notice.write() = Some("signing".to_string());
 	}
 	if let Some(p) = money {
@@ -2152,6 +2178,34 @@ async fn handle_channel(svc: &Arc<NostrService>, client: &Client, event: &Event)
 	}
 	if let Some(ev) = publish {
 		let urls = channel_relays(svc);
+		let _ = tokio::time::timeout(SEND_TIMEOUT, client.send_event_to(&urls, &ev)).await;
+	}
+}
+
+/// Prune sessions past their TTL or idle timeout, sending each site a courtesy
+/// `session-end` with reason "expired" so it fails fast to its re-login state
+/// instead of timing out request by request. Called from the loop tick.
+async fn sweep_expired_sessions(svc: &Arc<NostrService>, client: &Client) {
+	let now = unix_time() as u64;
+	let mut end_events = Vec::new();
+	{
+		let mut sessions = svc.sessions.write();
+		for s in sessions.iter_mut() {
+			if !s.ended && s.is_expired(now) {
+				s.end();
+				if let Ok(ev) = s.session_end_event(now, "expired") {
+					end_events.push(ev);
+				}
+			}
+		}
+		if end_events.is_empty() && sessions.iter().all(|s| !s.ended) {
+			return;
+		}
+		sessions.retain(|s| !s.ended);
+	}
+	svc.sessions_dirty.store(true, Ordering::SeqCst);
+	let urls = channel_relays(svc);
+	for ev in end_events {
 		let _ = tokio::time::timeout(SEND_TIMEOUT, client.send_event_to(&urls, &ev)).await;
 	}
 }
@@ -2171,9 +2225,12 @@ async fn serve_money_answers(svc: &Arc<NostrService>, client: &Client) {
 		let mut publish: Option<Event> = None;
 		{
 			let mut sessions = svc.sessions.write();
+			// Route by the session's CHANNEL key, never the display domain: two
+			// sessions with a lookalike domain string can never receive each
+			// other's approvals.
 			if let Some(s) = sessions
 				.iter_mut()
-				.find(|s| s.domain == pending.domain && !s.ended)
+				.find(|s| s.site_session_pubkey == pending.site_session_pubkey && !s.ended)
 			{
 				let keys = snapshot
 					.iter()

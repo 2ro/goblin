@@ -73,6 +73,9 @@ pub const MAX_TAG_BYTES: usize = 8 * 1024;
 /// Hard: pause the session (stop serving silent, stay listed as paused).
 pub const RATE_SOFT_PER_MIN: usize = 60;
 pub const RATE_HARD_PER_5MIN: usize = 600;
+/// Decrypt-specific soft cap: reading DMs is the sharpest session capability,
+/// so its notice fires sooner and with honest wording ("reading your messages").
+pub const RATE_SOFT_DECRYPT_PER_MIN: usize = 30;
 
 /// Cap on the per-session replay-dedup ring. The skew window makes an
 /// evicted-then-replayed id already stale, so eviction cannot reopen a replay.
@@ -151,13 +154,19 @@ pub fn content_commits_payment(content: &str) -> bool {
 }
 
 /// Keys whose presence in an order/message JSON marks a payment commitment.
+/// Deliberately broad (amount/total/price catch generic order shapes): a false
+/// positive costs one extra prompt, the bias the spec asks for.
 const PAYMENT_MARKER_KEYS: &[&str] = &[
 	"payment",
 	"payment_request",
 	"bolt11",
 	"invoice",
+	"amount",
 	"amount_sat",
 	"amount_sats",
+	"msat",
+	"total",
+	"price",
 	"payment_hash",
 	"preimage",
 ];
@@ -429,12 +438,17 @@ pub struct SessionOpen {
 }
 
 /// The session-end envelope (either direction): the site's logout signal, or the
-/// wallet announcing a unilateral end. Type only; nothing else is trusted.
+/// wallet announcing a unilateral end. Only the type is trusted; `reason` is
+/// display data the receiving side may show ("logout" from the site, "revoked"
+/// or "expired" from the wallet).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionEnd {
 	/// Always `"session-end"`.
 	#[serde(rename = "type")]
 	pub msg_type: String,
+	/// Why the session ended: "logout" | "revoked" | "expired".
+	#[serde(default)]
+	pub reason: String,
 }
 
 /// A sign response (wallet to site). On success `ok` is true and `event` carries
@@ -651,6 +665,14 @@ pub struct Session {
 	seen_order: VecDeque<String>,
 	/// Timestamps (unix seconds) of served silent signs, for the rate windows.
 	silent_times: VecDeque<u64>,
+	/// Timestamps of served decrypts, for the decrypt-specific soft notice
+	/// ("this site is reading your messages"), separate from the sign counter.
+	decrypt_times: VecDeque<u64>,
+	/// Request ids whose money-tier prompt is currently awaiting the user. A
+	/// replayed envelope (normal when a drain overlaps the live subscription)
+	/// finds its id here and does NOT raise a second prompt or re-sign; the id
+	/// moves to `seen` when the prompt completes.
+	money_pending_ids: std::collections::HashSet<String>,
 }
 
 /// The wallet's decision for a request, produced by [`Session::decide`] before
@@ -663,6 +685,9 @@ pub enum Decision {
 	Silent { notify_high_volume: bool },
 	/// Money tier: raise the per-action password prompt, never silent.
 	MoneyPrompt,
+	/// This id's money prompt is already awaiting the user: do nothing (no second
+	/// prompt, no response; the original prompt's answer covers it).
+	AlreadyPending,
 	/// Refuse and return this typed error on the channel.
 	Refuse(SignError),
 	/// A replayed id: return the cached response JSON verbatim.
@@ -702,6 +727,8 @@ impl Session {
 			seen: HashMap::new(),
 			seen_order: VecDeque::new(),
 			silent_times: VecDeque::new(),
+			decrypt_times: VecDeque::new(),
+			money_pending_ids: std::collections::HashSet::new(),
 		}
 	}
 
@@ -735,6 +762,12 @@ impl Session {
 		if let Some(cached) = self.seen.get(&req.id) {
 			return Decision::Duplicate(cached.clone());
 		}
+		// A money prompt already awaiting the user for this id: never a second
+		// prompt (a re-delivered envelope is normal when a drain overlaps the
+		// live subscription).
+		if self.money_pending_ids.contains(&req.id) {
+			return Decision::AlreadyPending;
+		}
 		// Envelope timestamp skew, checked before the inner event is examined.
 		if abs_diff(req.ts, now) > CREATED_AT_SKEW_SECS {
 			return Decision::Refuse(SignError::StaleRequest);
@@ -767,7 +800,12 @@ impl Session {
 		}
 		// Tier classification runs before the silent path, from kind AND content.
 		match classify(req.event.kind, &req.event.content) {
-			Tier::Money => Decision::MoneyPrompt,
+			Tier::Money => {
+				// Reserve the id the moment the prompt is raised, so a replay can
+				// never re-prompt or re-sign; released into `seen` on completion.
+				self.money_pending_ids.insert(req.id.clone());
+				Decision::MoneyPrompt
+			}
 			Tier::Low => {
 				if !self.silent_kind_set.contains(&req.event.kind) {
 					return Decision::Refuse(SignError::KindNotInSession);
@@ -804,6 +842,9 @@ impl Session {
 		if let Some(cached) = self.seen.get(id) {
 			return Decision::Duplicate(cached.clone());
 		}
+		if self.money_pending_ids.contains(id) {
+			return Decision::AlreadyPending;
+		}
 		if abs_diff(ts, now) > CREATED_AT_SKEW_SECS {
 			return Decision::Refuse(SignError::StaleRequest);
 		}
@@ -814,6 +855,8 @@ impl Session {
 		}
 		let notify = self.count_last_minute(now) >= RATE_SOFT_PER_MIN;
 		if escalate {
+			// Reserve the id so a replay never raises a second prompt.
+			self.money_pending_ids.insert(id.to_string());
 			Decision::MoneyPrompt
 		} else {
 			Decision::Silent {
@@ -829,6 +872,9 @@ impl Session {
 	/// signature); do NOT call it for a still-pending money prompt.
 	pub fn remember(&mut self, id: &str, response_json: &str, counted_silent_sign: bool, now: u64) {
 		self.last_used_at = now;
+		// A completed money prompt releases its pending reservation; replays of
+		// the id now hit the `seen` cache below instead.
+		self.money_pending_ids.remove(id);
 		if counted_silent_sign {
 			self.silent_times.push_back(now);
 			self.trim_rate_window(now);
@@ -843,6 +889,21 @@ impl Session {
 				self.seen.remove(&old);
 			}
 		}
+	}
+
+	/// Count one served decrypt toward the decrypt-specific window and report
+	/// whether the decrypt soft cap tripped (the "reading your messages" notice).
+	fn note_decrypt(&mut self, now: u64) -> bool {
+		let cutoff = now.saturating_sub(60);
+		while let Some(&front) = self.decrypt_times.front() {
+			if front < cutoff {
+				self.decrypt_times.pop_front();
+			} else {
+				break;
+			}
+		}
+		self.decrypt_times.push_back(now);
+		self.decrypt_times.len() > RATE_SOFT_DECRYPT_PER_MIN
 	}
 
 	/// End the session unilaterally (wallet-side end, or on a `session-end`
@@ -895,11 +956,13 @@ impl Session {
 	}
 
 	/// The `session-end` channel event: tells the site the wallet ended the
-	/// session (a courtesy on wallet-side revocation; the teardown is unilateral
-	/// regardless of delivery).
-	pub fn session_end_event(&self, now: u64) -> Result<Event, String> {
+	/// session, with why ("revoked" for a wallet-side end, "expired" for the
+	/// TTL/idle backstop). A courtesy the site displays; the teardown is
+	/// unilateral regardless of delivery.
+	pub fn session_end_event(&self, now: u64, reason: &str) -> Result<Event, String> {
 		let end = SessionEnd {
 			msg_type: "session-end".to_string(),
+			reason: reason.to_string(),
 		};
 		let json = serde_json::to_string(&end).map_err(|e| e.to_string())?;
 		self.wrap_channel_event(&json, now)
@@ -984,8 +1047,12 @@ pub struct SessionSummary {
 /// modal; the GUI's answer routes back through [`complete_money`].
 #[derive(Debug, Clone)]
 pub struct PendingMoney {
-	/// The trusted domain the request arrived on.
+	/// The trusted domain the request arrived on (display only).
 	pub domain: String,
+	/// The site channel key of the session the request arrived on: the answer is
+	/// routed back by THIS key, never by the display domain, so two sessions with
+	/// a lookalike domain string can never receive each other's approvals.
+	pub site_session_pubkey: PublicKey,
 	/// The signing identity for this session (looked up to act on approval).
 	pub identity_pubkey: PublicKey,
 	/// The operation to perform on approval (a sign, or a pay-committing encrypt).
@@ -1005,13 +1072,17 @@ impl PendingMoney {
 
 /// The upshot of serving one decoded request against a session. The async loop
 /// acts on it and never touches classification, signing, or bookkeeping itself.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Served {
 	/// A `sign_result` JSON to publish back to the site on the channel, or `None`
-	/// when the request is a money-tier prompt still pending the user.
+	/// when the request is a money-tier prompt still pending the user (or a
+	/// replay of one).
 	pub response: Option<String>,
 	/// True when the soft rate cap tripped: surface a single non-blocking notice.
 	pub notify_high_volume: bool,
+	/// True when the decrypt soft cap tripped: surface the honest "reading your
+	/// messages" notice (distinct from the signing-volume wording).
+	pub notify_decrypt_volume: bool,
 	/// True when this request needs the money-tier password prompt (the loop
 	/// enqueues it for the GUI and publishes nothing yet).
 	pub money_pending: bool,
@@ -1025,25 +1096,19 @@ pub struct Served {
 /// keys, looked up by the loop from the wallet's in-memory snapshot.
 pub fn serve(session: &mut Session, req: &SignRequest, sign_keys: &Keys, now: u64) -> Served {
 	match session.decide(req, now) {
-		Decision::Duplicate(json) => Served {
-			response: Some(json),
-			notify_high_volume: false,
-			money_pending: false,
-		},
+		Decision::Duplicate(json) => served_response(json),
+		// A replayed money request whose prompt is still up: no second prompt, no
+		// response; the original prompt's answer covers this id.
+		Decision::AlreadyPending => Served::default(),
 		Decision::Refuse(err) => {
 			let json =
 				serde_json::to_string(&SignResult::refused(&req.id, err)).unwrap_or_default();
 			session.remember(&req.id, &json, false, now);
-			Served {
-				response: Some(json),
-				notify_high_volume: false,
-				money_pending: false,
-			}
+			served_response(json)
 		}
 		Decision::MoneyPrompt => Served {
-			response: None,
-			notify_high_volume: false,
 			money_pending: true,
+			..Served::default()
 		},
 		Decision::Silent { notify_high_volume } => {
 			let result = match sign_session_event(sign_keys, &req.event, now) {
@@ -1057,7 +1122,7 @@ pub fn serve(session: &mut Session, req: &SignRequest, sign_keys: &Keys, now: u6
 			Served {
 				response: Some(json),
 				notify_high_volume,
-				money_pending: false,
+				..Served::default()
 			}
 		}
 	}
@@ -1147,15 +1212,15 @@ pub fn serve_encrypt(session: &mut Session, e: &EncryptRequest, keys: &Keys, now
 	let escalate = content_commits_payment(&e.plaintext);
 	match session.decide_crypto(&e.id, e.ts, now, escalate) {
 		Decision::Duplicate(json) => served_response(json),
+		Decision::AlreadyPending => Served::default(),
 		Decision::Refuse(err) => {
 			let json = crypto_error("encrypt_result", &e.id, err);
 			session.remember(&e.id, &json, false, now);
 			served_response(json)
 		}
 		Decision::MoneyPrompt => Served {
-			response: None,
-			notify_high_volume: false,
 			money_pending: true,
+			..Served::default()
 		},
 		Decision::Silent { notify_high_volume } => {
 			let json = perform_encrypt(e, keys);
@@ -1163,16 +1228,18 @@ pub fn serve_encrypt(session: &mut Session, e: &EncryptRequest, keys: &Keys, now
 			Served {
 				response: Some(json),
 				notify_high_volume,
-				money_pending: false,
+				..Served::default()
 			}
 		}
 	}
 }
 
-/// Serve a decrypt op (see [`serve_encrypt`]; decrypt never escalates).
+/// Serve a decrypt op (see [`serve_encrypt`]; decrypt never escalates). Counts
+/// toward its own soft window so heavy DM-reading surfaces the honest notice.
 pub fn serve_decrypt(session: &mut Session, d: &DecryptRequest, keys: &Keys, now: u64) -> Served {
 	match session.decide_crypto(&d.id, d.ts, now, false) {
 		Decision::Duplicate(json) => served_response(json),
+		Decision::AlreadyPending => Served::default(),
 		Decision::Refuse(err) => {
 			let json = crypto_error("decrypt_result", &d.id, err);
 			session.remember(&d.id, &json, false, now);
@@ -1182,13 +1249,14 @@ pub fn serve_decrypt(session: &mut Session, d: &DecryptRequest, keys: &Keys, now
 		Decision::MoneyPrompt => {
 			served_response(crypto_error("decrypt_result", &d.id, SignError::Refused))
 		}
-		Decision::Silent { notify_high_volume } => {
+		Decision::Silent { .. } => {
 			let json = perform_decrypt(d, keys);
 			session.remember(&d.id, &json, true, now);
+			let notify_decrypt = session.note_decrypt(now);
 			Served {
 				response: Some(json),
-				notify_high_volume,
-				money_pending: false,
+				notify_decrypt_volume: notify_decrypt,
+				..Served::default()
 			}
 		}
 	}
@@ -1198,8 +1266,19 @@ pub fn serve_decrypt(session: &mut Session, d: &DecryptRequest, keys: &Keys, now
 fn served_response(json: String) -> Served {
 	Served {
 		response: Some(json),
-		notify_high_volume: false,
-		money_pending: false,
+		..Served::default()
+	}
+}
+
+/// The typed refusal JSON for any channel op, keyed by its request `type` (the
+/// runtime uses this when it cannot even look up keys, e.g. the identity was
+/// dropped mid-session, so the site fails fast instead of timing out).
+pub fn refusal_json(op_type: &str, id: &str, err: SignError) -> String {
+	match op_type {
+		"encrypt" => crypto_error("encrypt_result", id, err),
+		"decrypt" => crypto_error("decrypt_result", id, err),
+		// "sign" and anything else answers in the sign_result shape.
+		_ => serde_json::to_string(&SignResult::refused(id, err)).unwrap_or_default(),
 	}
 }
 
@@ -1674,6 +1753,123 @@ mod tests {
 	}
 
 	#[test]
+	fn money_replay_cannot_reprompt_or_resign() {
+		let now = 1_751_800_000u64;
+		let (mut s, id) = mk_session(&[1], now);
+		let req = mk_req(&id, 17, "{}", now, "rp1");
+		// First delivery raises the prompt.
+		let first = serve(&mut s, &req, &id, now);
+		assert!(first.money_pending);
+		// A replayed envelope while the prompt is still up (a drain overlapping
+		// the live subscription, or a deliberate replay): NO second prompt, no
+		// response, nothing signed.
+		let replay = serve(&mut s, &req, &id, now);
+		assert!(
+			!replay.money_pending,
+			"replay must not raise a second prompt"
+		);
+		assert!(
+			replay.response.is_none(),
+			"replay publishes nothing while pending"
+		);
+		assert_eq!(s.decide(&req, now), Decision::AlreadyPending);
+		// After completion, a replay returns the cached result verbatim, never a
+		// second signature.
+		let json = complete_money(&mut s, &ChannelOp::Sign(req.clone()), &id, true, now);
+		let after = serve(&mut s, &req, &id, now);
+		assert_eq!(after.response.as_deref(), Some(json.as_str()));
+		assert!(!after.money_pending);
+		// Same guarantee on the escalated-encrypt path.
+		let peer = Keys::generate();
+		let e = EncryptRequest {
+			msg_type: "encrypt".to_string(),
+			id: "rp2".to_string(),
+			ts: now,
+			peer_pubkey: peer.public_key().to_hex(),
+			plaintext: r#"{"invoice":"lnbc1"}"#.to_string(),
+		};
+		assert!(serve_encrypt(&mut s, &e, &id, now).money_pending);
+		let replay = serve_encrypt(&mut s, &e, &id, now);
+		assert!(!replay.money_pending && replay.response.is_none());
+		let done = complete_money(&mut s, &ChannelOp::Encrypt(e.clone()), &id, false, now);
+		assert!(done.contains("\"error\":\"user_declined\""));
+		let after = serve_encrypt(&mut s, &e, &id, now);
+		assert_eq!(after.response.as_deref(), Some(done.as_str()));
+	}
+
+	#[test]
+	fn decrypt_soft_cap_fires_honest_notice() {
+		let now = 1_751_800_000u64;
+		let (mut s, id) = mk_session(&[13], now);
+		let peer = Keys::generate();
+		let ct =
+			nip44::encrypt(peer.secret_key(), &id.public_key(), "m", nip44::Version::V2).unwrap();
+		for i in 0..RATE_SOFT_DECRYPT_PER_MIN {
+			let d = DecryptRequest {
+				msg_type: "decrypt".to_string(),
+				id: format!("dn{i}"),
+				ts: now,
+				peer_pubkey: peer.public_key().to_hex(),
+				ciphertext: ct.clone(),
+			};
+			let out = serve_decrypt(&mut s, &d, &id, now);
+			assert!(
+				!out.notify_decrypt_volume,
+				"under the cap: no notice (i={i})"
+			);
+		}
+		// The next decrypt trips the decrypt-specific notice, not the sign one.
+		let d = DecryptRequest {
+			msg_type: "decrypt".to_string(),
+			id: "dn-over".to_string(),
+			ts: now,
+			peer_pubkey: peer.public_key().to_hex(),
+			ciphertext: ct,
+		};
+		let out = serve_decrypt(&mut s, &d, &id, now);
+		assert!(out.notify_decrypt_volume);
+		assert!(!out.notify_high_volume);
+	}
+
+	#[test]
+	fn session_end_carries_reason_and_refusal_json_shapes() {
+		let now = 1_751_800_000u64;
+		let (s, _id) = mk_session(&[1], now);
+		// The wallet's session-end payload carries the reason for the site to
+		// show. The conversation key is symmetric, so the wallet can open its own
+		// envelope to verify the plaintext that went on the wire.
+		let ev = s.session_end_event(now, "revoked").unwrap();
+		let pt = open_envelope(&s.wallet_channel_sk, &s.site_session_pubkey, &ev.content).unwrap();
+		assert!(pt.contains("\"reason\":\"revoked\""));
+		let end = SessionEnd {
+			msg_type: "session-end".to_string(),
+			reason: "expired".to_string(),
+		};
+		let json = serde_json::to_string(&end).unwrap();
+		assert!(json.contains("\"reason\":\"expired\""));
+		// Incoming site session-end without a reason still parses (serde default).
+		let parsed: SessionEnd = serde_json::from_str(r#"{"type":"session-end"}"#).unwrap();
+		assert_eq!(parsed.reason, "");
+		// refusal_json answers in the right result shape per op type.
+		assert!(
+			refusal_json("sign", "x", SignError::IdentityMismatch)
+				.contains("\"type\":\"sign_result\"")
+		);
+		assert!(
+			refusal_json("encrypt", "x", SignError::IdentityMismatch)
+				.contains("\"type\":\"encrypt_result\"")
+		);
+		assert!(
+			refusal_json("decrypt", "x", SignError::IdentityMismatch)
+				.contains("\"type\":\"decrypt_result\"")
+		);
+		assert!(
+			refusal_json("sign", "x", SignError::IdentityMismatch)
+				.contains("\"error\":\"identity_mismatch\"")
+		);
+	}
+
+	#[test]
 	fn serve_refuses_kind_not_in_set() {
 		let now = 1_751_800_000u64;
 		let (mut s, id) = mk_session(&[7], now);
@@ -1748,5 +1944,36 @@ mod tests {
 		let json = out.response.unwrap();
 		assert!(json.contains("\"type\":\"decrypt_result\""));
 		assert!(json.contains("\"plaintext\":\"secret\""));
+	}
+
+	/// Cross-implementation NIP-44 v2 round trip against nostr-tools (magick's
+	/// browser side). Gated on the GOBLIN_CT1 env var so the normal suite skips it;
+	/// the interop harness sets it to a nostr-tools ciphertext (A->B), the wallet
+	/// (B) decrypts it, then encrypts a reply (A->B) to /tmp/ct2.txt for nostr-tools
+	/// to open. Proves the two NIP-44 v2 implementations actually interoperate.
+	#[test]
+	fn nip44_v2_interop_with_nostr_tools() {
+		let ct1 = match std::env::var("GOBLIN_CT1") {
+			Ok(v) => v,
+			Err(_) => return,
+		};
+		let sk_a =
+			SecretKey::from_hex("0000000000000000000000000000000000000000000000000000000000000001")
+				.unwrap();
+		let sk_b =
+			SecretKey::from_hex("0000000000000000000000000000000000000000000000000000000000000002")
+				.unwrap();
+		let pk_a = Keys::new(sk_a.clone()).public_key();
+		let pk_b = Keys::new(sk_b.clone()).public_key();
+		let pt = nip44::decrypt(&sk_b, &pk_a, &ct1).expect("rust must decrypt nostr-tools ct");
+		assert_eq!(pt, "hello from nostr-tools (magick browser side)");
+		let ct2 = nip44::encrypt(
+			&sk_a,
+			&pk_b,
+			"hello from rust (goblin wallet side)",
+			nip44::Version::V2,
+		)
+		.unwrap();
+		std::fs::write("/tmp/ct2.txt", ct2).unwrap();
 	}
 }

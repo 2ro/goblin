@@ -737,6 +737,7 @@ goblin:
     sent: "已在本次会话中信任 %{domain}"
     failed: "无法连接 %{domain}。会话未启动。"
     notice_volume: "某个受信任网站签署量过大。"
+    notice_decrypt: "某个受信任网站正在读取您的消息。"
   money:
     title: "确认"
     headline: "在 %{domain} 中确认？"

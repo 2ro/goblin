@@ -1098,16 +1098,15 @@ impl GoblinWalletView {
 				Modal::close();
 			}
 		}
-		// A session "signing a lot" notice surfaces as the quiet toast.
-		if wallet
-			.nostr_service()
-			.and_then(|s| s.take_session_notice())
-			.is_some()
-		{
-			self.login_toast = Some((
-				t!("goblin.trust.notice_volume").to_string(),
-				std::time::Instant::now(),
-			));
+		// A session volume notice surfaces as the quiet toast, with honest wording
+		// per capability: heavy DM reading is called out as reading, not signing.
+		if let Some(kind) = wallet.nostr_service().and_then(|s| s.take_session_notice()) {
+			let text = if kind == "reading" {
+				t!("goblin.trust.notice_decrypt").to_string()
+			} else {
+				t!("goblin.trust.notice_volume").to_string()
+			};
+			self.login_toast = Some((text, std::time::Instant::now()));
 		}
 		// Draw the trust and money modals.
 		if Modal::opened() == Some(TRUST_MODAL) {
@@ -7368,7 +7367,18 @@ impl GoblinWalletView {
 					)
 				}
 			}
-			ChannelOp::Encrypt(_) => t!("goblin.money.encrypt_desc").to_string(),
+			ChannelOp::Encrypt(e) => {
+				// Order DMs are where payment agreements live: show the inspected
+				// plaintext (escaped + truncated exactly like the sign path), so
+				// the user sees WHAT they are agreeing to pay, not a blind label.
+				let (preview, _) = crate::nostr::authuri::content_preview(&e.plaintext);
+				let preview = crate::nostr::authuri::escape_for_display(&preview);
+				if preview.trim().is_empty() {
+					t!("goblin.money.encrypt_desc").to_string()
+				} else {
+					format!("{}: {}", t!("goblin.money.encrypt_desc"), preview)
+				}
+			}
 		};
 		let mut approve = false;
 		let mut decline = false;

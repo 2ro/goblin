@@ -737,6 +737,7 @@ goblin:
     sent: "Trusting %{domain} for this session"
     failed: "Could not reach %{domain}. The session was not started."
     notice_volume: "A trusted site is signing a lot."
+    notice_decrypt: "A trusted site is reading your messages."
   money:
     title: "Confirm"
     headline: "Confirm in %{domain}?"

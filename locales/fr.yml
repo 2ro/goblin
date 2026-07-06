@@ -737,6 +737,7 @@ goblin:
     sent: "Confiance accordée à %{domain} pour cette session"
     failed: "Impossible de joindre %{domain}. La session n'a pas démarré."
     notice_volume: "Un site de confiance signe beaucoup."
+    notice_decrypt: "Un site de confiance lit vos messages."
   money:
     title: "Confirmer"
     headline: "Confirmer dans %{domain} ?"
