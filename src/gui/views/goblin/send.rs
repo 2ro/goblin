@@ -1366,6 +1366,7 @@ impl SendFlow {
 					recipient.npub.clone(),
 					note,
 					recipient.relay_hints.clone(),
+					None,
 				));
 			} else {
 				wallet.task(WalletTask::NostrSend(
@@ -1643,7 +1644,7 @@ enum ScanPrefill {
 /// optional `nostr:` prefix) to a `(pubkey hex, relay hints)` pair. `None` for a
 /// name / `@handle` (which needs a NIP-05 network resolution) or garbage — those
 /// still go through the search box. Pure: no I/O.
-fn decode_recipient_key(input: &str) -> Option<(String, Vec<String>)> {
+pub(super) fn decode_recipient_key(input: &str) -> Option<(String, Vec<String>)> {
 	use nostr_sdk::nips::nip19::Nip19Profile;
 	use nostr_sdk::{FromBech32, PublicKey};
 	let key = input.trim().strip_prefix("nostr:").unwrap_or(input.trim());

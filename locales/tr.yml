@@ -679,6 +679,10 @@ goblin:
     n59_blurb: "Mesajları sarar, böylece relaylar kimin kiminle konuştuğunu göremez."
     n98_title: "HTTP kimlik doğrulama"
     n98_blurb: "goblin.st'ye gönderilen kullanıcı adı kayıt isteğini imzalar."
+  batch:
+    title: "%{n} faturayı onayla"
+    blurb: "%{name} için her biri %{amount} olan %{n} ödeme isteği düzenle — toplam %{total}. Her istek kendi yeni ödeme adresini alır."
+    approve: "Onayla"
   identities:
     title: "Kimlikler"
     switch_hint: "Kimlik değiştir"

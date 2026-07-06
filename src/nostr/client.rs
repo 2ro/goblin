@@ -2241,6 +2241,7 @@ async fn handle_wrap(svc: &Arc<NostrService>, wallet: &Wallet, event: Event) {
 						// opened it), NOT necessarily the active one. All identities
 						// redeem into the one grin balance; this records provenance.
 						recipient_pubkey: recipient_hex.clone(),
+						proof_address: None,
 					});
 					// Commit dedup markers now the receive is durable, BEFORE
 					// the reply + sync tail. A crash there must not let this
@@ -2517,6 +2518,7 @@ mod tests {
 			proof_delivered: false,
 			receipt_sent: false,
 			recipient_pubkey: String::new(),
+			proof_address: None,
 		}
 	}
 

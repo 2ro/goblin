@@ -83,6 +83,11 @@ pub struct PayUri {
 	/// delivery to. Dropped if it is not a valid npub; absence simply means no
 	/// encrypted delivery target (the plain receipt still publishes).
 	pub notify: Option<String>,
+	/// Batch size for an invoice-request URI: how many payment requests the
+	/// wallet is asked to issue, each with its own fresh per-sale proof
+	/// address. Default 1 (single flow, unchanged when absent); capped at
+	/// [`MAX_BATCH_COUNT`]; fail-closed to 1 on anything unparseable or zero.
+	pub count: u32,
 }
 
 impl PayUri {
@@ -95,9 +100,14 @@ impl PayUri {
 			proof: None,
 			order: None,
 			notify: None,
+			count: 1,
 		}
 	}
 }
+
+/// Cap on the `count` batch parameter: the most invoices one URI may ask the
+/// wallet to issue in a single approval.
+pub const MAX_BATCH_COUNT: u32 = 20;
 
 /// Parse a scanned payload into a [`PayUri`]. Pure and total: never panics,
 /// never performs I/O, always returns a value. On any problem it falls back to
@@ -132,6 +142,7 @@ pub fn parse(scanned: &str) -> PayUri {
 	let mut proof = None;
 	let mut order = None;
 	let mut notify = None;
+	let mut count = None;
 	if let Some(query) = query {
 		for pair in query.split('&') {
 			let Some((key, val)) = pair.split_once('=') else {
@@ -148,6 +159,7 @@ pub fn parse(scanned: &str) -> PayUri {
 				"proof" if proof.is_none() => proof = validate_proof(val),
 				"order" if order.is_none() => order = validate_order(val),
 				"notify" if notify.is_none() => notify = validate_notify(val),
+				"count" if count.is_none() => count = validate_count(val),
 				// Unknown params are ignored for forward-compat.
 				_ => {}
 			}
@@ -161,6 +173,17 @@ pub fn parse(scanned: &str) -> PayUri {
 		proof,
 		order,
 		notify,
+		count: count.unwrap_or(1),
+	}
+}
+
+/// Validate a `count` value: a positive integer, clamped to [`MAX_BATCH_COUNT`].
+/// Fail-closed: unparseable or zero drops to `None` (treated as 1, the single
+/// flow), never blocking the URI.
+fn validate_count(raw: &str) -> Option<u32> {
+	match raw.trim().parse::<u32>() {
+		Ok(0) | Err(_) => None,
+		Ok(n) => Some(n.min(MAX_BATCH_COUNT)),
 	}
 }
 
@@ -356,6 +379,28 @@ fn hex_val(b: u8) -> Option<u8> {
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	#[test]
+	fn count_parses_defaults_and_caps() {
+		const NPUB: &str = "npub15gsytqvs5c78u83yv2agl4twjkk6qgem7gtwe2agu7s90tkelxys0xxely";
+		// Absent -> 1 (single flow unchanged).
+		assert_eq!(parse(&format!("goblin:{NPUB}?amount=1.5")).count, 1);
+		// Present -> parsed.
+		assert_eq!(parse(&format!("goblin:{NPUB}?amount=1.5&count=5")).count, 5);
+		// Capped at MAX_BATCH_COUNT.
+		assert_eq!(
+			parse(&format!("goblin:{NPUB}?amount=1.5&count=999")).count,
+			MAX_BATCH_COUNT
+		);
+		// Fail-closed: zero or garbage -> 1.
+		assert_eq!(parse(&format!("goblin:{NPUB}?amount=1.5&count=0")).count, 1);
+		assert_eq!(
+			parse(&format!("goblin:{NPUB}?amount=1.5&count=abc")).count,
+			1
+		);
+		// First occurrence wins.
+		assert_eq!(parse(&format!("goblin:{NPUB}?count=3&count=9")).count, 3);
+	}
 
 	const NPROFILE: &str =
 		"nprofile1qqsw3v0m5v6h9q8n0hkxg6l4l5xk2z7z0n6f6q9m8x0q5v4l3k2j1h0gpz3mhxue69uhhyetvv9uju";

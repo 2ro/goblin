@@ -135,6 +135,8 @@ pub struct GoblinWalletView {
 	/// When the first back of the double-back was pressed at Home, for the
 	/// brief "press back again for the wallet switcher" hint. Display only.
 	back_hint: Option<std::time::Instant>,
+	/// A batch invoice request awaiting approval (count=N deep link).
+	batch_invoice: Option<BatchInvoiceState>,
 }
 
 /// Whether the per-identity cue is drawn on activity rows (owner-approved). The
@@ -266,6 +268,7 @@ impl Default for GoblinWalletView {
 			wipe_confirm: false,
 			min_conf_edit: String::new(),
 			back_hint: None,
+			batch_invoice: None,
 		}
 	}
 }
@@ -341,6 +344,10 @@ const IDENTITY_DELETE_MODAL: &str = "goblin_identity_delete_modal";
 /// Cancel/Save), opened from the Settings wallet group.
 const MIN_CONF_MODAL: &str = "goblin_min_conf_modal";
 
+/// Id of the batch-invoice approval modal (a `count=N` invoice-request URI):
+/// one approval for N payment requests, each on its own fresh proof address.
+const BATCH_INVOICE_MODAL: &str = "goblin_batch_invoice_modal";
+
 /// A password-gated identity action the modal executes. Switching no longer uses
 /// the modal (it is instant and local); only these need the wallet password.
 #[derive(Clone)]
@@ -387,6 +394,20 @@ struct IdentitySwitchState {
 	error: String,
 	/// Result slot for the background add worker: Ok(npub) or Err(message).
 	result: std::sync::Arc<std::sync::Mutex<Option<Result<String, String>>>>,
+}
+
+/// A batch invoice request (`count=N` URI) awaiting its one approval.
+struct BatchInvoiceState {
+	/// Receiver public key, hex (URI recipient must be a direct npub/nprofile).
+	hex: String,
+	/// Relay hints from the nprofile, if any.
+	relay_hints: Vec<String>,
+	/// Amount PER invoice, raw decimal-GRIN string from the URI.
+	amount: String,
+	/// Optional memo threaded onto every request.
+	memo: Option<String>,
+	/// How many requests to issue (2..=MAX_BATCH_COUNT).
+	count: u32,
 }
 
 /// Inline "change name authority" (federation) editor state.
@@ -602,10 +623,49 @@ impl GoblinWalletView {
 
 		// A pending payment deep link (`goblin:` / `nostr:` pay URI, routed here
 		// from an OS launch/open) opens a prefilled send-review flow — the exact
-		// destination a scanned checkout QR lands on.
+		// destination a scanned checkout QR lands on. A BATCH invoice-request
+		// (`count=N`, N >= 2, direct key + amount) opens the one batch-approval
+		// modal instead; anything else (including count on a name that needs
+		// discovery) degrades to the single flow, count ignored.
 		if let Some(uri) = crate::take_pending_pay_uri() {
-			let now = ui.input(|i| i.time);
-			self.send = Some(SendFlow::from_deeplink(&uri, wallet, now));
+			let pay = crate::nostr::payuri::parse(&uri);
+			let batch = if pay.count >= 2 {
+				match (
+					send::decode_recipient_key(&pay.recipient),
+					pay.amount.clone(),
+				) {
+					(Some((hex, relay_hints)), Some(amount)) => Some(BatchInvoiceState {
+						hex,
+						relay_hints,
+						amount,
+						memo: pay.memo.clone(),
+						count: pay.count,
+					}),
+					_ => None,
+				}
+			} else {
+				None
+			};
+			match batch {
+				Some(b) => {
+					let n = b.count;
+					self.batch_invoice = Some(b);
+					Modal::new(BATCH_INVOICE_MODAL)
+						.position(ModalPosition::CenterTop)
+						.title(t!("goblin.batch.title", n => n.to_string()))
+						.show();
+				}
+				None => {
+					let now = ui.input(|i| i.time);
+					self.send = Some(SendFlow::from_deeplink(&uri, wallet, now));
+				}
+			}
+		}
+		// Batch-invoice approval modal (locks the surface behind it).
+		if Modal::opened() == Some(BATCH_INVOICE_MODAL) {
+			Modal::ui(ui.ctx(), cb, |ui, _modal, _cb| {
+				self.batch_invoice_modal_content(ui, wallet);
+			});
 		}
 
 		// Send flow takes the full surface when active.
@@ -5716,6 +5776,109 @@ impl GoblinWalletView {
 			});
 			ui.add_space(6.0);
 		});
+	}
+
+	/// Content of the batch-invoice approval modal: ONE approval for N payment
+	/// requests to the same payer, each request minted its own fresh per-sale
+	/// proof address so no two sales share an address. Approve fires the same
+	/// request task the single flow uses, N times; the requests then appear in
+	/// activity as they dispatch, exactly like single requests.
+	fn batch_invoice_modal_content(&mut self, ui: &mut egui::Ui, wallet: &Wallet) {
+		let Some(b) = &self.batch_invoice else {
+			Modal::close();
+			return;
+		};
+		let name = wallet
+			.nostr_service()
+			.map(|s| data::contact_title(&s.store, &b.hex))
+			.unwrap_or_else(|| data::short_npub(&b.hex));
+		let each = grin_core::core::amount_from_hr_string(&b.amount).unwrap_or(0);
+		let total = each.saturating_mul(b.count as u64);
+		ui.vertical_centered(|ui| {
+			ui.add_space(6.0);
+			ui.label(
+				RichText::new(t!(
+					"goblin.batch.blurb",
+					n => b.count.to_string(),
+					name => name,
+					amount => format!("{}{}", w::amount_str(each), w::TSU),
+					total => format!("{}{}", w::amount_str(total), w::TSU)
+				))
+				.size(16.0)
+				.color(Colors::gray()),
+			);
+			if let Some(memo) = &b.memo {
+				ui.add_space(6.0);
+				ui.label(
+					RichText::new(format!("\u{201C}{}\u{201D}", memo))
+						.size(15.0)
+						.color(Colors::gray()),
+				);
+			}
+			ui.add_space(12.0);
+		});
+		let mut cancel = false;
+		let mut approve = false;
+		ui.scope(|ui| {
+			ui.spacing_mut().item_spacing = egui::Vec2::new(8.0, 0.0);
+			ui.columns(2, |columns| {
+				columns[0].vertical_centered_justified(|ui| {
+					View::button(
+						ui,
+						t!("modal.cancel"),
+						Colors::white_or_black(false),
+						|| {
+							cancel = true;
+						},
+					);
+				});
+				columns[1].vertical_centered_justified(|ui| {
+					View::button(
+						ui,
+						t!("goblin.batch.approve"),
+						Colors::white_or_black(false),
+						|| {
+							approve = true;
+						},
+					);
+				});
+			});
+			ui.add_space(6.0);
+		});
+		if cancel {
+			self.batch_invoice = None;
+			Modal::close();
+		}
+		if approve {
+			if let Some(b) = self.batch_invoice.take() {
+				if let Some(service) = wallet.nostr_service() {
+					service.set_send_phase(crate::nostr::send_phase::WORKING);
+				}
+				let w = wallet.clone();
+				std::thread::spawn(move || {
+					for _ in 0..b.count {
+						// Each request gets its OWN fresh proof address; a mint
+						// failure stops the batch (already-issued requests stand).
+						match w.mint_proof_address() {
+							Ok((_index, addr)) => {
+								w.task(crate::wallet::types::WalletTask::NostrRequest(
+									each,
+									b.hex.clone(),
+									b.memo.clone(),
+									b.relay_hints.clone(),
+									Some(addr),
+								));
+							}
+							Err(e) => {
+								log::error!("batch invoice: mint failed: {e}");
+								break;
+							}
+						}
+					}
+				});
+			}
+			Modal::close();
+		}
 	}
 
 	/// Inline username-claim widget (availability check + registration).

@@ -459,7 +459,9 @@ pub enum WalletTask {
 	/// * receiver public key (hex)
 	/// * optional note (subject line)
 	/// * relay hints
-	NostrRequest(u64, String, Option<String>, Vec<String>),
+	/// * optional fresh per-sale proof address minted for this request (batch
+	///   invoicing), recorded on the request's metadata
+	NostrRequest(u64, String, Option<String>, Vec<String>, Option<String>),
 	/// Republish our kind-0 profile (e.g. after toggling the incoming-requests
 	/// preference) so the change propagates to relays immediately.
 	NostrRepublishProfile,

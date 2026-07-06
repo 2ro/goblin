@@ -679,6 +679,10 @@ goblin:
     n59_blurb: "Verpackt Nachrichten, sodass Relays nicht sehen können, wer mit wem kommuniziert."
     n98_title: "HTTP-Auth"
     n98_blurb: "Signiert die Benutzernamen-Registrierungsanfrage an goblin.st."
+  batch:
+    title: "%{n} Rechnungen bestätigen"
+    blurb: "Stelle %{n} Zahlungsanforderungen über je %{amount} an %{name} — insgesamt %{total}. Jede Anforderung erhält ihre eigene neue Zahlungsadresse."
+    approve: "Bestätigen"
   identities:
     title: "Identitäten"
     switch_hint: "Identität wechseln"

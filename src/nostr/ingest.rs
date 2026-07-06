@@ -174,6 +174,7 @@ mod tests {
 			proof_delivered: false,
 			receipt_sent: false,
 			recipient_pubkey: String::new(),
+			proof_address: None,
 		}
 	}
 

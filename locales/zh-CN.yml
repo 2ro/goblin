@@ -679,6 +679,10 @@ goblin:
     n59_blurb: "包装消息，使中继无法看到通信双方是谁。"
     n98_title: "HTTP 认证"
     n98_blurb: "为向 goblin.st 注册用户名的请求签名。"
+  batch:
+    title: "批准 %{n} 张发票"
+    blurb: "向 %{name} 发出 %{n} 个付款请求，每个 %{amount}，共 %{total}。每个请求都有自己全新的收款地址。"
+    approve: "批准"
   identities:
     title: "身份"
     switch_hint: "切换身份"

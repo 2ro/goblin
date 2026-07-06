@@ -679,6 +679,10 @@ goblin:
     n59_blurb: "Enveloppe les messages pour que les relais ne voient pas qui parle à qui."
     n98_title: "Auth HTTP"
     n98_blurb: "Signe la demande d'enregistrement du nom d'utilisateur auprès de goblin.st."
+  batch:
+    title: "Approuver %{n} factures"
+    blurb: "Émettre %{n} demandes de paiement de %{amount} chacune à %{name} — %{total} au total. Chaque demande reçoit sa propre adresse de paiement."
+    approve: "Approuver"
   identities:
     title: "Identités"
     switch_hint: "Changer d'identité"

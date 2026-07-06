@@ -126,6 +126,11 @@ pub struct TxNostrMeta {
 	/// pre-feature rows, which are treated as identity #1 (the primary).
 	#[serde(default)]
 	pub recipient_pubkey: String,
+	/// The fresh per-sale proof/slatepack address minted for this OUTGOING
+	/// payment request (batch invoicing), so each sale has its own address.
+	/// `None` for ordinary sends/requests.
+	#[serde(default)]
+	pub proof_address: Option<String>,
 }
 
 /// A contact: another nostr user we can pay.

@@ -3005,6 +3005,7 @@ async fn handle_task(w: &Wallet, t: WalletTask) {
 						proof_delivered: false,
 						receipt_sent: false,
 						recipient_pubkey: service.public_key().to_hex(),
+						proof_address: None,
 					});
 					let tx = w.retrieve_tx_by_id(None, Some(s.id));
 					w.send_creating.store(false, Ordering::Relaxed);
@@ -3105,7 +3106,7 @@ async fn handle_task(w: &Wallet, t: WalletTask) {
 				}
 			}
 		}
-		WalletTask::NostrRequest(a, receiver, note, relay_hints) => {
+		WalletTask::NostrRequest(a, receiver, note, relay_hints, proof_address) => {
 			let Some(service) = w.nostr_service() else {
 				error!("nostr request: service not available");
 				return;
@@ -3146,6 +3147,9 @@ async fn handle_task(w: &Wallet, t: WalletTask) {
 						proof_delivered: false,
 						receipt_sent: false,
 						recipient_pubkey: service.public_key().to_hex(),
+						// The fresh per-sale address minted for this request (batch
+						// invoicing); None for an ordinary request.
+						proof_address: proof_address.clone(),
 					});
 					let tx = w.retrieve_tx_by_id(None, Some(s.id));
 					w.invoice_creating.store(false, Ordering::Relaxed);
@@ -3398,6 +3402,7 @@ async fn handle_task(w: &Wallet, t: WalletTask) {
 							proof_delivered: false,
 							receipt_sent: false,
 							recipient_pubkey: service.public_key().to_hex(),
+							proof_address: None,
 						});
 						match service
 							.send_payment_dm(&request.npub, &text, None, &[])
@@ -3449,6 +3454,7 @@ async fn handle_task(w: &Wallet, t: WalletTask) {
 								proof_delivered: false,
 								receipt_sent: false,
 								recipient_pubkey: service.public_key().to_hex(),
+								proof_address: None,
 							});
 							match service
 								.send_payment_dm(&request.npub, &text, None, &[])
