@@ -1034,6 +1034,7 @@ impl GoblinWalletView {
 	) {
 		let data = wallet.get_data();
 		ScrollArea::vertical()
+			.id_salt("goblin_home_scroll")
 			.auto_shrink([false; 2])
 			.scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
 			.show(ui, |ui| {
@@ -1517,6 +1518,7 @@ impl GoblinWalletView {
 						return;
 					};
 					ScrollArea::vertical()
+						.id_salt("goblin_receipt_scroll")
 						.auto_shrink([false; 2])
 						.show(ui, |ui| {
 							ui.add_space(8.0);
@@ -1864,6 +1866,7 @@ impl GoblinWalletView {
 						close = true;
 					}
 					ScrollArea::vertical()
+						.id_salt("goblin_profile_scroll")
 						.auto_shrink([false; 2])
 						.show(ui, |ui| {
 							ui.add_space(8.0);
@@ -2083,6 +2086,7 @@ impl GoblinWalletView {
 		}
 
 		ScrollArea::vertical()
+			.id_salt("goblin_activity_scroll")
 			.auto_shrink([false; 2])
 			.scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
 			.show(ui, |ui| {
@@ -2331,6 +2335,7 @@ impl GoblinWalletView {
 						close = true;
 					}
 					ScrollArea::vertical()
+						.id_salt("goblin_approve_scroll")
 						.auto_shrink([false; 2])
 						.scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
 						.show(ui, |ui| {
@@ -2761,6 +2766,7 @@ impl GoblinWalletView {
 		);
 		ui.add_space(6.0);
 		ScrollArea::vertical()
+			.id_salt("goblin_settings_scroll")
 			.auto_shrink([false; 2])
 			.scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
 			.show(ui, |ui| {
@@ -3191,6 +3197,7 @@ impl GoblinWalletView {
 			return;
 		}
 		ScrollArea::vertical()
+			.id_salt("goblin_pairing_scroll")
 			.auto_shrink([false; 2])
 			.scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
 			.show(ui, |ui| {
@@ -3247,6 +3254,7 @@ impl GoblinWalletView {
 		}
 		let current = crate::AppConfig::locale().unwrap_or_else(|| rust_i18n::locale().to_string());
 		ScrollArea::vertical()
+			.id_salt("goblin_language_scroll")
 			.auto_shrink([false; 2])
 			.scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
 			.show(ui, |ui| {
@@ -3290,6 +3298,7 @@ impl GoblinWalletView {
 			return;
 		}
 		ScrollArea::vertical()
+			.id_salt("goblin_privacy_scroll")
 			.auto_shrink([false; 2])
 			.scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
 			.show(ui, |ui| {
@@ -3354,6 +3363,7 @@ impl GoblinWalletView {
 		{
 			let adv = &mut self.advanced;
 			ScrollArea::vertical()
+				.id_salt("goblin_advanced_scroll")
 				.auto_shrink([false; 2])
 				.scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
 				.show(ui, |ui| {
@@ -3712,6 +3722,7 @@ impl GoblinWalletView {
 			return;
 		}
 		ScrollArea::vertical()
+			.id_salt("goblin_node_scroll")
 			.auto_shrink([false; 2])
 			.scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
 			.show(ui, |ui| {
@@ -3855,6 +3866,7 @@ impl GoblinWalletView {
 			return;
 		}
 		ScrollArea::vertical()
+			.id_salt("goblin_relays_scroll")
 			.auto_shrink([false; 2])
 			.scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
 			.show(ui, |ui| {
@@ -3937,6 +3949,7 @@ impl GoblinWalletView {
 			return;
 		}
 		ScrollArea::vertical()
+			.id_salt("goblin_slatepack_scroll")
 			.auto_shrink([false; 2])
 			.scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
 			.show(ui, |ui| {
@@ -4109,6 +4122,7 @@ impl GoblinWalletView {
 			return;
 		}
 		ScrollArea::vertical()
+			.id_salt("goblin_nips_scroll")
 			.auto_shrink([false; 2])
 			.scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
 			.show(ui, |ui| {
@@ -4891,6 +4905,7 @@ impl GoblinWalletView {
 		let identities = wallet.nostr_identities();
 
 		ScrollArea::vertical()
+			.id_salt("goblin_identities_scroll")
 			.auto_shrink([false; 2])
 			.scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
 			.show(ui, |ui| {
