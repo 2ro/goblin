@@ -574,6 +574,28 @@ lazy_static! {
 	/// are dropped at the dispatch site and never reach the UI.
 	static ref PENDING_AUTHORIZE: Arc<RwLock<Option<nostr::authuri::AuthorizeUri>>> =
 		Arc::new(RwLock::new(None));
+	/// A pending, already-VALIDATED "Trust with Goblin" (Authorize Sessions)
+	/// request (`goblin:trust?...` deep link or QR), waiting for the Goblin
+	/// surface to open its trust-grant modal. Only a fully validated
+	/// [`nostr::trusturi::TrustUri`] (nonce, domain binding, channel key, relay
+	/// hint, and a kind set that survives ceiling stripping) is ever stashed
+	/// here; rejected trust URIs are dropped at the dispatch site.
+	static ref PENDING_TRUST: Arc<RwLock<Option<nostr::trusturi::TrustUri>>> =
+		Arc::new(RwLock::new(None));
+}
+
+/// Stash a VALIDATED trust request for the Goblin surface to open its trust-grant
+/// modal (see [`take_pending_trust`]). The most recent request wins; the surface
+/// ignores new requests while one approval (login, authorize, or trust) is
+/// already pending.
+pub fn set_pending_trust(trust: nostr::trusturi::TrustUri) {
+	*PENDING_TRUST.write() = Some(trust);
+}
+
+/// Take (and clear) a pending trust request, if any. The Goblin wallet view
+/// polls this each frame and opens the "Trust <domain>?" grant modal.
+pub fn take_pending_trust() -> Option<nostr::trusturi::TrustUri> {
+	PENDING_TRUST.write().take()
 }
 
 /// Stash a payment deep link for the Goblin surface to open (see

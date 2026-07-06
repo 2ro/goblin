@@ -52,6 +52,11 @@ pub struct NostrProfile {
 /// duplicate REQs on the relays.
 const GIFTWRAP_SUB: &str = "goblin-giftwrap";
 
+/// Stable subscription id for the Authorize Sessions encrypted channel (kind
+/// 24140), re-subscribed (replace-not-duplicate) whenever the session set
+/// changes so newly granted sessions start receiving immediately.
+const CHANNEL_SUB: &str = "goblin-session-channel";
+
 /// The Goblin news publisher (kind 30023 long-form). The Home news panel shows
 /// this key's latest post, fetched from our own relay set.
 const NEWS_NPUB: &str = "npub15gsytqvs5c78u83yv2agl4twjkk6qgem7gtwe2agu7s90tkelxys0xxely";
@@ -156,6 +161,22 @@ pub struct NostrService {
 	/// Serializes a manual payment-cancel against a concurrent S2 finalize+post
 	/// so the two can't both succeed (cancel the outputs AND post on-chain).
 	cancel_finalize_lock: Mutex<()>,
+	/// Active Authorize Sessions (v2). In memory only: quitting the wallet ends
+	/// every session. The service loop subscribes each session's encrypted
+	/// channel, serves silent low-tier signs, and routes money-tier requests to
+	/// the GUI money prompt.
+	sessions: RwLock<Vec<crate::nostr::session::Session>>,
+	/// Set whenever the session set changes so the loop re-subscribes the channel
+	/// filter and publishes `session-open` for any new session.
+	sessions_dirty: AtomicBool,
+	/// Money-tier requests awaiting the GUI's per-action password prompt (FIFO).
+	money_pending: Mutex<Vec<crate::nostr::session::PendingMoney>>,
+	/// The GUI's answers to money prompts (the answered request plus approve/decline),
+	/// drained by the loop which then signs (or declines) and publishes on the channel.
+	money_answers: Mutex<Vec<(crate::nostr::session::PendingMoney, bool)>>,
+	/// A single non-blocking "signing a lot" notice for the GUI toast, set when a
+	/// session trips the soft rate cap.
+	session_notice: RwLock<Option<String>>,
 }
 
 /// Phase of the most recent outgoing send, polled by the send UI.
@@ -206,6 +227,11 @@ impl NostrService {
 			last_send_error: RwLock::new(None),
 			cancel_notice: RwLock::new(None),
 			cancel_finalize_lock: Mutex::new(()),
+			sessions: RwLock::new(Vec::new()),
+			sessions_dirty: AtomicBool::new(false),
+			money_pending: Mutex::new(Vec::new()),
+			money_answers: Mutex::new(Vec::new()),
+			session_notice: RwLock::new(None),
 		})
 	}
 
@@ -229,6 +255,107 @@ impl NostrService {
 	/// our own wrap-to-self copies across any identity).
 	pub fn is_own_pubkey(&self, pk: &PublicKey) -> bool {
 		self.recv.read().iter().any(|h| &h.keys.public_key() == pk)
+	}
+
+	// --- Authorize Sessions (v2) -------------------------------------------
+
+	/// Register a freshly granted session and wake the loop to subscribe its
+	/// channel and publish `session-open`.
+	pub fn add_session(&self, session: crate::nostr::session::Session) {
+		self.sessions.write().push(session);
+		self.sessions_dirty.store(true, Ordering::SeqCst);
+	}
+
+	/// True when at least one session is live (for the Trusted Sites badge/list).
+	pub fn has_sessions(&self) -> bool {
+		!self.sessions.read().is_empty()
+	}
+
+	/// Read-only snapshots for the Trusted Sites list, newest last.
+	pub fn session_summaries(&self) -> Vec<crate::nostr::session::SessionSummary> {
+		let now = unix_time() as u64;
+		self.sessions
+			.read()
+			.iter()
+			.map(|s| s.summary(now))
+			.collect()
+	}
+
+	/// End (revoke) the session for `domain`: mark it ended, send the courtesy
+	/// `session-end`, and drop it. Immediate and unilateral.
+	pub fn end_session(&self, domain: &str) {
+		let now = unix_time() as u64;
+		let mut end_event = None;
+		{
+			let mut sessions = self.sessions.write();
+			if let Some(s) = sessions.iter_mut().find(|s| s.domain == domain) {
+				s.end();
+				end_event = s.session_end_event(now).ok();
+			}
+			sessions.retain(|s| s.domain != domain);
+		}
+		self.sessions_dirty.store(true, Ordering::SeqCst);
+		// Best-effort courtesy notice to the site; teardown already happened.
+		if let Some(ev) = end_event {
+			self.publish_event_best_effort(ev);
+		}
+	}
+
+	/// Resume a paused session (the user tapped "resume" in Trusted Sites).
+	pub fn resume_session(&self, domain: &str) {
+		let now = unix_time() as u64;
+		if let Some(s) = self
+			.sessions
+			.write()
+			.iter_mut()
+			.find(|s| s.domain == domain)
+		{
+			s.resume(now);
+		}
+	}
+
+	/// The front money-tier request awaiting the user, if any (GUI polls this to
+	/// raise its per-action password prompt).
+	pub fn peek_money_prompt(&self) -> Option<crate::nostr::session::PendingMoney> {
+		self.money_pending.lock().first().cloned()
+	}
+
+	/// Record the user's answer to a money prompt: remove it from the display
+	/// queue and hand the full request to the loop, which signs (or declines) and
+	/// publishes the result on the channel.
+	pub fn answer_money_prompt(&self, req_id: &str, approved: bool) {
+		let answered = {
+			let mut pending = self.money_pending.lock();
+			let idx = pending.iter().position(|p| p.req.id == req_id);
+			idx.map(|i| pending.remove(i))
+		};
+		if let Some(p) = answered {
+			self.money_answers.lock().push((p, approved));
+		}
+	}
+
+	/// Take (and clear) the "signing a lot" notice, if any.
+	pub fn take_session_notice(&self) -> Option<String> {
+		self.session_notice.write().take()
+	}
+
+	/// Publish an event on the service runtime without blocking the caller
+	/// (used for the best-effort `session-end` courtesy). No-op if the loop is
+	/// not running.
+	fn publish_event_best_effort(&self, event: nostr_sdk::Event) {
+		let (Some(client), Some(handle)) =
+			(self.client.read().clone(), self.rt_handle.read().clone())
+		else {
+			return;
+		};
+		let urls: Vec<String> = self.relays();
+		handle.spawn(async move {
+			let _ = tokio::time::timeout(
+				std::time::Duration::from_secs(10),
+				client.send_event_to(&urls, &event),
+			)
+			.await;
+		});
 	}
 
 	/// Update a held identity's PRIVATE tag in the in-memory set (and the active
@@ -1326,6 +1453,9 @@ async fn run_service(svc: Arc<NostrService>, wallet: Wallet) {
 	// names right away (so you see refreshed info from app open), unless one ran
 	// within the last interval.
 	let mut last_name_sweep = svc.store.last_name_sweep_at().unwrap_or(0);
+	// Tracks the app foreground state so a background→foreground transition drains
+	// any session-channel requests queued on the relay while the wallet slept.
+	let mut was_foreground = crate::app_foreground();
 	loop {
 		if svc.shutdown.load(Ordering::SeqCst) || !wallet.is_open() {
 			break;
@@ -1334,9 +1464,11 @@ async fn run_service(svc: Arc<NostrService>, wallet: Wallet) {
 			notification = notifications.recv() => {
 				match notification {
 					Ok(RelayPoolNotification::Event { event, .. }) => {
-						// News long-form posts and gift wraps ride the same feed;
-						// route by kind (handle_wrap ignores non-1059 anyway).
-						if let Some(pk) = news_pk && event.kind == Kind::LongFormTextNote {
+						// News long-form posts, session-channel envelopes, and gift
+						// wraps ride the same feed; route by kind.
+						if event.kind.as_u16() == crate::nostr::session::CHANNEL_EVENT_KIND {
+							handle_channel(&svc, &client, &event).await;
+						} else if let Some(pk) = news_pk && event.kind == Kind::LongFormTextNote {
 							handle_news(&svc, pk, *event).await;
 						} else {
 							handle_wrap(&svc, &wallet, *event).await;
@@ -1408,6 +1540,21 @@ async fn run_service(svc: Arc<NostrService>, wallet: Wallet) {
 						svc.resolve_contact_identity(&c.npub);
 					}
 				}
+				// Authorize Sessions (v2): when the session set changed, re-subscribe
+				// the encrypted channel and publish `session-open` for new sessions;
+				// then sign/decline any money-tier prompts the user answered.
+				if svc.sessions_dirty.swap(false, Ordering::SeqCst) {
+					resubscribe_channel(&client, &relays, &svc).await;
+					announce_new_sessions(&svc, &client, &relays).await;
+				}
+				serve_money_answers(&svc, &client).await;
+				// Drain requests queued while backgrounded on a resume (the Build-95
+				// frame-heartbeat pattern), gated on the app being foregrounded.
+				let fg = crate::app_foreground();
+				if fg && !was_foreground && svc.has_sessions() {
+					drain_channel(&svc, &client, &relays).await;
+				}
+				was_foreground = fg;
 			}
 		}
 	}
@@ -1904,6 +2051,208 @@ fn first_tag_value(event: &Event, name: &str) -> Option<String> {
 			None
 		}
 	})
+}
+
+/// Serve one Authorize Sessions channel event (kind 24140). Matches it to a
+/// live session by the site's channel key, decrypts under the session key,
+/// enforces every rule (via the pure `session` core), and either publishes a
+/// signed `sign_result` back to the site, enqueues a money-tier prompt for the
+/// GUI, or tears the session down on a `session-end` signal. Fails closed and
+/// silent on anything it cannot match, decrypt, or parse.
+async fn handle_channel(svc: &Arc<NostrService>, client: &Client, event: &Event) {
+	use crate::nostr::session::{self, PendingMoney, SignRequest, SignResult};
+	if event.kind.as_u16() != session::CHANNEL_EVENT_KIND || event.verify().is_err() {
+		return;
+	}
+	let now = unix_time() as u64;
+	let mut publish: Option<Event> = None;
+	let mut money: Option<PendingMoney> = None;
+	let mut notice = false;
+	let mut ended = false;
+	{
+		let mut sessions = svc.sessions.write();
+		// Origin binding: the only key allowed to request is the site channel key
+		// bound at grant time. Nothing else can even open an envelope.
+		let Some(s) = sessions
+			.iter_mut()
+			.find(|s| s.site_session_pubkey == event.pubkey && !s.ended)
+		else {
+			return;
+		};
+		let Ok(plaintext) = s.decrypt(&event.pubkey, &event.content) else {
+			return;
+		};
+		if !session::envelope_within_cap(&plaintext) {
+			return;
+		}
+		let Ok(val) = serde_json::from_str::<serde_json::Value>(&plaintext) else {
+			return;
+		};
+		match val.get("type").and_then(|t| t.as_str()) {
+			Some("session-end") => {
+				s.end();
+				ended = true;
+			}
+			Some("sign") => {
+				let Ok(req) = serde_json::from_value::<SignRequest>(val) else {
+					return;
+				};
+				// The signing identity's unlocked keys from the in-memory snapshot.
+				let keys = svc
+					.recv_snapshot()
+					.into_iter()
+					.find(|h| h.keys.public_key() == s.identity_pubkey)
+					.map(|h| h.keys);
+				match keys {
+					Some(keys) => {
+						let served = session::serve(s, &req, &keys, now);
+						notice = served.notify_high_volume;
+						if served.money_pending {
+							money = Some(PendingMoney {
+								domain: s.domain.clone(),
+								identity_pubkey: s.identity_pubkey,
+								req,
+							});
+						} else if let Some(json) = served.response {
+							publish = s.wrap_channel_event(&json, now).ok();
+						}
+					}
+					None => {
+						// Identity no longer held: honest refusal, not a hang.
+						let json = serde_json::to_string(&SignResult::refused(
+							&req.id,
+							session::SignError::IdentityMismatch,
+						))
+						.unwrap_or_default();
+						publish = s.wrap_channel_event(&json, now).ok();
+					}
+				}
+			}
+			_ => {}
+		}
+	}
+	if ended {
+		svc.sessions.write().retain(|s| !s.ended);
+		svc.sessions_dirty.store(true, Ordering::SeqCst);
+	}
+	if notice {
+		*svc.session_notice.write() = Some("signing".to_string());
+	}
+	if let Some(p) = money {
+		svc.money_pending.lock().push(p);
+	}
+	if let Some(ev) = publish {
+		let urls = svc.relays();
+		let _ = tokio::time::timeout(SEND_TIMEOUT, client.send_event_to(&urls, &ev)).await;
+	}
+}
+
+/// Drain the GUI's answers to money-tier prompts: sign (or decline) each and
+/// publish the `sign_result` on its session channel. Called from the loop tick.
+async fn serve_money_answers(svc: &Arc<NostrService>, client: &Client) {
+	use crate::nostr::session;
+	let answers: Vec<(session::PendingMoney, bool)> =
+		std::mem::take(&mut *svc.money_answers.lock());
+	if answers.is_empty() {
+		return;
+	}
+	let now = unix_time() as u64;
+	let snapshot = svc.recv_snapshot();
+	for (pending, approved) in answers {
+		let mut publish: Option<Event> = None;
+		{
+			let mut sessions = svc.sessions.write();
+			if let Some(s) = sessions
+				.iter_mut()
+				.find(|s| s.domain == pending.domain && !s.ended)
+			{
+				let keys = snapshot
+					.iter()
+					.find(|h| h.keys.public_key() == s.identity_pubkey)
+					.map(|h| h.keys.clone());
+				if let Some(keys) = keys {
+					let json = session::complete_money(s, &pending.req, &keys, approved, now);
+					publish = s.wrap_channel_event(&json, now).ok();
+				}
+			}
+		}
+		if let Some(ev) = publish {
+			let urls = svc.relays();
+			let _ = tokio::time::timeout(SEND_TIMEOUT, client.send_event_to(&urls, &ev)).await;
+		}
+	}
+}
+
+/// The channel subscription/fetch filter over the live sessions' wallet channel
+/// keys, or `None` when there are no sessions. Bounded `since` to the request
+/// expiration: anything older has lapsed its NIP-40 expiration anyway.
+fn channel_filter(svc: &Arc<NostrService>) -> Option<Filter> {
+	let pks: Vec<PublicKey> = svc
+		.sessions
+		.read()
+		.iter()
+		.filter(|s| !s.ended)
+		.map(|s| s.wallet_channel_pk)
+		.collect();
+	if pks.is_empty() {
+		return None;
+	}
+	let now = unix_time() as u64;
+	let since = now.saturating_sub(crate::nostr::session::REQUEST_EXPIRATION_SECS);
+	Some(
+		Filter::new()
+			.kind(Kind::from(crate::nostr::session::CHANNEL_EVENT_KIND))
+			.pubkeys(pks)
+			.since(Timestamp::from_secs(since)),
+	)
+}
+
+/// (Re)subscribe the encrypted session channel over the current session set.
+async fn resubscribe_channel(client: &Client, relays: &[String], svc: &Arc<NostrService>) {
+	if let Some(filter) = channel_filter(svc) {
+		if let Err(e) = client
+			.subscribe_with_id_to(relays, SubscriptionId::new(CHANNEL_SUB), filter, None)
+			.await
+		{
+			warn!("nostr: session-channel subscribe failed: {e}");
+		}
+	}
+}
+
+/// Publish the one-time `session-open` for every session not yet announced, and
+/// mark them announced. Called when the session set changes.
+async fn announce_new_sessions(svc: &Arc<NostrService>, client: &Client, relays: &[String]) {
+	let now = unix_time() as u64;
+	let mut events = Vec::new();
+	{
+		let mut sessions = svc.sessions.write();
+		for s in sessions.iter_mut().filter(|s| !s.announced && !s.ended) {
+			if let Ok(ev) = s.session_open_event(now) {
+				events.push(ev);
+			}
+			s.announced = true;
+		}
+	}
+	for ev in events {
+		let _ = tokio::time::timeout(SEND_TIMEOUT, client.send_event_to(relays, &ev)).await;
+	}
+}
+
+/// Drain any channel requests queued on the relay while the wallet was asleep,
+/// serving each. Called on a background→foreground transition (the Build-95
+/// frame-heartbeat resume pattern) and once at loop start.
+async fn drain_channel(svc: &Arc<NostrService>, client: &Client, relays: &[String]) {
+	let Some(filter) = channel_filter(svc) else {
+		return;
+	};
+	if let Ok(events) = client
+		.fetch_events_from(relays, filter, FETCH_TIMEOUT)
+		.await
+	{
+		for ev in events.into_iter() {
+			handle_channel(svc, client, &ev).await;
+		}
+	}
 }
 
 /// Ingest one kind-30023 news post from the Goblin news key and cache it (the

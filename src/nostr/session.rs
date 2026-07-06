@@ -575,6 +575,9 @@ pub struct Session {
 	pub paused: bool,
 	/// Set when the session has ended (logout, wallet end, TTL, idle).
 	pub ended: bool,
+	/// True once the wallet has published its `session-open` envelope and
+	/// subscribed the channel for this session (a one-time runtime step).
+	pub announced: bool,
 	/// Replay-dedup ring: request id -> cached response JSON. A duplicate id
 	/// returns the cached result, never a second signature.
 	seen: HashMap<String, String>,
@@ -629,6 +632,7 @@ impl Session {
 			last_used_at: now,
 			paused: false,
 			ended: false,
+			announced: false,
 			seen: HashMap::new(),
 			seen_order: VecDeque::new(),
 			silent_times: VecDeque::new(),
@@ -745,6 +749,71 @@ impl Session {
 		self.ended = true;
 	}
 
+	/// The wallet's ephemeral channel keypair (reconstructed from the stored
+	/// secret) for signing and decrypting channel envelopes.
+	fn channel_keys(&self) -> Keys {
+		Keys::new(self.wallet_channel_sk.clone())
+	}
+
+	/// Decrypt a channel envelope from the site (its outer event `pubkey` must be
+	/// `site_session_pubkey`, checked by the caller) into its plaintext payload.
+	pub fn decrypt(&self, sender: &PublicKey, payload: &str) -> Result<String, String> {
+		open_envelope(&self.wallet_channel_sk, sender, payload)
+	}
+
+	/// Wrap a plaintext payload as a signed, NIP-44-encrypted, addressed channel
+	/// event (kind [`CHANNEL_EVENT_KIND`]) carrying a NIP-40 `expiration` tag,
+	/// ready to publish back to the site.
+	pub fn wrap_channel_event(&self, plaintext: &str, now: u64) -> Result<Event, String> {
+		let content = seal_envelope(
+			&self.wallet_channel_sk,
+			&self.site_session_pubkey,
+			plaintext,
+		)?;
+		let exp = Timestamp::from(now + REQUEST_EXPIRATION_SECS);
+		EventBuilder::new(Kind::from(CHANNEL_EVENT_KIND), content)
+			.tags(vec![
+				Tag::public_key(self.site_session_pubkey),
+				Tag::expiration(exp),
+			])
+			.sign_with_keys(&self.channel_keys())
+			.map_err(|e| e.to_string())
+	}
+
+	/// The `session-open` channel event: hands the site the wallet channel key
+	/// (the event's own `pubkey`) and confirms the signing identity.
+	pub fn session_open_event(&self, now: u64) -> Result<Event, String> {
+		let open = SessionOpen {
+			msg_type: "session-open".to_string(),
+			wallet_pubkey: self.wallet_channel_pk.to_hex(),
+			identity: self.identity_pubkey.to_hex(),
+		};
+		let json = serde_json::to_string(&open).map_err(|e| e.to_string())?;
+		self.wrap_channel_event(&json, now)
+	}
+
+	/// The `session-end` channel event: tells the site the wallet ended the
+	/// session (a courtesy on wallet-side revocation; the teardown is unilateral
+	/// regardless of delivery).
+	pub fn session_end_event(&self, now: u64) -> Result<Event, String> {
+		let end = SessionEnd {
+			msg_type: "session-end".to_string(),
+		};
+		let json = serde_json::to_string(&end).map_err(|e| e.to_string())?;
+		self.wrap_channel_event(&json, now)
+	}
+
+	/// A read-only snapshot for the Trusted Sites list.
+	pub fn summary(&self, now: u64) -> SessionSummary {
+		SessionSummary {
+			domain: self.domain.clone(),
+			label: self.label.clone(),
+			categories: render_grant(&self.silent_kind_set).categories,
+			ttl_remaining_secs: self.ttl_remaining(now),
+			paused: self.paused,
+		}
+	}
+
 	/// Resume a paused session (the user tapped "resume"). Clears the pause and
 	/// the rate window so counting starts fresh.
 	pub fn resume(&mut self, now: u64) {
@@ -793,6 +862,121 @@ impl Session {
 /// JSON parse (the whole decrypted plaintext, not just `content`).
 pub fn envelope_within_cap(plaintext: &str) -> bool {
 	plaintext.len() <= MAX_ENVELOPE_BYTES
+}
+
+/// A read-only snapshot of a session for the Trusted Sites list.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionSummary {
+	pub domain: String,
+	pub label: String,
+	/// The low-tier categories this session can sign silently.
+	pub categories: Vec<TrustCategory>,
+	/// Seconds until the hard TTL (the session-detail "time remaining").
+	pub ttl_remaining_secs: u64,
+	/// True when the hard rate cap paused the silent path.
+	pub paused: bool,
+}
+
+/// A money-tier request awaiting the user's per-action password prompt. The
+/// runtime hands one of these to the GUI, which raises the v1-style authorize
+/// modal; the GUI's answer routes back through [`complete_money`].
+#[derive(Debug, Clone)]
+pub struct PendingMoney {
+	/// The trusted domain the request arrived on.
+	pub domain: String,
+	/// The signing identity for this session (looked up to sign on approval).
+	pub identity_pubkey: PublicKey,
+	/// The full request, replayed verbatim to sign on approval.
+	pub req: SignRequest,
+}
+
+// ---------------------------------------------------------------------------
+// Runtime serving orchestration (thin, so the async relay loop stays dumb).
+// ---------------------------------------------------------------------------
+
+/// The upshot of serving one decoded request against a session. The async loop
+/// acts on it and never touches classification, signing, or bookkeeping itself.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Served {
+	/// A `sign_result` JSON to publish back to the site on the channel, or `None`
+	/// when the request is a money-tier prompt still pending the user.
+	pub response: Option<String>,
+	/// True when the soft rate cap tripped: surface a single non-blocking notice.
+	pub notify_high_volume: bool,
+	/// True when this request needs the money-tier password prompt (the loop
+	/// enqueues it for the GUI and publishes nothing yet).
+	pub money_pending: bool,
+}
+
+/// Serve a decoded sign request against a live session. Silent low-tier requests
+/// are signed here and turned into a `sign_result` JSON; refusals and cached
+/// duplicates likewise return a JSON to publish; a money-tier request returns
+/// `money_pending` with no response (the GUI raises the prompt, then the loop
+/// calls [`complete_money`]). `sign_keys` are the session identity's unlocked
+/// keys, looked up by the loop from the wallet's in-memory snapshot.
+pub fn serve(session: &mut Session, req: &SignRequest, sign_keys: &Keys, now: u64) -> Served {
+	match session.decide(req, now) {
+		Decision::Duplicate(json) => Served {
+			response: Some(json),
+			notify_high_volume: false,
+			money_pending: false,
+		},
+		Decision::Refuse(err) => {
+			let json =
+				serde_json::to_string(&SignResult::refused(&req.id, err)).unwrap_or_default();
+			session.remember(&req.id, &json, false, now);
+			Served {
+				response: Some(json),
+				notify_high_volume: false,
+				money_pending: false,
+			}
+		}
+		Decision::MoneyPrompt => Served {
+			response: None,
+			notify_high_volume: false,
+			money_pending: true,
+		},
+		Decision::Silent { notify_high_volume } => {
+			let result = match sign_session_event(sign_keys, &req.event, now) {
+				Ok(ev) => SignResult::ok(&req.id, &ev),
+				Err(err) => SignResult::refused(&req.id, err),
+			};
+			let json = serde_json::to_string(&result).unwrap_or_default();
+			// A produced silent signature counts toward the rate window; a refusal
+			// on the silent path does not.
+			session.remember(&req.id, &json, result.ok, now);
+			Served {
+				response: Some(json),
+				notify_high_volume,
+				money_pending: false,
+			}
+		}
+	}
+}
+
+/// Complete a money-tier request after the user answered the password prompt.
+/// `approved` true signs the event and returns the `sign_result`; false returns
+/// the `user_declined` refusal. Either way the result is remembered so a replay
+/// of the same id returns it verbatim. Money signs are individually gated and so
+/// never count toward the silent rate window.
+pub fn complete_money(
+	session: &mut Session,
+	req: &SignRequest,
+	sign_keys: &Keys,
+	approved: bool,
+	now: u64,
+) -> String {
+	let result = if approved {
+		match sign_session_event(sign_keys, &req.event, now) {
+			Ok(ev) => SignResult::ok(&req.id, &ev),
+			Err(err) => SignResult::refused(&req.id, err),
+		}
+	} else {
+		SignResult::refused(&req.id, SignError::UserDeclined)
+	};
+	let json = serde_json::to_string(&result).unwrap_or_default();
+	session.remember(&req.id, &json, false, now);
+	json
 }
 
 #[cfg(test)]
@@ -1216,5 +1400,58 @@ mod tests {
 		assert_eq!(req.id, "uuid-1");
 		assert_eq!(req.event.kind, 7);
 		assert_eq!(req.event.tags, vec![vec!["e".to_string(), "x".to_string()]]);
+	}
+
+	#[test]
+	fn serve_silent_signs_and_publishes_result() {
+		let now = 1_751_800_000u64;
+		let (mut s, id) = mk_session(&[7], now);
+		let req = mk_req(&id, 7, "+", now, "sv1");
+		let out = serve(&mut s, &req, &id, now);
+		assert!(!out.money_pending);
+		let json = out.response.expect("silent sign yields a response");
+		assert!(json.contains("\"ok\":true"));
+		assert!(json.contains("\"id\":\"sv1\""));
+		// The signed event rides back in the result and verifies.
+		let parsed: SignResult = serde_json::from_str(&json).unwrap();
+		let ev: Event = serde_json::from_value(parsed.event.unwrap()).unwrap();
+		assert!(ev.verify().is_ok());
+		assert_eq!(ev.pubkey, id.public_key());
+	}
+
+	#[test]
+	fn serve_money_is_pending_then_completes_or_declines() {
+		let now = 1_751_800_000u64;
+		let (mut s, id) = mk_session(&[1], now);
+		let req = mk_req(&id, 17, "{}", now, "mv1");
+		let out = serve(&mut s, &req, &id, now);
+		assert!(out.money_pending);
+		assert!(out.response.is_none(), "money pends: nothing published yet");
+		// User approves -> signed result.
+		let json = complete_money(&mut s, &req, &id, true, now);
+		assert!(json.contains("\"ok\":true"));
+		// A replay of the same id now returns the cached signed result.
+		match s.decide(&req, now) {
+			Decision::Duplicate(cached) => assert!(cached.contains("\"ok\":true")),
+			other => panic!("expected Duplicate, got {other:?}"),
+		}
+		// A fresh money request the user declines -> user_declined.
+		let req2 = mk_req(&id, 17, "{}", now, "mv2");
+		let declined = complete_money(&mut s, &req2, &id, false, now);
+		assert!(declined.contains("\"error\":\"user_declined\""));
+	}
+
+	#[test]
+	fn serve_refuses_kind_not_in_set() {
+		let now = 1_751_800_000u64;
+		let (mut s, id) = mk_session(&[7], now);
+		let req = mk_req(&id, 1, "hi", now, "rf1");
+		let out = serve(&mut s, &req, &id, now);
+		assert!(!out.money_pending);
+		assert!(
+			out.response
+				.unwrap()
+				.contains("\"error\":\"kind_not_in_session\"")
+		);
 	}
 }

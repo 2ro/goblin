@@ -277,6 +277,17 @@ impl SendFlow {
 			}
 			return;
 		}
+		// A "Trust with Goblin" (Authorize Sessions) request is grabbed BEFORE any
+		// pay parsing too: it establishes a signing session, never a payment, and a
+		// trust-shaped payload that fails validation is dropped entirely. A valid
+		// one is stashed for the Goblin surface, whose per-frame router closes this
+		// flow and opens the trust-grant modal.
+		if crate::nostr::trusturi::is_trust_shaped(text) {
+			if let Some(t) = crate::nostr::trusturi::parse(text) {
+				crate::set_pending_trust(t);
+			}
+			return;
+		}
 		// Proof-on-request context (frozen contract 4.1) rides alongside the
 		// recipient/amount/memo routing and is independent of whether we land on
 		// Review or Search, so pull it from the same pure parse. `order` is a

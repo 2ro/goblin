@@ -520,6 +520,12 @@ impl WalletsContent {
 				}
 				None
 			}
+			Some(d) if crate::nostr::trusturi::is_trust_shaped(&d) => {
+				if let Some(t) = crate::nostr::trusturi::parse(&d) {
+					crate::set_pending_trust(t);
+				}
+				None
+			}
 			Some(d) if crate::nostr::payuri::is_pay_uri(&d) => {
 				crate::set_pending_pay_uri(d);
 				None
