@@ -5089,57 +5089,15 @@ impl GoblinWalletView {
 								.color(t.surface_text),
 						);
 						ui.add_space(8.0);
-						// Generate vs import toggle: two equal-width in-panel buttons,
-						// matching the Cancel/Add row below. `big_action_on_card_ink`
-						// sizes to `ui.available_width()`, so each must be constrained
-						// to half the panel — otherwise the first button eats the whole
-						// width and the second (Import) overflows the card.
-						ui.horizontal(|ui| {
-							let half = (ui.available_width() - 10.0) / 2.0;
-							ui.scope_builder(
-								egui::UiBuilder::new().max_rect(egui::Rect::from_min_size(
-									ui.cursor().min,
-									Vec2::new(half, 44.0),
-								)),
-								|ui| {
-									if w::big_action_on_card_ink(
-										ui,
-										&t!("goblin.identities.generate"),
-										if self.identity_switch.import {
-											t.surface_text
-										} else {
-											t.pos
-										},
-									)
-									.clicked()
-									{
-										self.identity_switch.import = false;
-									}
-								},
+						// The sheet defaults to GENERATE (a fresh anonymous key). What
+						// generating means, in one line, so the default mode isn't blank.
+						if !self.identity_switch.import {
+							ui.label(
+								RichText::new(t!("goblin.identities.generate_note"))
+									.font(FontId::new(12.5, fonts::regular()))
+									.color(t.surface_text_dim),
 							);
-							ui.add_space(10.0);
-							ui.scope_builder(
-								egui::UiBuilder::new().max_rect(egui::Rect::from_min_size(
-									ui.cursor().min,
-									Vec2::new(half, 44.0),
-								)),
-								|ui| {
-									if w::big_action_on_card_ink(
-										ui,
-										&t!("goblin.identities.import"),
-										if self.identity_switch.import {
-											t.pos
-										} else {
-											t.surface_text
-										},
-									)
-									.clicked()
-									{
-										self.identity_switch.import = true;
-									}
-								},
-							);
-						});
+						}
 						if self.identity_switch.import {
 							ui.add_space(8.0);
 							// (a) Select a .backup file. Desktop returns the path now;
@@ -5200,6 +5158,20 @@ impl GoblinWalletView {
 									.body()
 									.ui(ui, &mut self.identity_switch.nsec, cb);
 							});
+						}
+						ui.add_space(10.0);
+						// ONE mode toggle instead of the old Generate/Import pair (whose
+						// "Generate new" half was the already-active default and read as
+						// a dead button). Tapping switches the sheet's mode, revealing or
+						// hiding the import inputs; the label always names the OTHER mode.
+						let toggle_label = if self.identity_switch.import {
+							t!("goblin.identities.generate_instead")
+						} else {
+							t!("goblin.identities.import_instead")
+						};
+						if w::big_action_on_card(ui, &toggle_label).clicked() {
+							self.identity_switch.import = !self.identity_switch.import;
+							self.identity_switch.error.clear();
 						}
 						ui.add_space(10.0);
 						let import = self.identity_switch.import;
