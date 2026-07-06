@@ -80,8 +80,9 @@ const SEEN_IDS_CAP: usize = 4096;
 
 /// The money-tier kinds: never silent, always a per-action password prompt,
 /// always stripped from a requested set. Kind 17 finalizes a purchase and grants
-/// value; it is the archetypal money action.
-const MONEY_KINDS: &[u16] = &[17];
+/// value; kind 30402 (a product listing) is a seller's commitment to a price
+/// (owner ruling: listing and buying both require the password round-trip).
+const MONEY_KINDS: &[u16] = &[17, 30402];
 
 /// The flagged conversation kinds: low as messaging, but their content may
 /// commit the user to a payment, so the classifier escalates such a request to
@@ -218,7 +219,7 @@ pub enum TrustCategory {
 	Social,
 	/// Direct messages: 13, 14, 16, 1059.
 	DirectMessages,
-	/// Listings: 30402, 30405, 30406, 31990.
+	/// Listings: 30405, 30406, 31990 (30402 is money tier, owner ruling).
 	Market,
 	/// Profile and lists: 0, 10000, 30000, 30003, 30078.
 	Identity,
@@ -258,7 +259,8 @@ pub fn category_for_kind(kind: u16) -> Option<TrustCategory> {
 	match kind {
 		1 | 6 | 7 | 1111 => Some(TrustCategory::Social),
 		13 | 14 | 16 | 1059 => Some(TrustCategory::DirectMessages),
-		30402 | 30405 | 30406 | 31990 => Some(TrustCategory::Market),
+		// 30402 (listing) is money tier by owner ruling, never a granted category.
+		30405 | 30406 | 31990 => Some(TrustCategory::Market),
 		0 | 10000 | 30000 | 30003 | 30078 => Some(TrustCategory::Identity),
 		5 => Some(TrustCategory::Delete),
 		24242 | 27235 => Some(TrustCategory::Http),
@@ -353,19 +355,77 @@ pub struct SignRequest {
 	pub event: RequestEvent,
 }
 
+/// An encrypt request (site to wallet): NIP-44-encrypt `plaintext` to
+/// `peer_pubkey` with the SESSION IDENTITY key. magick needs this to build the
+/// kind-13 seal of an order DM (silent signing alone cannot construct a seal).
+/// Low tier and rate-limited like a silent sign, BUT because the plaintext is
+/// visible here, the content-escalation rule runs on it: a pay-committing order
+/// message escalates to the money-tier password prompt at the encrypt step.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EncryptRequest {
+	/// Always `"encrypt"`.
+	#[serde(rename = "type")]
+	pub msg_type: String,
+	pub id: String,
+	pub ts: u64,
+	/// The recipient the identity key encrypts to (hex).
+	pub peer_pubkey: String,
+	/// The plaintext to seal (inspected for a payment commitment).
+	pub plaintext: String,
+}
+
+/// A decrypt request (site to wallet): NIP-44-decrypt `ciphertext` from
+/// `peer_pubkey` with the SESSION IDENTITY key. THE RISKIEST OP: a compromised
+/// site could read that identity's DMs during a live session, so it is
+/// rate-limited like a silent sign and called out prominently for the security
+/// pass. Its ciphertext is opaque, so no content escalation is possible here.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DecryptRequest {
+	/// Always `"decrypt"`.
+	#[serde(rename = "type")]
+	pub msg_type: String,
+	pub id: String,
+	pub ts: u64,
+	/// The counterparty the identity key decrypts from (hex).
+	pub peer_pubkey: String,
+	/// The opaque ciphertext to open.
+	pub ciphertext: String,
+}
+
+/// A channel operation the wallet may be asked to perform. `Sign` and (a
+/// pay-committing) `Encrypt` can escalate to the money-tier prompt, so a pending
+/// money item carries one of these.
+#[derive(Debug, Clone)]
+pub enum ChannelOp {
+	Sign(SignRequest),
+	Encrypt(EncryptRequest),
+}
+
+impl ChannelOp {
+	/// The correlation id, for replay dedup and the money-answer routing.
+	pub fn id(&self) -> &str {
+		match self {
+			ChannelOp::Sign(r) => &r.id,
+			ChannelOp::Encrypt(e) => &e.id,
+		}
+	}
+}
+
 /// The session-open envelope (wallet to site), sent once at channel
-/// establishment: it hands the site the wallet's channel public key (also the
-/// signing pubkey of the envelope event, so the site can derive the conversation
-/// key) and confirms the signing identity.
+/// establishment. The site reads the WALLET CHANNEL KEY from the outer event's
+/// `pubkey` (the envelope sender) and binds the channel to it; this payload is
+/// the client-side authority that confirms the signing identity. It is sent in
+/// ADDITION to the server-side kind-22242 login callback (which authenticates
+/// the server session): the two bind different layers.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionOpen {
 	/// Always `"session-open"`.
 	#[serde(rename = "type")]
 	pub msg_type: String,
-	/// The wallet's ephemeral channel public key (x-only hex).
-	pub wallet_pubkey: String,
+	/// A correlation id (the wallet channel pubkey hex; unique per session).
+	pub id: String,
 	/// The confirmed signing identity public key (hex).
-	pub identity: String,
+	pub identity_pubkey: String,
 }
 
 /// The session-end envelope (either direction): the site's logout signal, or the
@@ -423,9 +483,12 @@ impl SignResult {
 // ---------------------------------------------------------------------------
 
 /// Every refusal returns one of these typed codes on the channel so the site can
-/// show an honest state. The wire strings match the spec's section 7 table;
-/// `Refused` and `Malformed` are additions for the outright-refusal and
-/// unparseable cases the table folds into "sign in again".
+/// show an honest state. The wire strings match the cross-worker error set
+/// (user_declined, kind_not_in_session, identity_mismatch, stale_request,
+/// too_large, session_paused, session_ended). `Refused` (a login-capable or
+/// delegation-bearing event the session will never sign) maps onto the site's
+/// `kind_not_in_session` handling; `Malformed` is internal and rarely emitted
+/// (an unparseable envelope carries no id to answer, so it is simply dropped).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SignError {
 	/// A low-tier kind the session was not granted.
@@ -460,7 +523,10 @@ impl SignError {
 			SignError::UserDeclined => "user_declined",
 			SignError::SessionPaused => "session_paused",
 			SignError::SessionEnded => "session_ended",
-			SignError::Refused => "refused",
+			// An outright refusal reads to the site exactly as "not covered by
+			// this session": re-grant, do not retry. Kept aligned with the
+			// cross-worker code set rather than a wallet-only "refused" string.
+			SignError::Refused => "kind_not_in_session",
 			SignError::Malformed => "malformed",
 		}
 	}
@@ -720,6 +786,42 @@ impl Session {
 		}
 	}
 
+	/// The session-level decision for an encrypt/decrypt op (no kind/tier by
+	/// event, since there is no event): the same lifetime, pause, replay, skew,
+	/// and rate gates as [`Session::decide`], then `MoneyPrompt` when `escalate`
+	/// (a pay-committing encrypt plaintext) else `Silent`.
+	pub fn decide_crypto(&mut self, id: &str, ts: u64, now: u64, escalate: bool) -> Decision {
+		if self.ended {
+			return Decision::Refuse(SignError::SessionEnded);
+		}
+		if self.is_expired(now) {
+			self.ended = true;
+			return Decision::Refuse(SignError::SessionEnded);
+		}
+		if self.paused {
+			return Decision::Refuse(SignError::SessionPaused);
+		}
+		if let Some(cached) = self.seen.get(id) {
+			return Decision::Duplicate(cached.clone());
+		}
+		if abs_diff(ts, now) > CREATED_AT_SKEW_SECS {
+			return Decision::Refuse(SignError::StaleRequest);
+		}
+		self.trim_rate_window(now);
+		if self.silent_times.len() >= RATE_HARD_PER_5MIN {
+			self.paused = true;
+			return Decision::Refuse(SignError::SessionPaused);
+		}
+		let notify = self.count_last_minute(now) >= RATE_SOFT_PER_MIN;
+		if escalate {
+			Decision::MoneyPrompt
+		} else {
+			Decision::Silent {
+				notify_high_volume: notify,
+			}
+		}
+	}
+
 	/// Record a produced response for `id` (both tiers) so a replay returns it
 	/// verbatim, bump the idle clock, and — for a served silent sign — count it
 	/// toward the rate windows. Call this exactly once per request the wallet
@@ -785,8 +887,8 @@ impl Session {
 	pub fn session_open_event(&self, now: u64) -> Result<Event, String> {
 		let open = SessionOpen {
 			msg_type: "session-open".to_string(),
-			wallet_pubkey: self.wallet_channel_pk.to_hex(),
-			identity: self.identity_pubkey.to_hex(),
+			id: self.wallet_channel_pk.to_hex(),
+			identity_pubkey: self.identity_pubkey.to_hex(),
 		};
 		let json = serde_json::to_string(&open).map_err(|e| e.to_string())?;
 		self.wrap_channel_event(&json, now)
@@ -884,10 +986,17 @@ pub struct SessionSummary {
 pub struct PendingMoney {
 	/// The trusted domain the request arrived on.
 	pub domain: String,
-	/// The signing identity for this session (looked up to sign on approval).
+	/// The signing identity for this session (looked up to act on approval).
 	pub identity_pubkey: PublicKey,
-	/// The full request, replayed verbatim to sign on approval.
-	pub req: SignRequest,
+	/// The operation to perform on approval (a sign, or a pay-committing encrypt).
+	pub op: ChannelOp,
+}
+
+impl PendingMoney {
+	/// The correlation id, used to route the user's answer.
+	pub fn id(&self) -> &str {
+		self.op.id()
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -954,29 +1063,144 @@ pub fn serve(session: &mut Session, req: &SignRequest, sign_keys: &Keys, now: u6
 	}
 }
 
-/// Complete a money-tier request after the user answered the password prompt.
-/// `approved` true signs the event and returns the `sign_result`; false returns
-/// the `user_declined` refusal. Either way the result is remembered so a replay
-/// of the same id returns it verbatim. Money signs are individually gated and so
+/// Complete a money-tier operation after the user answered the password prompt.
+/// `approved` true performs the op (sign, or a pay-committing encrypt) and
+/// returns its result JSON; false returns the `user_declined` refusal in the
+/// matching result shape. Either way the result is remembered so a replay of the
+/// same id returns it verbatim. Money operations are individually gated and so
 /// never count toward the silent rate window.
 pub fn complete_money(
 	session: &mut Session,
-	req: &SignRequest,
-	sign_keys: &Keys,
+	op: &ChannelOp,
+	keys: &Keys,
 	approved: bool,
 	now: u64,
 ) -> String {
-	let result = if approved {
-		match sign_session_event(sign_keys, &req.event, now) {
-			Ok(ev) => SignResult::ok(&req.id, &ev),
-			Err(err) => SignResult::refused(&req.id, err),
+	let json = match op {
+		ChannelOp::Sign(req) => {
+			let result = if approved {
+				match sign_session_event(keys, &req.event, now) {
+					Ok(ev) => SignResult::ok(&req.id, &ev),
+					Err(err) => SignResult::refused(&req.id, err),
+				}
+			} else {
+				SignResult::refused(&req.id, SignError::UserDeclined)
+			};
+			serde_json::to_string(&result).unwrap_or_default()
 		}
-	} else {
-		SignResult::refused(&req.id, SignError::UserDeclined)
+		ChannelOp::Encrypt(e) => {
+			if approved {
+				perform_encrypt(e, keys)
+			} else {
+				crypto_error("encrypt_result", &e.id, SignError::UserDeclined)
+			}
+		}
 	};
-	let json = serde_json::to_string(&result).unwrap_or_default();
-	session.remember(&req.id, &json, false, now);
+	session.remember(op.id(), &json, false, now);
 	json
+}
+
+// ---------------------------------------------------------------------------
+// Encrypt / decrypt channel ops (identity-key NIP-44, for the order-DM path).
+// ---------------------------------------------------------------------------
+
+/// A crypto-op refusal JSON in the matching `*_result` shape.
+fn crypto_error(result_type: &str, id: &str, err: SignError) -> String {
+	serde_json::json!({ "type": result_type, "id": id, "ok": false, "error": err.code() })
+		.to_string()
+}
+
+/// Perform an identity-key NIP-44 encrypt, returning the `encrypt_result` JSON.
+fn perform_encrypt(e: &EncryptRequest, keys: &Keys) -> String {
+	let Ok(peer) = PublicKey::from_hex(&e.peer_pubkey) else {
+		return crypto_error("encrypt_result", &e.id, SignError::Malformed);
+	};
+	match nip44::encrypt(keys.secret_key(), &peer, &e.plaintext, nip44::Version::V2) {
+		Ok(ct) => {
+			serde_json::json!({ "type": "encrypt_result", "id": e.id, "ok": true, "ciphertext": ct })
+				.to_string()
+		}
+		Err(_) => crypto_error("encrypt_result", &e.id, SignError::Malformed),
+	}
+}
+
+/// Perform an identity-key NIP-44 decrypt, returning the `decrypt_result` JSON.
+fn perform_decrypt(d: &DecryptRequest, keys: &Keys) -> String {
+	let Ok(peer) = PublicKey::from_hex(&d.peer_pubkey) else {
+		return crypto_error("decrypt_result", &d.id, SignError::Malformed);
+	};
+	match nip44::decrypt(keys.secret_key(), &peer, &d.ciphertext) {
+		Ok(pt) => {
+			serde_json::json!({ "type": "decrypt_result", "id": d.id, "ok": true, "plaintext": pt })
+				.to_string()
+		}
+		Err(_) => crypto_error("decrypt_result", &d.id, SignError::Malformed),
+	}
+}
+
+/// Serve an encrypt or decrypt op against a live session. Both are low tier and
+/// rate-limited like a silent sign; an encrypt whose plaintext commits to a
+/// payment escalates to the money prompt (`money_pending`, op carried for
+/// [`complete_money`]). Decrypt never escalates (its ciphertext is opaque).
+/// `keys` are the session identity's unlocked keys.
+pub fn serve_encrypt(session: &mut Session, e: &EncryptRequest, keys: &Keys, now: u64) -> Served {
+	let escalate = content_commits_payment(&e.plaintext);
+	match session.decide_crypto(&e.id, e.ts, now, escalate) {
+		Decision::Duplicate(json) => served_response(json),
+		Decision::Refuse(err) => {
+			let json = crypto_error("encrypt_result", &e.id, err);
+			session.remember(&e.id, &json, false, now);
+			served_response(json)
+		}
+		Decision::MoneyPrompt => Served {
+			response: None,
+			notify_high_volume: false,
+			money_pending: true,
+		},
+		Decision::Silent { notify_high_volume } => {
+			let json = perform_encrypt(e, keys);
+			session.remember(&e.id, &json, true, now);
+			Served {
+				response: Some(json),
+				notify_high_volume,
+				money_pending: false,
+			}
+		}
+	}
+}
+
+/// Serve a decrypt op (see [`serve_encrypt`]; decrypt never escalates).
+pub fn serve_decrypt(session: &mut Session, d: &DecryptRequest, keys: &Keys, now: u64) -> Served {
+	match session.decide_crypto(&d.id, d.ts, now, false) {
+		Decision::Duplicate(json) => served_response(json),
+		Decision::Refuse(err) => {
+			let json = crypto_error("decrypt_result", &d.id, err);
+			session.remember(&d.id, &json, false, now);
+			served_response(json)
+		}
+		// Decrypt never escalates, so MoneyPrompt cannot occur; treat defensively.
+		Decision::MoneyPrompt => {
+			served_response(crypto_error("decrypt_result", &d.id, SignError::Refused))
+		}
+		Decision::Silent { notify_high_volume } => {
+			let json = perform_decrypt(d, keys);
+			session.remember(&d.id, &json, true, now);
+			Served {
+				response: Some(json),
+				notify_high_volume,
+				money_pending: false,
+			}
+		}
+	}
+}
+
+/// A `Served` carrying just a response JSON.
+fn served_response(json: String) -> Served {
+	Served {
+		response: Some(json),
+		notify_high_volume: false,
+		money_pending: false,
+	}
 }
 
 #[cfg(test)]
@@ -990,14 +1214,18 @@ mod tests {
 	#[test]
 	fn money_kind_always_money() {
 		assert_eq!(classify(17, ""), Tier::Money);
+		// Owner ruling: a product listing (30402) is a commitment, money tier.
+		assert_eq!(classify(30402, ""), Tier::Money);
 		assert!(is_money_kind(17));
+		assert!(is_money_kind(30402));
 		assert!(!is_money_kind(1));
+		assert!(!is_money_kind(30405));
 	}
 
 	#[test]
 	fn plain_low_kinds_are_low() {
 		for k in [
-			0u16, 1, 5, 7, 1111, 10000, 30000, 30003, 30078, 30402, 24242, 27235,
+			0u16, 1, 5, 7, 1111, 10000, 30000, 30003, 30078, 30405, 30406, 24242, 27235,
 		] {
 			assert_eq!(classify(k, low_content()), Tier::Low, "kind {k}");
 		}
@@ -1047,7 +1275,9 @@ mod tests {
 		assert_eq!(category_for_kind(1111), Some(TrustCategory::Social));
 		assert_eq!(category_for_kind(13), Some(TrustCategory::DirectMessages));
 		assert_eq!(category_for_kind(1059), Some(TrustCategory::DirectMessages));
-		assert_eq!(category_for_kind(30402), Some(TrustCategory::Market));
+		// 30402 (listing) is money tier by owner ruling, not a low category.
+		assert_eq!(category_for_kind(30402), None);
+		assert_eq!(category_for_kind(30405), Some(TrustCategory::Market));
 		assert_eq!(category_for_kind(31990), Some(TrustCategory::Market));
 		assert_eq!(category_for_kind(0), Some(TrustCategory::Identity));
 		assert_eq!(category_for_kind(30078), Some(TrustCategory::Identity));
@@ -1061,7 +1291,7 @@ mod tests {
 
 	#[test]
 	fn render_grant_dedups_orders_and_flags_ceiling() {
-		let d = render_grant(&[1, 7, 1059, 30402, 22242, 17, 55555]);
+		let d = render_grant(&[1, 7, 1059, 30405, 30402, 22242, 17, 55555]);
 		assert_eq!(
 			d.categories,
 			vec![
@@ -1072,6 +1302,8 @@ mod tests {
 		);
 		assert_eq!(d.unknown_kinds, vec![55555]);
 		assert!(d.stripped_login);
+		// 30402 is money now: stripped, never an unknown/caution line.
+		assert!(!d.unknown_kinds.contains(&30402));
 		// Money kind 17 appears nowhere: not a category, not an unknown line.
 		assert!(!d.unknown_kinds.contains(&17));
 	}
@@ -1428,7 +1660,7 @@ mod tests {
 		assert!(out.money_pending);
 		assert!(out.response.is_none(), "money pends: nothing published yet");
 		// User approves -> signed result.
-		let json = complete_money(&mut s, &req, &id, true, now);
+		let json = complete_money(&mut s, &ChannelOp::Sign(req.clone()), &id, true, now);
 		assert!(json.contains("\"ok\":true"));
 		// A replay of the same id now returns the cached signed result.
 		match s.decide(&req, now) {
@@ -1437,7 +1669,7 @@ mod tests {
 		}
 		// A fresh money request the user declines -> user_declined.
 		let req2 = mk_req(&id, 17, "{}", now, "mv2");
-		let declined = complete_money(&mut s, &req2, &id, false, now);
+		let declined = complete_money(&mut s, &ChannelOp::Sign(req2), &id, false, now);
 		assert!(declined.contains("\"error\":\"user_declined\""));
 	}
 
@@ -1453,5 +1685,68 @@ mod tests {
 				.unwrap()
 				.contains("\"error\":\"kind_not_in_session\"")
 		);
+	}
+
+	#[test]
+	fn encrypt_roundtrips_and_escalates_on_payment() {
+		let now = 1_751_800_000u64;
+		let (mut s, id) = mk_session(&[13], now);
+		let peer = Keys::generate();
+		let e = EncryptRequest {
+			msg_type: "encrypt".to_string(),
+			id: "e1".to_string(),
+			ts: now,
+			peer_pubkey: peer.public_key().to_hex(),
+			plaintext: "hello".to_string(),
+		};
+		let out = serve_encrypt(&mut s, &e, &id, now);
+		assert!(!out.money_pending);
+		let json = out.response.unwrap();
+		assert!(json.contains("\"type\":\"encrypt_result\""));
+		assert!(json.contains("\"ok\":true"));
+		let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+		let ct = v["ciphertext"].as_str().unwrap();
+		let back = nip44::decrypt(peer.secret_key(), &id.public_key(), ct).unwrap();
+		assert_eq!(back, "hello");
+		// A pay-committing plaintext escalates to the money prompt at encrypt time.
+		let e2 = EncryptRequest {
+			msg_type: "encrypt".to_string(),
+			id: "e2".to_string(),
+			ts: now,
+			peer_pubkey: peer.public_key().to_hex(),
+			plaintext: r#"{"payment":{"bolt11":"lnbc1"}}"#.to_string(),
+		};
+		let out = serve_encrypt(&mut s, &e2, &id, now);
+		assert!(out.money_pending);
+		assert!(out.response.is_none());
+		let json = complete_money(&mut s, &ChannelOp::Encrypt(e2), &id, true, now);
+		assert!(json.contains("\"type\":\"encrypt_result\""));
+		assert!(json.contains("\"ok\":true"));
+	}
+
+	#[test]
+	fn decrypt_reads_a_peer_message_and_is_low_tier() {
+		let now = 1_751_800_000u64;
+		let (mut s, id) = mk_session(&[13], now);
+		let peer = Keys::generate();
+		let ct = nip44::encrypt(
+			peer.secret_key(),
+			&id.public_key(),
+			"secret",
+			nip44::Version::V2,
+		)
+		.unwrap();
+		let d = DecryptRequest {
+			msg_type: "decrypt".to_string(),
+			id: "d1".to_string(),
+			ts: now,
+			peer_pubkey: peer.public_key().to_hex(),
+			ciphertext: ct,
+		};
+		let out = serve_decrypt(&mut s, &d, &id, now);
+		assert!(!out.money_pending);
+		let json = out.response.unwrap();
+		assert!(json.contains("\"type\":\"decrypt_result\""));
+		assert!(json.contains("\"plaintext\":\"secret\""));
 	}
 }

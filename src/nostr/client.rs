@@ -326,7 +326,7 @@ impl NostrService {
 	pub fn answer_money_prompt(&self, req_id: &str, approved: bool) {
 		let answered = {
 			let mut pending = self.money_pending.lock();
-			let idx = pending.iter().position(|p| p.req.id == req_id);
+			let idx = pending.iter().position(|p| p.id() == req_id);
 			idx.map(|i| pending.remove(i))
 		};
 		if let Some(p) = answered {
@@ -2060,7 +2060,7 @@ fn first_tag_value(event: &Event, name: &str) -> Option<String> {
 /// GUI, or tears the session down on a `session-end` signal. Fails closed and
 /// silent on anything it cannot match, decrypt, or parse.
 async fn handle_channel(svc: &Arc<NostrService>, client: &Client, event: &Event) {
-	use crate::nostr::session::{self, PendingMoney, SignRequest, SignResult};
+	use crate::nostr::session::{self, PendingMoney, SignRequest};
 	if event.kind.as_u16() != session::CHANNEL_EVENT_KIND || event.verify().is_err() {
 		return;
 	}
@@ -2088,47 +2088,56 @@ async fn handle_channel(svc: &Arc<NostrService>, client: &Client, event: &Event)
 		let Ok(val) = serde_json::from_str::<serde_json::Value>(&plaintext) else {
 			return;
 		};
-		match val.get("type").and_then(|t| t.as_str()) {
-			Some("session-end") => {
-				s.end();
-				ended = true;
-			}
-			Some("sign") => {
-				let Ok(req) = serde_json::from_value::<SignRequest>(val) else {
-					return;
-				};
-				// The signing identity's unlocked keys from the in-memory snapshot.
-				let keys = svc
-					.recv_snapshot()
-					.into_iter()
-					.find(|h| h.keys.public_key() == s.identity_pubkey)
-					.map(|h| h.keys);
-				match keys {
-					Some(keys) => {
-						let served = session::serve(s, &req, &keys, now);
-						notice = served.notify_high_volume;
-						if served.money_pending {
-							money = Some(PendingMoney {
-								domain: s.domain.clone(),
-								identity_pubkey: s.identity_pubkey,
-								req,
-							});
-						} else if let Some(json) = served.response {
-							publish = s.wrap_channel_event(&json, now).ok();
-						}
-					}
-					None => {
-						// Identity no longer held: honest refusal, not a hang.
-						let json = serde_json::to_string(&SignResult::refused(
-							&req.id,
-							session::SignError::IdentityMismatch,
-						))
-						.unwrap_or_default();
-						publish = s.wrap_channel_event(&json, now).ok();
+		let msg_type = val.get("type").and_then(|t| t.as_str()).map(str::to_string);
+		if msg_type.as_deref() == Some("session-end") {
+			s.end();
+			ended = true;
+		} else if matches!(msg_type.as_deref(), Some("sign" | "encrypt" | "decrypt")) {
+			// The signing identity's unlocked keys from the in-memory snapshot.
+			let keys = svc
+				.recv_snapshot()
+				.into_iter()
+				.find(|h| h.keys.public_key() == s.identity_pubkey)
+				.map(|h| h.keys);
+			let (served, op) = match (msg_type.as_deref(), &keys) {
+				(Some("sign"), Some(keys)) => match serde_json::from_value::<SignRequest>(val) {
+					Ok(req) => (
+						session::serve(s, &req, keys, now),
+						Some(session::ChannelOp::Sign(req)),
+					),
+					Err(_) => return,
+				},
+				(Some("encrypt"), Some(keys)) => {
+					match serde_json::from_value::<session::EncryptRequest>(val) {
+						Ok(e) => (
+							session::serve_encrypt(s, &e, keys, now),
+							Some(session::ChannelOp::Encrypt(e)),
+						),
+						Err(_) => return,
 					}
 				}
+				(Some("decrypt"), Some(keys)) => {
+					match serde_json::from_value::<session::DecryptRequest>(val) {
+						Ok(d) => (session::serve_decrypt(s, &d, keys, now), None),
+						Err(_) => return,
+					}
+				}
+				// Identity no longer held: cannot act; drop silently (the session
+				// will end and the site re-grants).
+				_ => return,
+			};
+			notice = served.notify_high_volume;
+			if served.money_pending {
+				if let Some(op) = op {
+					money = Some(PendingMoney {
+						domain: s.domain.clone(),
+						identity_pubkey: s.identity_pubkey,
+						op,
+					});
+				}
+			} else if let Some(json) = served.response {
+				publish = s.wrap_channel_event(&json, now).ok();
 			}
-			_ => {}
 		}
 	}
 	if ended {
@@ -2171,7 +2180,7 @@ async fn serve_money_answers(svc: &Arc<NostrService>, client: &Client) {
 					.find(|h| h.keys.public_key() == s.identity_pubkey)
 					.map(|h| h.keys.clone());
 				if let Some(keys) = keys {
-					let json = session::complete_money(s, &pending.req, &keys, approved, now);
+					let json = session::complete_money(s, &pending.op, &keys, approved, now);
 					publish = s.wrap_channel_event(&json, now).ok();
 				}
 			}
