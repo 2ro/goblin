@@ -245,6 +245,22 @@ impl NostrService {
 		}
 	}
 
+	/// Re-encrypt every in-memory held identity's ncryptsec from `old` to `new`,
+	/// keeping the running service in sync with a wallet-password change without a
+	/// teardown. A password change does not alter the decrypted keys, so sending
+	/// and listening keep working untouched; this only refreshes the encrypted
+	/// blobs the in-memory copies carry, so a same-session gated op (which
+	/// re-unlocks the stored identity with the NEW password) and any later
+	/// identity-file save both use the new password rather than the stale old one.
+	/// Best-effort per copy: a copy that fails to re-encrypt is left as is (a
+	/// gated op on it may then need the app reopened), never a hard error.
+	pub fn reencrypt_in_memory(&self, old: &str, new: &str) {
+		for h in self.recv.write().iter_mut() {
+			let _ = h.identity.reencrypt(old, new);
+		}
+		let _ = self.identity.write().reencrypt(old, new);
+	}
+
 	/// Instant, purely-local identity switch: re-point the active keys/identity to
 	/// a held identity already unlocked and already listening. No password, no
 	/// teardown, no catch-up. `false` if `hex` is not held.

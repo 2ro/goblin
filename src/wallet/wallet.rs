@@ -2277,15 +2277,24 @@ impl Wallet {
 		}
 		// The grin seed password changed; re-encrypt EVERY held nostr identity's
 		// ncryptsec from old to new through the same NIP-49 path, so all front
-		// doors follow the one wallet password. Best-effort and non-fatal: a
-		// failure is logged (never swallowed as success), and the grin password
-		// change already committed above. Takes effect for the running service on
-		// the next wallet open (it reloads the active identity from disk).
+		// doors follow the one wallet password. This is ALL-OR-NOTHING: a partial
+		// move would leave some identities on the old password and some on the new
+		// (a split the user cannot open with one password), so on any failure we
+		// surface a hard error rather than silently continuing. Every identity is
+		// then left untouched on the old password.
 		let nostr_dir = self.get_config().get_nostr_path();
-		if let Some(index) = HeldIdentities::load(&nostr_dir)
-			&& let Err(e) = index.reencrypt_all(&nostr_dir, &old, &new)
-		{
-			error!("nostr: re-encrypting held identities after password change: {e}");
+		if let Some(index) = HeldIdentities::load(&nostr_dir) {
+			index.reencrypt_all(&nostr_dir, &old, &new).map_err(|e| {
+				error!("nostr: re-encrypting held identities after password change: {e}");
+				Error::GenericError(format!("nostr identity re-encryption failed: {e}"))
+			})?;
+			// Keep the running service in sync so same-session gated ops (which
+			// re-unlock with the new password) work without a wallet reopen. The
+			// decrypted keys are unchanged by a password change, so this only
+			// refreshes the in-memory encrypted blobs.
+			if let Some(svc) = self.nostr_service() {
+				svc.reencrypt_in_memory(&old, &new);
+			}
 		}
 		Ok(())
 	}

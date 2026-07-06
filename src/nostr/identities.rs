@@ -286,40 +286,66 @@ impl HeldIdentities {
 	}
 
 	/// Re-encrypt every held identity's ncryptsec from `old` to `new`, in place
-	/// on disk. Used by the wallet-password change so all front doors follow the
-	/// one password. Best-effort per file; returns the first error encountered
-	/// after attempting the rest.
+	/// on disk, ALL-OR-NOTHING. Used by the wallet-password change so all front
+	/// doors follow the one password. A partial move (some identities on the new
+	/// password, some still on the old) would be a split state the user cannot
+	/// recover with a single password, so this stages every re-encryption to a
+	/// sibling temp file first and only commits (renames into place) once EVERY
+	/// identity has re-encrypted cleanly. Any phase-1 failure deletes the temps
+	/// and leaves every identity untouched on the old password.
 	pub fn reencrypt_all(
 		&self,
 		nostr_dir: &PathBuf,
 		old: &str,
 		new: &str,
 	) -> Result<(), HeldError> {
-		let mut first_err = None;
+		let suffix = std::time::SystemTime::now()
+			.duration_since(std::time::UNIX_EPOCH)
+			.map(|d| d.as_nanos())
+			.unwrap_or(0);
+		// Phase 1: decrypt+re-encrypt every identity and stage it to a temp file
+		// beside its target. Nothing is committed yet, so a failure here (wrong old
+		// password, unreadable file, encrypt error) aborts the WHOLE change with
+		// every identity still untouched on the old password, never a split.
+		let mut staged: Vec<(PathBuf, PathBuf)> = Vec::new();
+		let cleanup = |staged: &[(PathBuf, PathBuf)]| {
+			for (tmp, _) in staged {
+				let _ = fs::remove_file(tmp);
+			}
+		};
 		for entry in &self.identities {
 			let abs = entry.abs_path(nostr_dir);
-			match NostrIdentity::load_at(&abs) {
-				Some(mut id) => {
-					if let Err(e) = id.reencrypt(old, new) {
-						first_err.get_or_insert(HeldError::Io(e.to_string()));
-						continue;
-					}
-					if let Err(e) = id.save_at(&abs) {
-						first_err.get_or_insert(HeldError::Io(e.to_string()));
-					}
-				}
-				None => {
-					first_err.get_or_insert(HeldError::Io(format!(
-						"identity file unreadable: {}",
-						entry.path
-					)));
-				}
+			let Some(mut id) = NostrIdentity::load_at(&abs) else {
+				cleanup(&staged);
+				return Err(HeldError::Io(format!(
+					"identity file unreadable: {}",
+					entry.path
+				)));
+			};
+			if let Err(e) = id.reencrypt(old, new) {
+				cleanup(&staged);
+				return Err(HeldError::Io(e.to_string()));
+			}
+			let tmp =
+				abs.with_extension(format!("reencrypt-tmp-{}-{}", std::process::id(), suffix));
+			if let Err(e) = id.save_at(&tmp) {
+				cleanup(&staged);
+				return Err(HeldError::Io(e.to_string()));
+			}
+			staged.push((tmp, abs));
+		}
+		// Phase 2: every identity re-encrypted cleanly; commit by renaming each
+		// temp over its target. This window is small; a rename that still fails
+		// returns an explicit error rather than pretending the change succeeded.
+		for (tmp, abs) in &staged {
+			if let Err(e) = fs::rename(tmp, abs) {
+				return Err(HeldError::Io(format!(
+					"committing re-encrypted identity {}: {e}",
+					abs.display()
+				)));
 			}
 		}
-		match first_err {
-			Some(e) => Err(e),
-			None => Ok(()),
-		}
+		Ok(())
 	}
 }
 
@@ -537,6 +563,54 @@ mod tests {
 			assert!(id.unlock("new").is_ok(), "must open under the new password");
 			assert!(id.unlock("old").is_err(), "must not open under the old one");
 		}
+		let _ = std::fs::remove_dir_all(&dir);
+	}
+
+	#[test]
+	fn reencrypt_all_is_all_or_nothing() {
+		// Two held identities, one with a corrupted ncryptsec so its decrypt (and
+		// thus the whole re-encryption) fails. The batch must fail AND leave the
+		// other identity untouched on the OLD password (no partial move).
+		let dir = tmpdir("allornothing");
+		let (legacy, _) = NostrIdentity::create_random("old").unwrap();
+		legacy.save(&dir).unwrap();
+		let legacy_hex = legacy.pubkey_hex().unwrap();
+		let (mut idx, _) = HeldIdentities::load_or_migrate(&dir, &legacy).unwrap();
+		let (second, _) = NostrIdentity::create_random("old").unwrap();
+		let second_hex = idx.add(&dir, &second).unwrap();
+
+		// Corrupt the second identity's ncryptsec on disk.
+		let second_abs = idx.entry(&second_hex).unwrap().abs_path(&dir);
+		let mut broken = NostrIdentity::load_at(&second_abs).unwrap();
+		broken.ncryptsec = "ncryptsec1qqqqqbroken".to_string();
+		broken.save_at(&second_abs).unwrap();
+
+		// All-or-nothing: the batch fails...
+		assert!(
+			idx.reencrypt_all(&dir, "old", "new").is_err(),
+			"a failing identity must abort the whole re-encryption"
+		);
+		// ...and the untouched legacy identity still opens under the OLD password,
+		// never having been committed to the new one.
+		let legacy_still = idx.entry(&legacy_hex).unwrap().load(&dir).unwrap();
+		assert!(
+			legacy_still.unlock("old").is_ok(),
+			"untouched identity must still open under the old password"
+		);
+		assert!(
+			legacy_still.unlock("new").is_err(),
+			"untouched identity must not have moved to the new password"
+		);
+		// No temp files left behind after the aborted batch.
+		let leftovers: Vec<_> = std::fs::read_dir(&dir)
+			.unwrap()
+			.filter_map(|e| e.ok())
+			.filter(|e| e.file_name().to_string_lossy().contains("reencrypt-tmp"))
+			.collect();
+		assert!(
+			leftovers.is_empty(),
+			"aborted batch must clean up its temps"
+		);
 		let _ = std::fs::remove_dir_all(&dir);
 	}
 
