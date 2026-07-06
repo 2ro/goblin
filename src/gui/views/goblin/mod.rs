@@ -321,6 +321,15 @@ impl Default for ImportState {
 /// mirroring the wallet-open password modal.
 const IDENTITY_PASS_MODAL: &str = "goblin_identity_pass_modal";
 
+/// Id of the per-identity management modal (rename / delete). A true modal —
+/// the GRIM Modal system dims and locks the list behind it, so no switching or
+/// row taps while it is open.
+const IDENTITY_MANAGE_MODAL: &str = "goblin_identity_manage_modal";
+
+/// Id of the step-1 delete-confirmation modal (danger text before the
+/// wallet-password modal executes the delete). Also background-locking.
+const IDENTITY_DELETE_MODAL: &str = "goblin_identity_delete_modal";
+
 /// A password-gated identity action the modal executes. Switching no longer uses
 /// the modal (it is instant and local); only these need the wallet password.
 #[derive(Clone)]
@@ -4901,6 +4910,19 @@ impl GoblinWalletView {
 				self.identity_pass_modal_content(ui, modal, wallet, cb);
 			});
 		}
+		// Per-identity management modal (rename / delete): dims and locks the
+		// list, disabling switching and row taps until it closes.
+		if Modal::opened() == Some(IDENTITY_MANAGE_MODAL) {
+			Modal::ui(ui.ctx(), cb, |ui, _modal, cb| {
+				self.identity_manage_modal_content(ui, wallet, cb);
+			});
+		}
+		// Step-1 delete confirmation modal (danger text), also background-locking.
+		if Modal::opened() == Some(IDENTITY_DELETE_MODAL) {
+			Modal::ui(ui.ctx(), cb, |ui, _modal, _cb| {
+				self.identity_delete_modal_content(ui, wallet);
+			});
+		}
 
 		let identities = wallet.nostr_identities();
 
@@ -5027,185 +5049,27 @@ impl GoblinWalletView {
 						self.identity_switch.error = e;
 					}
 				}
-				// The pencil opens the management sheet, pre-filled with the tag.
+				// The pencil opens the management MODAL, pre-filled with the tag and
+				// titled with the identity it manages. The GRIM Modal dims and locks
+				// the list behind it, so no switching or row taps while it is open.
 				if let Some(target) = manage_target {
 					self.identity_switch.error.clear();
 					self.identity_switch.confirm_delete = None;
+					let display = identities
+						.iter()
+						.find(|i| i.pubkey_hex == target)
+						.map(|i| i.display())
+						.unwrap_or_else(|| data::short_npub(&target));
 					self.identity_switch.tag_input = identities
 						.iter()
 						.find(|i| i.pubkey_hex == target)
 						.and_then(|i| i.tag.clone())
 						.unwrap_or_default();
 					self.identity_switch.manage = Some(target);
-				}
-
-				// Per-identity management sheet: Rename (the private, app-only tag —
-				// never published) on top; Delete, visually separated and
-				// destructive-styled, at the bottom (double-gated: danger card, then
-				// the wallet-password modal).
-				if let Some(target) = self.identity_switch.manage.clone() {
-					ui.add_space(8.0);
-					w::card(ui, |ui| {
-						ui.set_min_width(ui.available_width());
-						ui.label(
-							RichText::new(t!("goblin.identities.manage_title"))
-								.font(FontId::new(15.0, fonts::semibold()))
-								.color(t.surface_text),
-						);
-						ui.add_space(6.0);
-						ui.label(
-							RichText::new(t!("goblin.identities.tag_note"))
-								.font(FontId::new(12.5, fonts::regular()))
-								.color(t.surface_text_dim),
-						);
-						ui.add_space(8.0);
-						w::field_well(ui, |ui| {
-							TextEdit::new(egui::Id::from("identity_tag_input"))
-								.focus(false)
-								.hint_text(t!("goblin.identities.tag_hint"))
-								.text_color(t.surface_text)
-								.body()
-								.ui(ui, &mut self.identity_switch.tag_input, cb);
-						});
-						ui.add_space(10.0);
-						ui.horizontal(|ui| {
-							let half = (ui.available_width() - 10.0) / 2.0;
-							ui.scope_builder(
-								egui::UiBuilder::new().max_rect(egui::Rect::from_min_size(
-									ui.cursor().min,
-									Vec2::new(half, 44.0),
-								)),
-								|ui| {
-									if w::big_action_on_card(ui, &t!("goblin.settings.cancel"))
-										.clicked()
-									{
-										self.identity_switch.manage = None;
-										self.identity_switch.tag_input.clear();
-									}
-								},
-							);
-							ui.add_space(10.0);
-							ui.scope_builder(
-								egui::UiBuilder::new().max_rect(egui::Rect::from_min_size(
-									ui.cursor().min,
-									Vec2::new(half, 44.0),
-								)),
-								|ui| {
-									if w::big_action(ui, &t!("goblin.identities.tag_save"), false)
-										.clicked()
-									{
-										let tag =
-											std::mem::take(&mut self.identity_switch.tag_input);
-										if let Err(e) =
-											wallet.rename_nostr_identity(target.clone(), tag)
-										{
-											self.identity_switch.error = e;
-										}
-										self.identity_switch.manage = None;
-									}
-								},
-							);
-						});
-						// Delete, clearly separated from rename and destructive-styled.
-						// Only offered while more than one identity is held (a wallet
-						// must keep at least one).
-						if identities.len() > 1 {
-							ui.add_space(12.0);
-							let line_y = ui.cursor().min.y;
-							ui.painter().hline(
-								ui.max_rect().x_range(),
-								line_y,
-								eframe::epaint::Stroke::new(1.0, t.line),
-							);
-							ui.add_space(12.0);
-							if w::big_action_on_card_ink(
-								ui,
-								&t!("goblin.identities.delete_short"),
-								t.neg,
-							)
-							.clicked()
-							{
-								self.identity_switch.manage = None;
-								self.identity_switch.confirm_delete = Some(target.clone());
-							}
-						}
-					});
-				}
-
-				// Step-1 delete confirmation: a clear danger card naming the
-				// identity, stating the delete is PERMANENT, and reminding the user
-				// to back it up first. Continuing opens the wallet-password modal
-				// (step 2), which actually executes the delete.
-				if let Some(target) = self.identity_switch.confirm_delete.clone() {
-					let display = identities
-						.iter()
-						.find(|i| i.pubkey_hex == target)
-						.map(|i| i.display())
-						.unwrap_or_else(|| data::short_npub(&target));
-					ui.add_space(8.0);
-					w::card(ui, |ui| {
-						ui.set_min_width(ui.available_width());
-						ui.label(
-							RichText::new(t!("goblin.identities.delete_title", name => display))
-								.font(FontId::new(15.0, fonts::semibold()))
-								.color(t.neg),
-						);
-						ui.add_space(6.0);
-						ui.label(
-							RichText::new(t!("goblin.identities.delete_blurb"))
-								.font(FontId::new(13.0, fonts::regular()))
-								.color(t.surface_text_dim),
-						);
-						ui.add_space(6.0);
-						ui.label(
-							RichText::new(t!("goblin.identities.delete_backup_note"))
-								.font(FontId::new(13.0, fonts::semibold()))
-								.color(t.neg),
-						);
-						ui.add_space(10.0);
-						ui.horizontal(|ui| {
-							let half = (ui.available_width() - 10.0) / 2.0;
-							ui.scope_builder(
-								egui::UiBuilder::new().max_rect(egui::Rect::from_min_size(
-									ui.cursor().min,
-									Vec2::new(half, 44.0),
-								)),
-								|ui| {
-									if w::big_action_on_card(ui, &t!("goblin.settings.cancel"))
-										.clicked()
-									{
-										self.identity_switch.confirm_delete = None;
-									}
-								},
-							);
-							ui.add_space(10.0);
-							ui.scope_builder(
-								egui::UiBuilder::new().max_rect(egui::Rect::from_min_size(
-									ui.cursor().min,
-									Vec2::new(half, 44.0),
-								)),
-								|ui| {
-									if w::big_action_on_card_ink(
-										ui,
-										&t!("goblin.identities.delete_confirm"),
-										t.neg,
-									)
-									.clicked()
-									{
-										// Step 2: the wallet-password modal executes it.
-										self.identity_switch.pass.clear();
-										self.identity_switch.wrong_pass = false;
-										self.identity_switch.pending =
-											Some(PendingPassAction::Delete(target.clone()));
-										Modal::new(IDENTITY_PASS_MODAL)
-											.position(ModalPosition::CenterTop)
-											.title(t!("goblin.identities.delete_short"))
-											.show();
-									}
-								},
-							);
-						});
-					});
+					Modal::new(IDENTITY_MANAGE_MODAL)
+						.position(ModalPosition::CenterTop)
+						.title(display)
+						.show();
 				}
 
 				ui.add_space(8.0);
@@ -5352,8 +5216,14 @@ impl GoblinWalletView {
 									Vec2::new(half, 44.0),
 								)),
 								|ui| {
-									if w::big_action_on_card(ui, &t!("goblin.settings.cancel"))
-										.clicked()
+									// Uniform paired buttons (the Generate/Import toggle
+									// pattern): same widget, size and shape for both halves.
+									if w::big_action_on_card_ink(
+										ui,
+										&t!("goblin.settings.cancel"),
+										t.surface_text,
+									)
+									.clicked()
 									{
 										self.identity_switch.adding = false;
 										self.identity_switch.import = false;
@@ -5371,10 +5241,10 @@ impl GoblinWalletView {
 								)),
 								|ui| {
 									ui.add_enabled_ui(armed, |ui| {
-										if w::big_action(
+										if w::big_action_on_card_ink(
 											ui,
 											&t!("goblin.identities.add_confirm"),
-											false,
+											if armed { t.pos } else { t.surface_text_mute },
 										)
 										.clicked()
 										{
@@ -5530,6 +5400,192 @@ impl GoblinWalletView {
 				});
 				Modal::close();
 			}
+		}
+	}
+
+	/// Content of the per-identity management MODAL (title = the identity's
+	/// display name). Rename (the private, app-only tag — never published) on
+	/// top with uniform paired Cancel/Save buttons; Delete at the bottom,
+	/// separated and red, feeding the delete-confirmation modal. Being a GRIM
+	/// Modal, the identity list behind it is dimmed and locked.
+	fn identity_manage_modal_content(
+		&mut self,
+		ui: &mut egui::Ui,
+		wallet: &Wallet,
+		cb: &dyn PlatformCallbacks,
+	) {
+		let Some(target) = self.identity_switch.manage.clone() else {
+			Modal::close();
+			return;
+		};
+		ui.vertical_centered(|ui| {
+			ui.add_space(6.0);
+			ui.label(
+				RichText::new(t!("goblin.identities.tag_note"))
+					.size(16.0)
+					.color(Colors::gray()),
+			);
+			ui.add_space(10.0);
+			let mut field = TextEdit::new(egui::Id::from(IDENTITY_MANAGE_MODAL).with("tag"))
+				.hint_text(t!("goblin.identities.tag_hint"));
+			field.ui(ui, &mut self.identity_switch.tag_input, cb);
+			ui.add_space(12.0);
+		});
+		let mut save = false;
+		let mut cancel = false;
+		let mut delete = false;
+		ui.scope(|ui| {
+			ui.spacing_mut().item_spacing = egui::Vec2::new(8.0, 0.0);
+			ui.columns(2, |columns| {
+				columns[0].vertical_centered_justified(|ui| {
+					View::button(
+						ui,
+						t!("modal.cancel"),
+						Colors::white_or_black(false),
+						|| {
+							cancel = true;
+						},
+					);
+				});
+				columns[1].vertical_centered_justified(|ui| {
+					View::button(
+						ui,
+						t!("goblin.identities.tag_save"),
+						Colors::white_or_black(false),
+						|| {
+							save = true;
+						},
+					);
+				});
+			});
+			// Delete lives at the bottom, clearly apart from rename, red, same
+			// button shape. Only while more than one identity is held.
+			if wallet.nostr_identities().len() > 1 {
+				ui.add_space(10.0);
+				ui.vertical_centered_justified(|ui| {
+					View::colored_text_button(
+						ui,
+						t!("goblin.identities.delete_short").to_string(),
+						Colors::red(),
+						Colors::white_or_black(false),
+						|| {
+							delete = true;
+						},
+					);
+				});
+			}
+			ui.add_space(6.0);
+		});
+		if cancel {
+			self.identity_switch.manage = None;
+			self.identity_switch.tag_input.clear();
+			Modal::close();
+		}
+		if save {
+			let tag = std::mem::take(&mut self.identity_switch.tag_input);
+			if let Err(e) = wallet.rename_nostr_identity(target.clone(), tag) {
+				self.identity_switch.error = e;
+			}
+			self.identity_switch.manage = None;
+			Modal::close();
+		}
+		if delete {
+			// Step 1 of the delete gate: the danger-confirmation modal.
+			self.identity_switch.manage = None;
+			self.identity_switch.confirm_delete = Some(target.clone());
+			let display = wallet
+				.nostr_identities()
+				.iter()
+				.find(|i| i.pubkey_hex == target)
+				.map(|i| i.display())
+				.unwrap_or_else(|| data::short_npub(&target));
+			Modal::close();
+			Modal::new(IDENTITY_DELETE_MODAL)
+				.position(ModalPosition::CenterTop)
+				.title(display)
+				.show();
+		}
+	}
+
+	/// Content of the step-1 delete-confirmation MODAL (title = the identity's
+	/// display name): states the removal is PERMANENT with a prominent back-up
+	/// reminder, then uniform paired Cancel/Delete buttons — Delete red, same
+	/// size and shape. Confirming opens the wallet-password modal (step 2).
+	fn identity_delete_modal_content(&mut self, ui: &mut egui::Ui, wallet: &Wallet) {
+		let Some(target) = self.identity_switch.confirm_delete.clone() else {
+			Modal::close();
+			return;
+		};
+		let display = wallet
+			.nostr_identities()
+			.iter()
+			.find(|i| i.pubkey_hex == target)
+			.map(|i| i.display())
+			.unwrap_or_else(|| data::short_npub(&target));
+		ui.vertical_centered(|ui| {
+			ui.add_space(6.0);
+			ui.label(
+				RichText::new(t!("goblin.identities.delete_title", name => display))
+					.size(17.0)
+					.color(Colors::red()),
+			);
+			ui.add_space(8.0);
+			ui.label(
+				RichText::new(t!("goblin.identities.delete_blurb"))
+					.size(15.0)
+					.color(Colors::gray()),
+			);
+			ui.add_space(8.0);
+			ui.label(
+				RichText::new(t!("goblin.identities.delete_backup_note"))
+					.size(15.0)
+					.color(Colors::red()),
+			);
+			ui.add_space(12.0);
+		});
+		let mut cancel = false;
+		let mut confirm = false;
+		ui.scope(|ui| {
+			ui.spacing_mut().item_spacing = egui::Vec2::new(8.0, 0.0);
+			ui.columns(2, |columns| {
+				columns[0].vertical_centered_justified(|ui| {
+					View::button(
+						ui,
+						t!("modal.cancel"),
+						Colors::white_or_black(false),
+						|| {
+							cancel = true;
+						},
+					);
+				});
+				columns[1].vertical_centered_justified(|ui| {
+					View::colored_text_button(
+						ui,
+						t!("goblin.identities.delete_confirm").to_string(),
+						Colors::red(),
+						Colors::white_or_black(false),
+						|| {
+							confirm = true;
+						},
+					);
+				});
+			});
+			ui.add_space(6.0);
+		});
+		if cancel {
+			self.identity_switch.confirm_delete = None;
+			Modal::close();
+		}
+		if confirm {
+			// Step 2: the wallet-password modal executes the delete.
+			self.identity_switch.pass.clear();
+			self.identity_switch.wrong_pass = false;
+			self.identity_switch.pending = Some(PendingPassAction::Delete(target));
+			Modal::close();
+			Modal::new(IDENTITY_PASS_MODAL)
+				.position(ModalPosition::CenterTop)
+				.title(t!("goblin.identities.delete_short"))
+				.show();
 		}
 	}
 
