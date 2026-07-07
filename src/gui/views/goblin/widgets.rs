@@ -203,6 +203,17 @@ pub fn kicker(ui: &mut Ui, text: &str) {
 	);
 }
 
+/// A kicker rendered in the danger colour — marks a destructive section
+/// (e.g. the Advanced page's Danger Zone).
+pub fn kicker_danger(ui: &mut Ui, text: &str) {
+	let t = theme::tokens();
+	ui.label(
+		RichText::new(text.to_uppercase())
+			.font(fonts::kicker())
+			.color(t.neg),
+	);
+}
+
 /// A Cash-App-style on/off switch. Yellow (brand accent) when on, neutral track
 /// when off. Returns the response — the caller flips the bound state on click.
 pub fn toggle(ui: &mut Ui, on: bool) -> Response {

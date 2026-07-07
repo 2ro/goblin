@@ -262,6 +262,10 @@ struct AdvancedState {
 	confirm_repair: bool,
 	/// Armed "really delete?" confirm.
 	confirm_delete: bool,
+	/// Wallet password typed into the Danger Zone delete gate.
+	delete_pass: String,
+	/// The delete password didn't decrypt the seed — show the wrong-password line.
+	delete_wrong: bool,
 }
 
 /// Inputs and last result for the manual slatepack page (GRIM's native flow,
@@ -576,6 +580,9 @@ struct BackupState {
 	error: Option<String>,
 	/// The backup file was created.
 	done: bool,
+	/// The form was opened from the Danger Zone delete flow, so it renders
+	/// inline there instead of under the Advanced nostr section.
+	anchor_delete: bool,
 }
 
 /// Inline username-claim widget state.
@@ -3577,16 +3584,9 @@ impl GoblinWalletView {
 							cb.vibrate_copy();
 							self.copy_flash = Some(std::time::Instant::now());
 						}
-						// One encrypted backup FILE (key + username + history sealed
-						// together) — replaces the old copy-nsec / copy-JSON split.
-						if settings_row_btn(
-							ui,
-							&t!("goblin.settings.backup_file"),
-							crate::gui::icons::DOWNLOAD_SIMPLE,
-						) && self.backup.is_none()
-						{
-							self.backup = Some(BackupState::default());
-						}
+						// The encrypted .backup file now lives on the Advanced page,
+						// under ADVANCED NOSTR SETTINGS (single home — no duplicate
+						// exposure here).
 						// Nostr relays the wallet publishes/reads gift wraps on.
 						// Sits with the identity rows because relays are a nostr
 						// concern; opens the relay editor (handled below).
@@ -3649,17 +3649,6 @@ impl GoblinWalletView {
 						self.copy_flash = None;
 					}
 				}
-				ui.add_space(6.0);
-				ui.label(
-					RichText::new(t!("goblin.settings.backup_note"))
-						.font(FontId::new(12.0, fonts::regular()))
-						.color(t.text_mute),
-				);
-				if self.backup.is_some() {
-					ui.add_space(8.0);
-					self.backup_ui(ui, wallet, cb);
-				}
-
 				ui.add_space(16.0);
 				let mut open_node = false;
 				let mut open_slatepack = false;
@@ -4389,6 +4378,8 @@ impl GoblinWalletView {
 		let t = theme::tokens();
 		if self.sub_header(ui, &t!("goblin.advanced.title")) {
 			self.advanced = AdvancedState::default();
+			// Don't leave a half-entered backup password sitting in memory.
+			self.backup = None;
 			self.settings_page = SettingsPage::Main;
 			return;
 		}
@@ -4403,12 +4394,14 @@ impl GoblinWalletView {
 		let mut open_node = false;
 		let mut open_integrated = false;
 		{
-			let adv = &mut self.advanced;
 			ScrollArea::vertical()
 				.id_salt("goblin_advanced_scroll")
 				.auto_shrink([false; 2])
 				.scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
 				.show(ui, |ui| {
+					// Borrow ends (NLL) at the last `adv.` use in the Nostr-key card;
+					// the .backup + Danger Zone sections below then use `self`.
+					let adv = &mut self.advanced;
 					ui.label(
 						RichText::new(t!("goblin.advanced.intro"))
 							.font(FontId::new(14.0, fonts::regular()))
@@ -4593,6 +4586,10 @@ impl GoblinWalletView {
 					});
 					ui.add_space(12.0);
 
+					// ── ADVANCED NOSTR SETTINGS ──────────────────────────────
+					// The Nostr key, and directly below it the .backup download.
+					w::kicker(ui, &t!("goblin.advanced.nostr_section"));
+					ui.add_space(8.0);
 					// Nostr key (nsec). Password-gated reveal, then Copy + a QR
 					// so it can be carried into a nostr app's private-key login
 					// (e.g. magick.market) without retyping. Same gate as the
@@ -4677,23 +4674,98 @@ impl GoblinWalletView {
 					});
 					ui.add_space(12.0);
 
-					// Delete.
+					// .backup download — directly under the Nostr key, the second
+					// half of the ADVANCED NOSTR SETTINGS group. One button, no
+					// checklist: it seals your CURRENT identity (key + username)
+					// into an encrypted .backup file. (`adv` is no longer used past
+					// here, so `self` is free again.)
+					w::card(ui, |ui| {
+						ui.set_min_width(ui.available_width());
+						advanced_head(ui, &t!("goblin.settings.backup_file_title"), t.surface_text);
+						advanced_desc(ui, &t!("goblin.advanced.backup_caption"));
+						ui.add_space(10.0);
+						if w::big_action_on_card(ui, &t!("goblin.settings.backup_file")).clicked()
+							&& self.backup.is_none()
+						{
+							self.backup = Some(BackupState::default());
+						}
+					});
+					// The password/seal form, anchored here unless it was opened from
+					// the Danger Zone delete flow below.
+					if self.backup.as_ref().is_some_and(|b| !b.anchor_delete) {
+						ui.add_space(8.0);
+						self.backup_ui(ui, wallet, cb);
+					}
+					ui.add_space(16.0);
+
+					// ── DANGER ZONE ──────────────────────────────────────────
+					// Delete the wallet — password-gated, with a back-up prompt.
+					w::kicker_danger(ui, &t!("goblin.advanced.danger_zone"));
+					ui.add_space(8.0);
 					w::card(ui, |ui| {
 						ui.set_min_width(ui.available_width());
 						advanced_head(ui, &t!("goblin.advanced.delete"), t.neg);
 						advanced_desc(ui, &t!("goblin.advanced.delete_desc"));
 						ui.add_space(10.0);
-						if adv.confirm_delete {
-							if w::big_action_on_card_ink(
-								ui,
-								&t!("goblin.advanced.delete_confirm"),
-								t.neg,
-							)
-							.clicked()
+						if self.advanced.confirm_delete {
+							ui.label(
+								RichText::new(t!("goblin.advanced.delete_warning"))
+									.font(FontId::new(13.0, fonts::regular()))
+									.color(t.neg),
+							);
+							ui.add_space(10.0);
+							// Back up BEFORE the password field (spec) — the same seal
+							// action, but anchored to this flow so its form renders
+							// here, not up in the nostr section.
+							if w::big_action_on_card(ui, &t!("goblin.advanced.download_backup"))
+								.clicked() && self.backup.is_none()
 							{
-								wallet.delete_wallet();
-								leave = true;
+								self.backup = Some(BackupState {
+									anchor_delete: true,
+									..Default::default()
+								});
 							}
+							if self.backup.as_ref().is_some_and(|b| b.anchor_delete) {
+								self.backup_ui(ui, wallet, cb);
+								ui.add_space(10.0);
+							}
+							w::field_well(ui, |ui| {
+								TextEdit::new(egui::Id::from("advanced_delete_pass"))
+									.focus(false)
+									.hint_text(t!("goblin.advanced.password"))
+									.password()
+									.text_color(t.surface_text)
+									.body()
+									.ui(ui, &mut self.advanced.delete_pass, cb);
+							});
+							if self.advanced.delete_wrong {
+								ui.add_space(6.0);
+								ui.label(
+									RichText::new(t!("goblin.advanced.wrong_password"))
+										.font(FontId::new(13.0, fonts::medium()))
+										.color(t.neg),
+								);
+							}
+							ui.add_space(10.0);
+							let adv = &mut self.advanced;
+							ui.add_enabled_ui(!adv.delete_pass.is_empty(), |ui| {
+								if w::big_action_on_card_ink(
+									ui,
+									&t!("goblin.advanced.delete_final"),
+									t.neg,
+								)
+								.clicked()
+								{
+									// Wallet-password gate: get_recovery only returns Ok
+									// when the password decrypts the seed.
+									if wallet.get_recovery(adv.delete_pass.clone()).is_ok() {
+										wallet.delete_wallet();
+										leave = true;
+									} else {
+										adv.delete_wrong = true;
+									}
+								}
+							});
 						} else if w::big_action_on_card_ink(
 							ui,
 							&t!("goblin.advanced.delete"),
@@ -4701,7 +4773,7 @@ impl GoblinWalletView {
 						)
 						.clicked()
 						{
-							adv.confirm_delete = true;
+							self.advanced.confirm_delete = true;
 						}
 					});
 					ui.add_space(20.0);
@@ -4709,6 +4781,7 @@ impl GoblinWalletView {
 		}
 		if leave {
 			self.advanced = AdvancedState::default();
+			self.backup = None;
 			self.settings_page = SettingsPage::Main;
 		}
 		if open_node {
