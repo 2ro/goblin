@@ -42,7 +42,7 @@ Goblin is a fork of the **Grim** egui GRIN wallet: it keeps Grim's full GRIN nod
 
 The wrap is [NIP-44](https://nips.nostr.com/44)-encrypted, and delivery uses the recipient's DM relay list ([kind 10050](https://nostrbook.dev/kinds/10050)). Tor hides your IP from the relay; the relay and the encryption above hide the rest - content, sender, timing.
 
-Both parties only need one relay in common. The default set is the Goblin relay plus large public relays (`relay.damus.io`, `nos.lol`), and the set is editable in **Settings → Relays**.
+Both parties only need one relay in common. The default set is the Floonet relay (`relay.floonet.dev`) plus Tor-friendly public relays (`relay.0xchat.com`, `offchain.pub`) that accept connections from Tor exits, and the set is editable in **Settings → Relays**.
 
 ## Build
 
