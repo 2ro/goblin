@@ -446,9 +446,10 @@ fn news_pool(wallet: &Wallet) -> Vec<NewsItem> {
 }
 
 /// The app's active locale folded to the ISO 639-1 code used to match news
-/// articles. The shipped locales are `en/de/fr/ru/tr/zh-CN`; only `zh-CN` needs
-/// folding to its 639-1 primary `zh`, and every other locale already is a
-/// two-letter primary. Region and separator (`-`/`_`) are dropped.
+/// articles. The shipped locales are `en/de/fr/ru/tr/zh-CN/es/ko`; only
+/// `zh-CN` needs folding to its 639-1 primary `zh`, and every other locale
+/// already is a two-letter primary. Region and separator (`-`/`_`) are
+/// dropped.
 fn news_locale_code() -> String {
 	let loc = rust_i18n::locale().to_string().to_lowercase();
 	loc.split(['-', '_']).next().unwrap_or("en").to_string()
