@@ -28,6 +28,7 @@ use crate::gui::views::types::{ContentContainer, ModalPosition, QrScanResult};
 use crate::gui::views::wallets::creation::MnemonicSetup;
 use crate::gui::views::{CameraScanContent, Content, Modal, TextEdit, View};
 use crate::node::Node;
+use crate::nostr::NostrIdentity;
 use crate::wallet::types::{ConnectionMethod, PhraseMode, PhraseSize};
 use crate::wallet::{ConnectionsConfig, ExternalConnection, Wallet, WalletList};
 
@@ -57,6 +58,11 @@ pub struct OnboardingContent {
 	ext_url: String,
 	/// Wallet setup inputs.
 	restore: bool,
+	/// The user chose "Import identity" on the wallet step: after the wallet is
+	/// created the identity step opens the import panel straight away (bringing
+	/// over an existing key from a `.backup` or nsec), instead of the fresh
+	/// random key. Composes with either seed choice above it.
+	want_import: bool,
 	name: String,
 	pass: String,
 	pass2: String,
@@ -70,8 +76,32 @@ pub struct OnboardingContent {
 	wallet: Option<Wallet>,
 	/// Optional username claim state (same machinery as Settings).
 	claim: ClaimState,
+	/// Optional "import an existing identity" sub-flow, opened from the identity
+	/// step so a returning user can keep their old npub + username instead of the
+	/// freshly-generated random key.
+	import: Option<OnbImport>,
 	/// Moment the recovery phrase was copied, for the transient "Copied" check.
 	words_copied: Option<std::time::Instant>,
+}
+
+/// Onboarding identity-import state. Reuses the wallet password the user just
+/// set, so it only needs the backup file / nsec (and the backup's own password
+/// when restoring a sealed `.backup`).
+#[derive(Default)]
+struct OnbImport {
+	/// 0 = form, 1 = working, 2 = error.
+	stage: u8,
+	/// Pasted nsec or the read-in contents of a `.backup` / identity JSON file.
+	nsec: String,
+	/// Password the backup was sealed under (blank for a bare nsec, or when it
+	/// matches this wallet's password).
+	backup_password: String,
+	/// Last import error, shown on stage 2.
+	error: String,
+	/// A native file pick is in flight (Android resolves the path asynchronously).
+	picking: bool,
+	/// Worker result: Ok(new npub) or Err(message).
+	result: std::sync::Arc<std::sync::Mutex<Option<Result<String, String>>>>,
 }
 
 impl Default for OnboardingContent {
@@ -83,6 +113,7 @@ impl Default for OnboardingContent {
 			integrated: false,
 			ext_url: "https://grincoin.org".to_string(),
 			restore: false,
+			want_import: false,
 			name: "Main wallet".to_string(),
 			pass: String::new(),
 			pass2: String::new(),
@@ -91,6 +122,7 @@ impl Default for OnboardingContent {
 			scan_modal: None,
 			wallet: None,
 			claim: ClaimState::default(),
+			import: None,
 			words_copied: None,
 		}
 	}
@@ -388,6 +420,37 @@ impl OnboardingContent {
 				ui.add_space(10.0);
 			}
 		});
+		ui.add_space(10.0);
+
+		// First-class "Import identity" option, standing alongside Create/Restore:
+		// bring an existing key over (from a .backup file or a bare nsec). It
+		// composes with either seed choice above — the import panel itself opens
+		// on the identity step, once the wallet exists.
+		ui.scope_builder(
+			egui::UiBuilder::new().max_rect(egui::Rect::from_min_size(
+				ui.cursor().min,
+				Vec2::new(ui.available_width(), 44.0),
+			)),
+			|ui| {
+				if w::chip(
+					ui,
+					&t!("goblin.onboarding.wallet.import_identity"),
+					self.want_import,
+				)
+				.clicked()
+				{
+					self.want_import = !self.want_import;
+				}
+			},
+		);
+		if self.want_import {
+			ui.add_space(6.0);
+			ui.label(
+				RichText::new(t!("goblin.onboarding.wallet.import_identity_hint"))
+					.font(FontId::new(12.5, fonts::regular()))
+					.color(t.text_mute),
+			);
+		}
 		ui.add_space(14.0);
 
 		w::field_well(ui, |ui| {
@@ -838,7 +901,17 @@ impl OnboardingContent {
 			.nostr_service()
 			.map(|s| s.identity.read().nip05.is_some())
 			.unwrap_or(false);
-		if !registered {
+		// Came in via the wallet step's "Import identity" button: open the import
+		// panel straight away (offers both a .backup file and a bare nsec), rather
+		// than the fresh-key claim card.
+		if self.want_import && self.import.is_none() {
+			self.import = Some(OnbImport::default());
+			self.want_import = false;
+		}
+		if self.import.is_some() {
+			// Returning user is swapping the random key for their existing identity.
+			self.import_ui(ui, &wallet, cb);
+		} else if !registered {
 			w::card(ui, |ui| {
 				ui.set_min_width(ui.available_width());
 				ui.label(
@@ -916,6 +989,14 @@ impl OnboardingContent {
 					}
 				}
 			});
+			ui.add_space(10.0);
+			// Returning user? A centered, first-class "Import identity" button
+			// (was a left-aligned text link) restores their existing identity
+			// from a .backup file or a bare nsec instead of the fresh random key.
+			// The .backup-or-nsec choice lives behind it, in import_ui.
+			if w::big_action(ui, &t!("goblin.onboarding.wallet.import_identity"), true).clicked() {
+				self.import = Some(OnbImport::default());
+			}
 			ui.add_space(16.0);
 		} else {
 			// Claimed: show a clear success confirmation so the user knows the
@@ -965,6 +1046,199 @@ impl OnboardingContent {
 			return Some(wallet);
 		}
 		None
+	}
+
+	/// Onboarding identity-import sub-flow: paste an nsec or pick a `.backup`
+	/// file to swap the freshly-generated random key for the user's existing
+	/// identity (keeping their npub and any claimed username). Reuses the wallet
+	/// password the user just set; a sealed `.backup` may carry its own password.
+	fn import_ui(&mut self, ui: &mut egui::Ui, wallet: &Wallet, cb: &dyn PlatformCallbacks) {
+		let t = theme::tokens();
+		// Poll the worker first, WITHOUT holding a borrow across the reset below.
+		if self.import.as_ref().map(|i| i.stage) == Some(1) {
+			let res = self.import.as_ref().unwrap().result.lock().unwrap().take();
+			if let Some(res) = res {
+				match res {
+					// Identity replaced: drop the sub-flow; the identity card and the
+					// claim/success state re-render from the new service next frame.
+					Ok(_) => {
+						self.import = None;
+						return;
+					}
+					Err(e) => {
+						let imp = self.import.as_mut().unwrap();
+						imp.error = e;
+						imp.stage = 2;
+					}
+				}
+			}
+		}
+		let wallet_pass = self.pass.clone();
+		let imp = self.import.as_mut().unwrap();
+		let mut close = false;
+		w::card(ui, |ui| {
+			ui.set_min_width(ui.available_width());
+			match imp.stage {
+				1 => {
+					ui.horizontal(|ui| {
+						View::small_loading_spinner(ui);
+						ui.add_space(8.0);
+						ui.label(
+							RichText::new(t!("goblin.settings.importing"))
+								.font(FontId::new(13.0, fonts::regular()))
+								.color(t.surface_text_dim),
+						);
+					});
+					ui.ctx().request_repaint();
+				}
+				2 => {
+					ui.label(
+						RichText::new(t!("goblin.settings.import_failed"))
+							.font(FontId::new(15.0, fonts::semibold()))
+							.color(t.neg),
+					);
+					ui.add_space(4.0);
+					ui.label(
+						RichText::new(&imp.error)
+							.font(FontId::new(13.0, fonts::regular()))
+							.color(t.surface_text_dim),
+					);
+					ui.add_space(10.0);
+					if w::big_action_on_card(ui, &t!("goblin.settings.close")).clicked() {
+						close = true;
+					}
+				}
+				_ => {
+					ui.label(
+						RichText::new(t!("goblin.onboarding.identity.import_title"))
+							.font(FontId::new(15.0, fonts::semibold()))
+							.color(t.surface_text),
+					);
+					ui.add_space(6.0);
+					ui.label(
+						RichText::new(t!("goblin.onboarding.identity.import_blurb"))
+							.font(FontId::new(12.5, fonts::regular()))
+							.color(t.surface_text_dim),
+					);
+					ui.add_space(10.0);
+					// Native ".backup file" picker. Desktop returns the path now;
+					// Android resolves it asynchronously (poll picked_file()).
+					if imp.picking {
+						if let Some(path) = cb.picked_file() {
+							imp.picking = false;
+							if !path.is_empty() {
+								match std::fs::read_to_string(&path) {
+									Ok(contents) => imp.nsec = contents.trim().to_string(),
+									Err(_) => {
+										imp.error =
+											t!("goblin.settings.backup_read_failed").to_string();
+									}
+								}
+							}
+						} else {
+							ui.ctx().request_repaint();
+						}
+					}
+					if w::big_action_on_card(ui, &t!("goblin.settings.choose_backup_file"))
+						.clicked()
+					{
+						imp.error.clear();
+						match cb.pick_file() {
+							Some(path) if !path.is_empty() => {
+								match std::fs::read_to_string(&path) {
+									Ok(contents) => imp.nsec = contents.trim().to_string(),
+									Err(_) => {
+										imp.error =
+											t!("goblin.settings.backup_read_failed").to_string();
+									}
+								}
+							}
+							// Empty string = Android async pick in flight.
+							Some(_) => imp.picking = true,
+							None => {}
+						}
+					}
+					ui.add_space(8.0);
+					w::field_well(ui, |ui| {
+						TextEdit::new(egui::Id::from("onb_import_nsec"))
+							.focus(false)
+							.hint_text(t!("goblin.settings.import_nsec_hint"))
+							.password()
+							.text_color(t.surface_text)
+							.body()
+							.ui(ui, &mut imp.nsec, cb);
+					});
+					ui.add_space(8.0);
+					w::field_well(ui, |ui| {
+						TextEdit::new(egui::Id::from("onb_import_bpw"))
+							.focus(false)
+							.hint_text(t!("goblin.settings.backup_password_hint"))
+							.password()
+							.text_color(t.surface_text)
+							.body()
+							.ui(ui, &mut imp.backup_password, cb);
+					});
+					if !imp.error.is_empty() {
+						ui.add_space(6.0);
+						ui.label(
+							RichText::new(&imp.error)
+								.font(FontId::new(12.5, fonts::regular()))
+								.color(t.neg),
+						);
+					}
+					ui.add_space(10.0);
+					let pasted = imp.nsec.trim();
+					// Only an nsec paste or a sealed .backup file — nothing else.
+					let armed =
+						pasted.starts_with("nsec1") || NostrIdentity::is_encrypted_backup(pasted);
+					ui.horizontal(|ui| {
+						let half = (ui.available_width() - 10.0) / 2.0;
+						ui.scope_builder(
+							egui::UiBuilder::new().max_rect(egui::Rect::from_min_size(
+								ui.cursor().min,
+								Vec2::new(half, 44.0),
+							)),
+							|ui| {
+								if w::big_action_on_card(ui, &t!("goblin.settings.cancel"))
+									.clicked()
+								{
+									close = true;
+								}
+							},
+						);
+						ui.add_space(10.0);
+						ui.scope_builder(
+							egui::UiBuilder::new().max_rect(egui::Rect::from_min_size(
+								ui.cursor().min,
+								Vec2::new(half, 44.0),
+							)),
+							|ui| {
+								ui.add_enabled_ui(armed, |ui| {
+									if w::big_action(ui, &t!("goblin.settings.import_btn"), false)
+										.clicked()
+									{
+										imp.stage = 1;
+										let slot = imp.result.clone();
+										let nsec = std::mem::take(&mut imp.nsec);
+										let bpw = std::mem::take(&mut imp.backup_password);
+										let bpw = if bpw.is_empty() { None } else { Some(bpw) };
+										let wallet = wallet.clone();
+										let pass = wallet_pass.clone();
+										std::thread::spawn(move || {
+											let res = wallet.import_nostr_identity(nsec, pass, bpw);
+											*slot.lock().unwrap() = Some(res);
+										});
+									}
+								});
+							},
+						);
+					});
+				}
+			}
+		});
+		if close {
+			self.import = None;
+		}
 	}
 
 	/// Recovery-phrase QR scan modal content.

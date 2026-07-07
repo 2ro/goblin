@@ -820,6 +820,8 @@ goblin:
       title: "Set up your wallet"
       create_new: "Create new"
       restore_from_seed: "Restore from seed"
+      import_identity: "Import identity"
+      import_identity_hint: "You'll bring in your existing key (a .backup file or nsec) after this step."
       name_hint: "Wallet name"
       password_hint: "Password"
       repeat_password_hint: "Repeat password"
@@ -864,6 +866,9 @@ goblin:
       claimed_blurb: "Friends can now pay you by name. You're all set — open your wallet."
       open_wallet: "Open my wallet"
       skip_for_now: "Skip for now"
+      import_existing: "Already have a Goblin identity? Import it"
+      import_title: "Import your identity"
+      import_blurb: "Paste your nsec or pick a .backup file to keep your existing key and username instead of this new one."
     errors:
       cant_open: "Couldn't open the wallet: %{err}"
       cant_create: "Couldn't create the wallet: %{err}"

@@ -820,6 +820,8 @@ goblin:
       title: "Cüzdanını kur"
       create_new: "Yeni oluştur"
       restore_from_seed: "Tohumdan geri yükle"
+      import_identity: "Kimliği içe aktar"
+      import_identity_hint: "Bu adımdan sonra mevcut anahtarını (bir .backup dosyası veya nsec) getireceksin."
       name_hint: "Cüzdan adı"
       password_hint: "Parola"
       repeat_password_hint: "Parolayı tekrarla"
@@ -864,6 +866,9 @@ goblin:
       claimed_blurb: "Arkadaşların artık sana adınla ödeme yapabilir. Her şey hazır — cüzdanını aç."
       open_wallet: "Cüzdanımı aç"
       skip_for_now: "Şimdilik atla"
+      import_existing: "Zaten bir Goblin kimliğin var mı? İçe aktar"
+      import_title: "Kimliğini içe aktar"
+      import_blurb: "Bu yeni anahtar yerine mevcut anahtarını ve kullanıcı adını korumak için nsec'ini yapıştır veya bir .backup dosyası seç."
     errors:
       cant_open: "Cüzdan açılamadı: %{err}"
       cant_create: "Cüzdan oluşturulamadı: %{err}"

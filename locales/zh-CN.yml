@@ -820,6 +820,8 @@ goblin:
       title: "设置你的钱包"
       create_new: "新建"
       restore_from_seed: "从助记词恢复"
+      import_identity: "导入身份"
+      import_identity_hint: "此步骤之后，你将导入现有密钥（.backup 文件或 nsec）。"
       name_hint: "钱包名称"
       password_hint: "密码"
       repeat_password_hint: "重复密码"
@@ -864,6 +866,9 @@ goblin:
       claimed_blurb: "朋友现在可以用你的用户名向你付款。一切就绪——打开钱包吧。"
       open_wallet: "打开我的钱包"
       skip_for_now: "暂时跳过"
+      import_existing: "已有 Goblin 身份？导入它"
+      import_title: "导入你的身份"
+      import_blurb: "粘贴你的 nsec 或选择一个 .backup 文件，保留你现有的密钥和用户名，而不是这个新的。"
     errors:
       cant_open: "无法打开钱包：%{err}"
       cant_create: "无法创建钱包：%{err}"

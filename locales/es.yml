@@ -820,6 +820,8 @@ goblin:
       title: "Configura tu billetera"
       create_new: "Crear nueva"
       restore_from_seed: "Restaurar desde la frase semilla"
+      import_identity: "Importar identidad"
+      import_identity_hint: "Traerás tu clave existente (un archivo .backup o nsec) después de este paso."
       name_hint: "Nombre de la billetera"
       password_hint: "Contraseña"
       repeat_password_hint: "Repite la contraseña"
@@ -864,6 +866,9 @@ goblin:
       claimed_blurb: "Tus amigos ya pueden pagarte por nombre. Todo listo — abre tu billetera."
       open_wallet: "Abrir mi billetera"
       skip_for_now: "Saltar por ahora"
+      import_existing: "¿Ya tienes una identidad de Goblin? Impórtala"
+      import_title: "Importa tu identidad"
+      import_blurb: "Pega tu nsec o elige un archivo .backup para conservar tu clave y nombre de usuario existentes en lugar de este nuevo."
     errors:
       cant_open: "No se pudo abrir la billetera: %{err}"
       cant_create: "No se pudo crear la billetera: %{err}"
