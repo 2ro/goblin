@@ -78,6 +78,11 @@ pub struct TrustUri {
 	/// renders the remainder as categories and shows caution lines for anything
 	/// stripped. Guaranteed non-empty, and guaranteed non-empty after stripping.
 	pub requested_kinds: Vec<u16>,
+	/// Whether the wallet should hand focus back to a same-device caller after
+	/// the flow completes. `true` (the default when the `rt` flag is absent) is
+	/// the Build 151 deep-link behavior; a QR-scanned URI mints `rt=0` so the
+	/// wallet stays put and the browser picks the result up by polling.
+	pub return_to_caller: bool,
 }
 
 /// True when `scanned` carries a Goblin scheme with the `trust` keyword, i.e. it
@@ -121,6 +126,7 @@ pub fn parse(scanned: &str) -> Option<TrustUri> {
 	let mut site_key = None;
 	let mut relay = None;
 	let mut kinds = None;
+	let mut return_flag = None;
 	for pair in query.split('&') {
 		let Some((key, val)) = pair.split_once('=') else {
 			continue; // valueless / malformed segment, ignore
@@ -134,6 +140,8 @@ pub fn parse(scanned: &str) -> Option<TrustUri> {
 			"sk" if site_key.is_none() => site_key = Some(val),
 			"r" if relay.is_none() => relay = Some(val),
 			"k" if kinds.is_none() => kinds = Some(val),
+			// Optional return-to-caller gate; first occurrence wins like the rest.
+			"rt" if return_flag.is_none() => return_flag = Some(val),
 			// Unknown params are ignored for forward-compat.
 			_ => {}
 		}
@@ -150,6 +158,7 @@ pub fn parse(scanned: &str) -> Option<TrustUri> {
 	let site_session_pubkey = validate_x_only_hex(site_key?)?;
 	let relay = validate_relay(relay?)?;
 	let requested_kinds = validate_kinds(kinds?)?;
+	let return_to_caller = super::authuri::parse_return_flag(return_flag);
 	Some(TrustUri {
 		challenge,
 		domain,
@@ -157,6 +166,7 @@ pub fn parse(scanned: &str) -> Option<TrustUri> {
 		site_session_pubkey,
 		relay,
 		requested_kinds,
+		return_to_caller,
 	})
 }
 
@@ -505,6 +515,51 @@ mod tests {
 		);
 		assert_eq!(parse(&huge), None);
 		assert!(!is_trust_shaped(&huge));
+	}
+
+	#[test]
+	fn return_flag_absent_defaults_to_return() {
+		// No `rt`: backward-compatible default is return enabled.
+		let out = parse(&valid_uri("goblin:")).expect("valid trust URI");
+		assert!(out.return_to_caller, "absent rt must default to return");
+	}
+
+	#[test]
+	fn return_flag_explicit_garbage_and_duplicate() {
+		let base = format!(
+			"c={C}&d=magick.market&cb=https://magick.market/cb&sk={SK}&r=wss://r.magick.market&k=1"
+		);
+		// rt=0 disables (QR-scan case), rt=1 is the explicit default.
+		assert!(
+			!parse(&format!("goblin:trust?{base}&rt=0"))
+				.unwrap()
+				.return_to_caller
+		);
+		assert!(
+			parse(&format!("goblin:trust?{base}&rt=1"))
+				.unwrap()
+				.return_to_caller
+		);
+		// Garbage fails closed to the default (return enabled).
+		for junk in ["", "2", "true", "no"] {
+			assert!(
+				parse(&format!("goblin:trust?{base}&rt={junk}"))
+					.unwrap()
+					.return_to_caller,
+				"rt={junk:?} must fail closed to return"
+			);
+		}
+		// First occurrence wins.
+		assert!(
+			!parse(&format!("goblin:trust?{base}&rt=0&rt=1"))
+				.unwrap()
+				.return_to_caller
+		);
+		assert!(
+			parse(&format!("goblin:trust?{base}&rt=1&rt=0"))
+				.unwrap()
+				.return_to_caller
+		);
 	}
 
 	#[test]

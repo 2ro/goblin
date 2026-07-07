@@ -62,6 +62,11 @@ pub struct LoginUri {
 	/// The callback URL the signed event is delivered to: `https://...`, or
 	/// `http://localhost[:port]...` for development.
 	pub callback: String,
+	/// Whether the wallet should hand focus back to a same-device caller after
+	/// the flow completes. `true` (the default when the `rt` flag is absent) is
+	/// the Build 151 deep-link behavior; a QR-scanned URI mints `rt=0` so the
+	/// wallet stays put and the browser picks the login up by polling.
+	pub return_to_caller: bool,
 }
 
 /// True when `scanned` carries a Goblin scheme with the `login` keyword, i.e.
@@ -99,6 +104,7 @@ pub fn parse(scanned: &str) -> Option<LoginUri> {
 	let mut challenge = None;
 	let mut domain = None;
 	let mut callback = None;
+	let mut return_flag = None;
 	for pair in query.split('&') {
 		let Some((key, val)) = pair.split_once('=') else {
 			continue; // valueless / malformed segment, ignore
@@ -109,6 +115,8 @@ pub fn parse(scanned: &str) -> Option<LoginUri> {
 			"c" if challenge.is_none() => challenge = Some(val),
 			"d" if domain.is_none() => domain = Some(val),
 			"cb" if callback.is_none() => callback = Some(val),
+			// Optional return-to-caller gate; first occurrence wins like the rest.
+			"rt" if return_flag.is_none() => return_flag = Some(val),
 			// Unknown params are ignored for forward-compat.
 			_ => {}
 		}
@@ -116,6 +124,7 @@ pub fn parse(scanned: &str) -> Option<LoginUri> {
 	let challenge = validate_challenge(challenge?)?;
 	let domain = validate_domain(domain?)?;
 	let callback = validate_callback(callback?)?;
+	let return_to_caller = super::authuri::parse_return_flag(return_flag);
 	// Domain binding: the callback host must belong to the displayed domain, so a
 	// site cannot show `d=magick.market` while pointing `cb` at its own host and
 	// harvest a login event for a domain it does not control. Same rule as
@@ -128,6 +137,7 @@ pub fn parse(scanned: &str) -> Option<LoginUri> {
 		challenge,
 		domain,
 		callback,
+		return_to_caller,
 	})
 }
 
@@ -445,6 +455,47 @@ mod tests {
 		);
 		assert_eq!(parse(&huge), None);
 		assert!(!is_login_shaped(&huge));
+	}
+
+	#[test]
+	fn return_flag_absent_defaults_to_return() {
+		// No `rt`: backward-compatible default is return enabled.
+		let out = parse(&valid_uri("goblin:")).expect("valid login URI");
+		assert!(out.return_to_caller, "absent rt must default to return");
+	}
+
+	#[test]
+	fn return_flag_explicit_and_garbage() {
+		// rt=0 disables (QR-scan case), rt=1 is the explicit default.
+		let no = format!("goblin:login?c={C}&d=magick.market&cb=https://magick.market/cb&rt=0");
+		assert!(
+			!parse(&no).unwrap().return_to_caller,
+			"rt=0 must disable return"
+		);
+		let yes = format!("goblin:login?c={C}&d=magick.market&cb=https://magick.market/cb&rt=1");
+		assert!(
+			parse(&yes).unwrap().return_to_caller,
+			"rt=1 must enable return"
+		);
+		// Garbage fails closed to the default (return enabled).
+		for junk in ["", "2", "true", "no", "00"] {
+			let uri =
+				format!("goblin:login?c={C}&d=magick.market&cb=https://magick.market/cb&rt={junk}");
+			assert!(
+				parse(&uri).unwrap().return_to_caller,
+				"rt={junk:?} must fail closed to return"
+			);
+		}
+	}
+
+	#[test]
+	fn return_flag_duplicate_first_wins() {
+		let first_off =
+			format!("goblin:login?c={C}&d=magick.market&cb=https://magick.market/cb&rt=0&rt=1");
+		assert!(!parse(&first_off).unwrap().return_to_caller);
+		let first_on =
+			format!("goblin:login?c={C}&d=magick.market&cb=https://magick.market/cb&rt=1&rt=0");
+		assert!(parse(&first_on).unwrap().return_to_caller);
 	}
 
 	#[test]

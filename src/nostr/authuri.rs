@@ -99,6 +99,11 @@ pub struct AuthorizeUri {
 	pub callback: String,
 	/// The event template the site wants signed.
 	pub template: Template,
+	/// Whether the wallet should hand focus back to a same-device caller after
+	/// the flow completes. `true` (the default when the `rt` flag is absent) is
+	/// the Build 151 deep-link behavior; a QR-scanned URI mints `rt=0` so the
+	/// wallet stays put and the browser picks the result up by polling.
+	pub return_to_caller: bool,
 }
 
 /// True when `scanned` carries a Goblin scheme with the `authorize` keyword,
@@ -139,6 +144,7 @@ pub fn parse(scanned: &str) -> Option<AuthorizeUri> {
 	let mut domain = None;
 	let mut callback = None;
 	let mut template = None;
+	let mut return_flag = None;
 	for pair in query.split('&') {
 		let Some((key, val)) = pair.split_once('=') else {
 			continue; // valueless / malformed segment, ignore
@@ -150,6 +156,8 @@ pub fn parse(scanned: &str) -> Option<AuthorizeUri> {
 			"d" if domain.is_none() => domain = Some(val),
 			"cb" if callback.is_none() => callback = Some(val),
 			"e" if template.is_none() => template = Some(val),
+			// Optional return-to-caller gate; first occurrence wins like the rest.
+			"rt" if return_flag.is_none() => return_flag = Some(val),
 			// Unknown params are ignored for forward-compat.
 			_ => {}
 		}
@@ -164,11 +172,13 @@ pub fn parse(scanned: &str) -> Option<AuthorizeUri> {
 		return None;
 	}
 	let template = validate_template(template?)?;
+	let return_to_caller = parse_return_flag(return_flag);
 	Some(AuthorizeUri {
 		challenge,
 		domain,
 		callback,
 		template,
+		return_to_caller,
 	})
 }
 
@@ -290,6 +300,46 @@ pub(crate) fn domain_bound(callback: &str, domain: &str) -> bool {
 		return false;
 	}
 	host == domain || host.ends_with(&format!(".{domain}"))
+}
+
+/// Parse the optional `rt` return-to-caller flag shared by the login, authorize,
+/// and trust URIs. This flag ONLY controls whether the wallet hands focus back to
+/// a same-device caller after the flow completes; it can NEVER introduce a
+/// redirect the URI could not already perform (no target is derived from it, it
+/// is a single boolean gate on the existing best-effort app-switch). Absent,
+/// empty, malformed, or any value other than an explicit `0` yields the default
+/// `true` (return enabled), so pre-flag URIs and any garbage keep the Build 151
+/// same-device behavior: the fail-closed default is the backward-compatible one.
+/// Only `rt=0` disables the return (the QR-scan case, where there is no caller and
+/// the browser picks the result up by polling); `rt=1` is the explicit default.
+/// The match is byte-exact on the (percent-decoded) value, no trimming, so only
+/// a clean `0` disables and anything padded or decorated stays the safe default.
+/// Duplicate `rt=` is resolved by each parser's first-occurrence-wins loop before
+/// this is called.
+pub(crate) fn parse_return_flag(raw: Option<&str>) -> bool {
+	match raw {
+		Some(v) => String::from_utf8_lossy(&percent_decode(v)) != "0",
+		None => true,
+	}
+}
+
+/// The return-to-caller DECISION for a login/authorize/trust flow. True only
+/// when the URI allowed the return (`allowed`, the parsed `rt` flag) AND the
+/// flow is FULLY complete: the callback POST finished successfully
+/// (`post_ok == Some(true)`; `None` means still in flight) and any follow-on
+/// publish is confirmed delivered (`publish_confirmed`; flows without one pass
+/// `true`, the trust flow passes its session-open announce confirmation).
+/// Returning any earlier is the Build 153 QR-trust bug: the app switch stops
+/// the GUI frame pump and the Build 95 heartbeat then idles the nostr side, so
+/// pending completion work (the outcome poll, session creation, the
+/// session-open publish) never runs and the site never sees the login.
+/// Pure, total, no I/O.
+pub fn should_return_to_caller(
+	allowed: bool,
+	post_ok: Option<bool>,
+	publish_confirmed: bool,
+) -> bool {
+	allowed && post_ok == Some(true) && publish_confirmed
 }
 
 /// Decode and validate the `e` template. Unpadded base64url only (any `=`
@@ -946,6 +996,115 @@ mod tests {
 		let broken = uri_with_raw_e("notbase64!");
 		assert!(is_authorize_shaped(&broken));
 		assert_eq!(parse(&broken), None);
+	}
+
+	#[test]
+	fn return_flag_absent_defaults_to_return() {
+		// No `rt` param: backward-compatible default is return enabled.
+		let out = parse(&valid_uri("goblin:")).expect("valid authorize URI");
+		assert!(out.return_to_caller, "absent rt must default to return");
+	}
+
+	#[test]
+	fn return_flag_explicit_values() {
+		// rt=0 disables the return (QR-scan case); rt=1 is the explicit default.
+		let no = format!(
+			"goblin:authorize?e={}&d=magick.market&cb=https://magick.market/cb&c={C}&rt=0",
+			valid_template()
+		);
+		assert!(
+			!parse(&no).unwrap().return_to_caller,
+			"rt=0 must disable return"
+		);
+		let yes = format!(
+			"goblin:authorize?e={}&d=magick.market&cb=https://magick.market/cb&c={C}&rt=1",
+			valid_template()
+		);
+		assert!(
+			parse(&yes).unwrap().return_to_caller,
+			"rt=1 must enable return"
+		);
+	}
+
+	#[test]
+	fn return_flag_garbage_fails_closed_to_default() {
+		// Anything that is not an explicit `0` keeps the default (return enabled),
+		// so a malformed flag can never silently suppress the same-device return.
+		for junk in [
+			"", "2", "true", "false", "yes", "no", "00", " 0", "0x0", "%30",
+		] {
+			let uri = format!(
+				"goblin:authorize?e={}&d=magick.market&cb=https://magick.market/cb&c={C}&rt={junk}",
+				valid_template()
+			);
+			// %30 decodes to "0" -> disabled; every other junk value stays default.
+			let expected = junk != "%30";
+			assert_eq!(
+				parse(&uri).unwrap().return_to_caller,
+				expected,
+				"rt={junk:?} must resolve to return={expected}"
+			);
+		}
+	}
+
+	#[test]
+	fn return_flag_duplicate_first_wins() {
+		// First occurrence wins, matching every other param.
+		let first_off = format!(
+			"goblin:authorize?e={}&d=magick.market&cb=https://magick.market/cb&c={C}&rt=0&rt=1",
+			valid_template()
+		);
+		assert!(!parse(&first_off).unwrap().return_to_caller);
+		let first_on = format!(
+			"goblin:authorize?e={}&d=magick.market&cb=https://magick.market/cb&c={C}&rt=1&rt=0",
+			valid_template()
+		);
+		assert!(parse(&first_on).unwrap().return_to_caller);
+	}
+
+	#[test]
+	fn parse_return_flag_unit() {
+		assert!(parse_return_flag(None), "absent -> default return");
+		assert!(parse_return_flag(Some("1")), "1 -> return");
+		assert!(!parse_return_flag(Some("0")), "0 -> no return");
+		assert!(parse_return_flag(Some("")), "empty -> default return");
+		assert!(
+			parse_return_flag(Some("garbage")),
+			"garbage -> default return"
+		);
+		// Percent-encoded 0 decodes to a real disable.
+		assert!(
+			!parse_return_flag(Some("%30")),
+			"%30 decodes to 0 -> no return"
+		);
+	}
+
+	#[test]
+	fn return_decision_waits_for_completion() {
+		// The return decision is NEVER taken while the POST is pending (None) or
+		// after it failed, and never while a required publish is unconfirmed:
+		// backgrounding early strands the completion work in a paused app.
+		assert!(
+			!should_return_to_caller(true, None, true),
+			"pending POST must not return"
+		);
+		assert!(
+			!should_return_to_caller(true, Some(false), true),
+			"failed POST must not return"
+		);
+		assert!(
+			!should_return_to_caller(true, Some(true), false),
+			"unconfirmed publish must not return"
+		);
+		assert!(
+			!should_return_to_caller(true, None, false),
+			"nothing done yet must not return"
+		);
+		// Only a fully complete flow with the flag allowing it returns.
+		assert!(should_return_to_caller(true, Some(true), true));
+		// And the rt=0 flag suppresses the return even when fully complete.
+		assert!(!should_return_to_caller(false, Some(true), true));
+		assert!(!should_return_to_caller(false, None, false));
 	}
 
 	#[test]
