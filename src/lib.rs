@@ -277,13 +277,29 @@ pub fn setup_fonts(ctx: &Context) {
 		"noto-tsu".to_owned(),
 		plain(include_bytes!("../fonts/NotoSansJpTsu.otf")),
 	);
+	// Noto Sans CJK KR, subset to Hangul (syllables + Jamo) plus Latin/CJK
+	// punctuation (~1.9 MB) — the `ko` locale's script, not covered by the SC
+	// font above (Hangul and Han ideographs are disjoint Unicode blocks).
+	fonts.font_data.insert(
+		"noto-kr".to_owned(),
+		Arc::new(
+			egui::FontData::from_static(include_bytes!("../fonts/noto_kr_reg.otf")).tweak(
+				egui::FontTweak {
+					scale: 1.0,
+					y_offset_factor: -0.08,
+					y_offset: 0.0,
+				},
+			),
+		),
+	);
 
-	// Default proportional stack: Geist first, icons and CJK/ツ as fallback.
+	// Default proportional stack: Geist first, icons and CJK/Hangul/ツ as fallback.
 	{
 		let prop = fonts.families.entry(Proportional).or_default();
 		prop.insert(0, "geist".to_owned());
 		prop.insert(1, "phosphor".to_owned());
 		prop.insert(2, "noto".to_owned());
+		prop.insert(3, "noto-kr".to_owned());
 	}
 	// Monospace stack for amounts (tabular digits).
 	{
@@ -291,8 +307,9 @@ pub fn setup_fonts(ctx: &Context) {
 		mono.insert(0, "geist-mono".to_owned());
 		mono.insert(1, "phosphor".to_owned());
 		mono.insert(2, "noto".to_owned());
+		mono.insert(3, "noto-kr".to_owned());
 	}
-	// Named weight families, each with icon + CJK fallback.
+	// Named weight families, each with icon + CJK/Hangul fallback.
 	for name in [
 		"geist-medium",
 		"geist-semibold",
@@ -301,7 +318,12 @@ pub fn setup_fonts(ctx: &Context) {
 	] {
 		fonts.families.insert(
 			egui::FontFamily::Name(name.into()),
-			vec![name.to_owned(), "phosphor".to_owned(), "noto".to_owned()],
+			vec![
+				name.to_owned(),
+				"phosphor".to_owned(),
+				"noto".to_owned(),
+				"noto-kr".to_owned(),
+			],
 		);
 	}
 	// Puck ツ family: the subset first, then the normal fallbacks so anything

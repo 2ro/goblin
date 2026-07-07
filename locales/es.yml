@@ -1,0 +1,964 @@
+lang_name: Español
+copy: Copiar
+paste: Pegar
+continue: Continuar
+complete: Completar
+error: Error
+retry: Reintentar
+close: Cerrar
+change: Cambiar
+show: Mostrar
+delete: Eliminar
+clear: Borrar
+create: Crear
+id: Identificador
+kernel: Kernel
+settings: Ajustes
+language: Idioma
+scan: Escanear
+qr_code: Código QR
+scan_qr: Escanear código QR
+repeat: Repetir
+scan_result: Resultado del escaneo
+back: Atrás
+share: Compartir
+theme: 'Tema:'
+dark: Oscuro
+light: Claro
+file: Archivo
+choose_file: Elegir archivo
+choose_folder: Elegir carpeta
+crash_report: Informe de fallos
+crash_report_warning: La aplicación se cerró inesperadamente la última vez, puedes compartir el informe de fallos con los desarrolladores.
+confirmation: Confirmación
+enter_url: Ingresa la URL
+max_short: MÁX
+files_location: Ubicación de archivos
+moving_files: Moviendo archivos
+wrong_path_error: Ruta especificada incorrecta
+check_updates: Buscar actualizaciones al iniciar
+update_available: ¡Hay una actualización disponible!
+changelog: 'Registro de cambios:'
+wallets:
+  await_conf_amount: Esperando confirmación
+  await_fin_amount: Esperando finalización
+  locked_amount: Bloqueado
+  txs_empty: 'Para recibir fondos manualmente o por transporte, usa los botones %{message} o %{transport} en la parte inferior de la pantalla; para cambiar los ajustes de la billetera, presiona el botón %{settings}.'
+  title: Goblin
+  create_desc: Crea o importa una billetera existente a partir de una frase de recuperación guardada.
+  add: Agregar billetera
+  name: 'Nombre:'
+  pass: 'Contraseña:'
+  pass_empty: Ingresa la contraseña de la billetera
+  current_pass: 'Contraseña actual:'
+  new_pass: 'Contraseña nueva:'
+  min_tx_conf_count: 'Cantidad mínima de confirmaciones para las transacciones:'
+  recover: Restaurar
+  recovery_phrase: Frase de recuperación
+  words_count: 'Cantidad de palabras:'
+  enter_word: 'Ingresa la palabra #%{number}:'
+  not_valid_word: La palabra ingresada no es válida
+  not_valid_phrase: La frase ingresada no es válida
+  create_phrase_desc: Escribe y guarda tu frase de recuperación en un lugar seguro.
+  restore_phrase_desc: Ingresa las palabras de tu frase de recuperación guardada.
+  setup_conn_desc: Elige cómo se conecta tu billetera a la red.
+  conn_method: Método de conexión
+  ext_conn: 'Conexiones externas:'
+  add_node: Agregar nodo
+  node_url: 'URL del nodo:'
+  node_secret: 'Secreto de API (opcional):'
+  invalid_url: La URL ingresada no es válida
+  open: Abrir la billetera
+  wrong_pass: La contraseña ingresada es incorrecta
+  locked: Bloqueada
+  unlocked: Desbloqueada
+  enable_node: 'Activa el nodo integrado para usar la billetera, o cambia los ajustes de conexión seleccionando %{settings} en la parte inferior de la pantalla.'
+  node_loading: 'La billetera se cargará después de sincronizar el nodo integrado; puedes cambiar la conexión seleccionando %{settings} en la parte inferior de la pantalla.'
+  loading: Cargando
+  closing: Cerrando
+  checking: Verificando
+  default_wallet: Billetera predeterminada
+  new_account_desc: 'Ingresa el nombre de la nueva cuenta:'
+  wallet_loading: Cargando billetera
+  wallet_closing: Cerrando billetera
+  wallet_checking: Verificando billetera
+  tx_loading: Cargando transacciones
+  default_account: Cuenta predeterminada
+  accounts: Cuentas
+  tx_sent: Enviado
+  tx_received: Recibido
+  tx_sending: Enviando
+  tx_receiving: Recibiendo
+  tx_confirming: Esperando confirmación
+  tx_canceled: Cancelado
+  tx_cancelling: Cancelando
+  tx_finalizing: Finalizando
+  tx_posting: Publicando
+  tx_confirmed: Confirmado
+  tx_stale: Pendiente por demasiado tiempo
+  txs: Transacciones
+  tx: Transacción
+  messages: Mensajes
+  transport: Transporte
+  input_slatepack_desc: 'Ingresa el mensaje Slatepack recibido para crear una respuesta o finalizar la solicitud:'
+  parse_slatepack_err: 'Ocurrió un error al leer el mensaje, verifica los datos ingresados:'
+  pay_balance_error: 'El saldo de la cuenta es insuficiente para pagar %{amount} ツ y la comisión de red.'
+  parse_i1_slatepack_desc: 'Para pagar %{amount} ツ, envía este mensaje al destinatario:'
+  parse_i2_slatepack_desc: 'Finaliza la transacción para recibir %{amount} ツ:'
+  parse_i3_slatepack_desc: 'Publica la transacción para finalizar la recepción de %{amount} ツ:'
+  parse_s1_slatepack_desc: 'Para recibir %{amount} ツ, envía este mensaje al remitente:'
+  parse_s2_slatepack_desc: 'Finaliza la transacción para enviar %{amount} ツ:'
+  parse_s3_slatepack_desc: 'Publica la transacción para finalizar el envío de %{amount} ツ:'
+  resp_slatepack_err: 'Ocurrió un error al crear la respuesta, verifica los datos ingresados o inténtalo de nuevo:'
+  resp_exists_err: Esa transacción ya existe.
+  resp_canceled_err: Esa transacción ya fue cancelada.
+  create_request_desc: 'Crea una solicitud para enviar o recibir los fondos:'
+  send_request_desc: 'Has creado una solicitud para enviar %{amount} ツ. Envía este mensaje al destinatario:'
+  send_slatepack_err: Ocurrió un error al crear la solicitud para enviar fondos, verifica los datos ingresados o inténtalo de nuevo.
+  invoice_desc: 'Has creado una solicitud para recibir %{amount} ツ. Envía este mensaje al remitente:'
+  invoice_slatepack_err: Ocurrió un error al emitir la factura, verifica los datos ingresados o inténtalo de nuevo.
+  finalize_slatepack_err: 'Ocurrió un error durante la finalización, verifica los datos ingresados o inténtalo de nuevo:'
+  finalize: Finalizar
+  use_dandelion: Usar Dandelion
+  enter_amount_send: 'Tienes %{amount} ツ. Ingresa el monto a enviar:'
+  enter_amount_receive: 'Ingresa el monto a recibir:'
+  recovery: Recuperación
+  repair_wallet: Reparar billetera
+  repair_desc: Verifica la billetera, reparando y restaurando salidas faltantes si es necesario. Esta operación tomará tiempo.
+  repair_unavailable: Necesitas una conexión activa al nodo y la sincronización completa de la billetera.
+  delete: Eliminar billetera
+  delete_conf: ¿Seguro que quieres eliminar la billetera?
+  delete_desc: Asegúrate de haber guardado tu frase de recuperación para acceder a los fondos más adelante.
+  wallet_loading_err: 'Ocurrió un error al sincronizar la billetera, puedes reintentar o cambiar los ajustes de conexión seleccionando %{settings} en la parte inferior de la pantalla.'
+  wallet: Billetera
+  send: Enviar
+  receive: Recibir
+  settings: Ajustes de la billetera
+  tx_send_cancel_conf: '¿Seguro que quieres cancelar el envío de %{amount} ツ?'
+  tx_receive_cancel_conf: '¿Seguro que quieres cancelar la recepción de %{amount} ツ?'
+  rec_phrase_not_found: Frase de recuperación no encontrada.
+  restore_wallet_desc: Restaura la billetera eliminando todos los archivos si la reparación habitual no ayudó, deberás volver a abrir tu billetera.
+  fee_base_desc: 'Comisión (valor base%{value}):'
+  payment_proof: Comprobante de pago
+  payment_proof_desc: 'Ingresa el comprobante de pago recibido para verificar la transacción:'
+  payment_proof_valid: 'El comprobante de pago ingresado es válido:'
+  payment_proof_error: 'El comprobante de pago ingresado no es válido:'
+  tx_delete_confirmation: ¿Seguro que quieres eliminar la transacción del historial?
+transport:
+  desc: 'Usa el transporte para recibir o enviar mensajes de forma síncrona:'
+  tor_network: Red Tor
+  connected: Conectado
+  connecting: Conectando
+  disconnecting: Desconectando
+  conn_error: Error de conexión
+  disconnected: Desconectado
+  receiver_address: 'Dirección del destinatario:'
+  incorrect_addr_err: 'La dirección ingresada es incorrecta:'
+  tor_send_error: Ocurrió un error al enviar por Tor, asegúrate de que el destinatario esté en línea, la transacción fue cancelada.
+  tor_autorun_desc: Si se debe iniciar el servicio Tor al abrir la billetera para recibir transacciones de forma síncrona.
+  tor_sending: Enviando por Tor
+  tor_settings: Ajustes de Tor
+  bridges: Puentes
+  bridges_desc: Configura puentes para evitar la censura de la red Tor si la conexión habitual no funciona.
+  bin_file: 'Archivo binario:'
+  conn_line: 'Línea de conexión:'
+  bridges_disabled: Puentes desactivados
+  bridge_name: 'Puente %{b}'
+network:
+  self: Red
+  type: 'Tipo de red:'
+  mainnet: Principal
+  testnet: Prueba
+  connections: Conexiones
+  node: Nodo integrado
+  metrics: Métricas
+  mining: Minería
+  settings: Ajustes del nodo
+  enable_node: Activar nodo
+  autorun: Inicio automático
+  disabled_server: 'Activa el nodo integrado o agrega otro método de conexión presionando %{dots} en la esquina superior izquierda de la pantalla.'
+  no_ips: No hay direcciones IP disponibles en tu sistema, el servidor no puede iniciarse, verifica tu conectividad de red.
+  available: Disponible
+  not_available: No disponible
+  availability_check: Verificación de disponibilidad
+  android_warning: Atención usuarios de Android. Para sincronizar el nodo integrado correctamente, debes permitir el acceso a las notificaciones y quitar las restricciones de uso de batería para la aplicación Goblin en los ajustes del sistema de tu teléfono. Esto es necesario para que la aplicación funcione correctamente en segundo plano.
+sync_status:
+  node_restarting: El nodo se está reiniciando
+  node_down: El nodo está caído
+  initial: El nodo está iniciando
+  no_sync: El nodo está en ejecución
+  awaiting_peers: Esperando pares
+  header_sync: Descargando encabezados
+  header_sync_percent: 'Descargando encabezados: %{percent}%'
+  tx_hashset_pibd: Descargando estado (PIBD)
+  tx_hashset_pibd_percent: 'Descargando estado (PIBD): %{percent}%'
+  tx_hashset_download: Descargando estado
+  tx_hashset_download_percent: 'Descargando estado: %{percent}%'
+  tx_hashset_setup_history: 'Preparando estado (historial): %{percent}%'
+  tx_hashset_setup_position: 'Preparando estado (posición): %{percent}%'
+  tx_hashset_setup: Preparando estado
+  tx_hashset_range_proofs_validation: 'Validando estado (pruebas de rango): %{percent}%'
+  tx_hashset_kernels_validation: 'Validando estado (kernels): %{percent}%'
+  tx_hashset_save: Finalizando estado de la cadena
+  body_sync: Descargando bloques
+  body_sync_percent: 'Descargando bloques: %{percent}%'
+  shutdown: El nodo se está apagando
+network_node:
+  header: Encabezado
+  block: Bloque
+  hash: Hash
+  height: Altura
+  difficulty: Dificultad
+  time: Tiempo
+  main_pool: Pool principal
+  stem_pool: Pool stem
+  data: Datos
+  size: Tamaño (GB)
+  peers: Pares
+  error_clean: Los datos del nodo se corrompieron, se requiere resincronización.
+  resync: Resincronizar
+  error_p2p_api: 'Ocurrió un error al inicializar el servidor %{p2p_api}, verifica los ajustes de %{p2p_api} seleccionando %{settings} en la parte inferior de la pantalla.'
+  error_config: 'Ocurrió un error al inicializar la configuración, verifica los ajustes seleccionando %{settings} en la parte inferior de la pantalla.'
+  error_unknown: 'Ocurrió un error durante la inicialización, verifica los ajustes del nodo integrado seleccionando %{settings} en la parte inferior de la pantalla o resincroniza.'
+network_metrics:
+  loading: Las métricas estarán disponibles después de la sincronización
+  emission: Emisión
+  inflation: Inflación
+  supply: Oferta
+  block_time: Tiempo de bloque
+  reward: Recompensa
+  difficulty_window: 'Ventana de dificultad %{size}'
+network_mining:
+  loading: La minería estará disponible después de la sincronización
+  info: 'El servidor de minería está activado, puedes cambiar sus ajustes seleccionando %{settings} en la parte inferior de la pantalla. Los datos se actualizan cuando hay dispositivos conectados.'
+  restart_server_required: Se requiere reiniciar el servidor para aplicar los cambios.
+  rewards_wallet: Billetera para recompensas
+  server: Servidor Stratum
+  address: Dirección
+  miners: Mineros
+  devices: Dispositivos
+  blocks_found: Bloques encontrados
+  hashrate: 'Hashrate (C%{bits})'
+  connected: Conectado
+  disconnected: Desconectado
+network_settings:
+  change_value: Cambiar valor
+  stratum_ip: 'Dirección IP de Stratum:'
+  stratum_port: 'Puerto de Stratum:'
+  port_unavailable: El puerto especificado no está disponible
+  restart_node_required: Se requiere reiniciar el nodo para aplicar los cambios.
+  choose_wallet: Elegir billetera
+  stratum_wallet_warning: La billetera debe estar abierta para recibir recompensas.
+  enable: Activar
+  disable: Desactivar
+  restart: Reiniciar
+  server: Servidor
+  api_ip: 'Dirección IP de la API:'
+  api_port: 'Puerto de la API:'
+  api_secret: 'Token de la API REST y de la API de propietario V2:'
+  foreign_api_secret: 'Token de API externa:'
+  disabled: Desactivado
+  enabled: Activado
+  ftl: 'El límite de tiempo futuro (FTL):'
+  ftl_description: Límite de cuán adelantada al futuro, en segundos respecto a la hora local del nodo, puede estar la marca de tiempo de un nuevo bloque para que sea aceptado.
+  not_valid_value: El valor ingresado no es válido
+  full_validation: Validación completa
+  full_validation_description: Si se debe ejecutar una validación completa de la cadena al procesar cada bloque (excepto durante la sincronización).
+  archive_mode: Modo archivo
+  archive_mode_desc: Ejecuta el nodo en modo archivo completo (se requerirá más espacio en disco y tiempo para la sincronización).
+  attempt_time: 'Tiempo de intento de minería (en segundos):'
+  attempt_time_desc: El tiempo durante el cual se intenta minar sobre un encabezado en particular antes de detenerse y volver a recolectar transacciones del pool
+  min_share_diff: 'La dificultad mínima aceptable del share:'
+  reset_settings_desc: Restablece los ajustes del nodo a los valores predeterminados
+  reset_settings: Restablecer ajustes
+  reset: Restablecer
+  tx_pool: Pool de transacciones
+  pool_fee: 'Comisión base aceptada en el pool:'
+  reorg_period: 'Período de retención de la caché de reorganización (en minutos):'
+  max_tx_pool: 'Cantidad máxima de transacciones en el pool:'
+  max_tx_stempool: 'Cantidad máxima de transacciones en el stem-pool:'
+  max_tx_weight: 'Peso total máximo de las transacciones que pueden seleccionarse para construir un bloque:'
+  epoch_duration: 'Duración de la época (en segundos):'
+  embargo_timer: 'Temporizador de embargo (en segundos):'
+  aggregation_period: 'Período de agregación (en segundos):'
+  stem_probability: 'Probabilidad de la fase stem:'
+  stem_txs: Transacciones stem
+  p2p_server: Servidor P2P
+  p2p_port: 'Puerto P2P:'
+  add_seed: Agregar semilla DNS
+  seed_address: 'Dirección de semilla DNS:'
+  add_peer: Agregar par
+  peer_address: 'Dirección del par:'
+  peer_address_error: 'Ingresa la dirección IP o el nombre DNS (asegúrate de que el host especificado esté disponible) en el formato correcto, por ejemplo: 192.168.0.1:1234 o example.com:5678'
+  default: Predeterminado
+  allow_list: Lista de permitidos
+  allow_list_desc: Conéctate solo a los pares de esta lista.
+  deny_list: Lista de bloqueados
+  deny_list_desc: Nunca te conectes a los pares de esta lista.
+  favourites: Favoritos
+  favourites_desc: Una lista de pares preferidos a los que conectarse.
+  ban_window: 'Cuánto tiempo (en segundos) debe permanecer baneado un par baneado:'
+  ban_window_desc: La decisión de banear la toma el nodo, según la corrección de los datos recibidos del par.
+  max_inbound_count: 'Cantidad máxima de conexiones entrantes de pares:'
+  max_outbound_count: 'Cantidad máxima de conexiones salientes de pares:'
+  reset_data_desc: Restablece los datos del nodo. Úsalo con precaución, solo si hay problemas de sincronización.
+  reset_data: Restablecer datos
+modal:
+  cancel: Cancelar
+  save: Guardar
+  add: Agregar
+modal_exit:
+  description: ¿Seguro que quieres salir de la aplicación?
+  exit: Salir
+app_settings:
+  proxy: Proxy
+  proxy_desc: Si se debe usar un proxy para las solicitudes de red de la aplicación.
+keyboard:
+  1: 1
+  2: 2
+  3: 3
+  4: 4
+  5: 5
+  6: 6
+  7: 7
+  8: 8
+  9: 9
+  0: 0
+  01: '-'
+  q: q
+  w: w
+  e: e
+  r: r
+  t: t
+  y: y
+  u: u
+  i: i
+  o: o
+  p: p
+  p1: '"'
+  a: a
+  s: s
+  d: d
+  f: f
+  g: g
+  h: h
+  j: j
+  k: k
+  l: l
+  l1: ñ
+  l2: ':'
+  z: z
+  x: x
+  c: c
+  v: v
+  b: b
+  n: n
+  m: m
+  m1: ','
+  m2: .
+  m3: /
+goblin:
+  home:
+    anonymous: "Anónimo"
+    connected_nym: "Conectado por Tor"
+    nym_ready: "Tor listo · relés…"
+    connecting_nym: "Conectando a Tor…"
+    cant_reach_node: "No se puede conectar con el nodo"
+    node_synced: "Nodo sincronizado"
+    syncing: "Sincronizando…"
+    balance_updating: "Actualizando saldo…"
+    balance_stale: "No se puede conectar con el nodo · último saldo conocido"
+    fiat_unavailable: "Tasa no disponible"
+    listening: "Esperando pagos"
+    block: "Bloque %{height}"
+    waiting_for_chain: "Esperando la cadena…"
+    nav_wallet: "Billetera"
+    nav_pay: "Pagar"
+    nav_activity: "Actividad"
+    nav_receive: "Recibir"
+    nav_settings: "Ajustes"
+    back_again: "Presiona atrás de nuevo para cambiar de billetera"
+    activity: "Actividad"
+    news: "Novedades"
+    empty_title: "Aún no hay actividad"
+    empty_sub: "Envía o recibe grin para comenzar."
+    recent: "Reciente"
+    scan_to_pay: "Escanear para pagar"
+    type_amount: "Escribe un monto"
+    request: "Solicitar"
+    pay: "Pagar"
+    enter_amount: "Ingresa un monto para pagar o solicitar"
+  activity:
+    canceled: "cancelado"
+    pending: "pendiente"
+    earlier: "Antes"
+    today: "Hoy"
+    yesterday: "Ayer"
+    title: "Actividad"
+    requests: "Solicitudes"
+    empty_title: "Aún no hay actividad"
+    empty_sub: "Tus pagos aparecerán aquí."
+    pending_header: "Pendiente"
+  receipt:
+    title: "Recibo"
+    not_found: "Transacción no encontrada"
+    for_note: "Por %{note}"
+    details: "Detalles de la transacción"
+    canceled: "Cancelado"
+    expired: "Expirado"
+    funds_returned: "Fondos devueltos"
+    complete: "Completo"
+    payment_received: "Pago recibido"
+    payment_sent: "Pago enviado con éxito"
+    pending: "Pendiente"
+    confs: "%{c}/%{r} confirmaciones"
+    waiting_to_confirm: "Esperando confirmación"
+    paying: "Pagando…"
+    you: "Tú"
+    to: "Para"
+    from: "De"
+    nostr: "nostr"
+    identity: "Identidad"
+    fee_none: "Ninguna"
+    network_fee: "Comisión de red"
+    privacy: "Privacidad"
+    privacy_value: "Mimblewimble + Tor"
+    transaction: "Transacción"
+    cancel_request: "Cancelar solicitud"
+    cancel_send: "Cancelar pago"
+    stale_note: "Este pago lleva pendiente un tiempo."
+    cancel_send_confirm: "Toca de nuevo para cancelar — igual podrían recibirlo"
+    cancel_send_done: "Pago cancelado — tus fondos están disponibles de nuevo"
+    cancel_send_too_late: "Este pago ya se completó y no se puede cancelar"
+    waiting_to_receive: "Esperando a que %{name} lo reciba…"
+  request:
+    title: "Solicitudes de %{name}"
+    approve: "Aprobar"
+    decline: "Rechazar"
+    review_title: "Revisar solicitud"
+    hold_to_accept: "Mantén presionado para aceptar"
+    hold_accept_hint: "Mantén presionado para pagar esta solicitud"
+  receive:
+    title: "Recibir"
+    requesting: "Solicitando %{amt}%{tsu} — comparte para que te paguen"
+    clear_request: "Borrar solicitud"
+    share_handle: "Comparte tu identificador para que te paguen"
+    share_npub: "Comparte tu npub para que te paguen"
+    copied: "Copiado"
+    copy_nostr_id: "Copiar ID de nostr"
+    copy_address: "Copiar dirección"
+    copy_npub: "Copiar npub"
+    share_message: "Págame en Goblin (goblin.st) — %{npub}"
+    privacy_note: "Tu nombre de usuario es público. El contenido de los pagos permanece cifrado en la red."
+    privacy_note_npub: "Tu npub es público. El contenido de los pagos permanece cifrado en la red."
+  profile:
+    title: "Perfil"
+    activity: "Actividad"
+    no_activity: "Aún no hay actividad con esta persona."
+    unblock: "Desbloquear"
+    block: "Bloquear"
+    blocked_blurb: "Bloqueado — sus pagos y solicitudes se descartan."
+    block_blurb: "Bloquear descarta sus pagos y solicitudes entrantes."
+  settings:
+    title: "Ajustes"
+    connected_nostr: "Conectado a nostr"
+    connecting_relays: "Conectando a relés…"
+    identity: "Identidad"
+    copy_npub: "Copiar npub (público)"
+    rotate_key: "Rotar clave nostr"
+    import_identity: "Importar identidad (.backup / nsec)"
+    backup_note: "¿Cambiando de dispositivo? Respalda AMBOS: tu frase de recuperación (fondos) y tu archivo .backup de identidad (nombre + clave)."
+    wallet: "Billetera"
+    display_unit: "Unidad de visualización"
+    relays: "Relés"
+    nostr_relays: "Relés de nostr"
+    node: "Nodo"
+    min_conf: "Confirmaciones mínimas"
+    integrated_node: "Ajustes del nodo integrado"
+    node_advanced: "Avanzado"
+    slatepacks: "Slatepacks"
+    slatepacks_value: "Transacción manual"
+    trusted_sites: "Sitios de confianza"
+    lock_wallet: "Bloquear billetera"
+    switch_wallet: "Cambiar de billetera"
+    advanced: "Avanzado"
+    privacy: "Privacidad"
+    mixnet_routing: "Enrutamiento por Tor"
+    messages_lookups: "Mensajes y consultas"
+    auto_accept: "Aceptación automática"
+    pairing: "Moneda de referencia"
+    accept_anyone: "Cualquiera"
+    accept_contacts: "Solo contactos"
+    accept_ask: "Preguntar siempre"
+    requests: "Solicitudes"
+    incoming_requests: "Solicitudes entrantes"
+    incoming_requests_sub: "Permite que otros te soliciten dinero"
+    hide_amounts: "Ocultar montos"
+    hide_amounts_sub: "Ocultar los montos recibidos en las notificaciones"
+    language: "Idioma"
+    update_available: "Actualización disponible"
+    appearance: "Apariencia"
+    theme: "Tema"
+    theme_light: "Claro"
+    theme_dark: "Oscuro"
+    theme_yellow: "Amarillo"
+    archive: "Archivo"
+    export_archive: "Exportar archivo"
+    wipe_history: "Borrar historial de pagos"
+    wipe_history_confirm: "Toca de nuevo para borrar — esto no se puede deshacer"
+    about: "Acerca de"
+    goblin: "Goblin"
+    build: "Build %{build}"
+    network: "Red"
+    network_value: "MW + Tor + nostr"
+    third_party: "Terceros"
+    grim: "GRIM (billetera original)"
+    grin_node: "Nodo de Grin"
+    sp_intro: "Avanzado — intercambia slatepacks en bruto a mano, como lo hace GRIM. Úsalo solo cuando no puedas pagar o recibir pagos mediante un nombre de usuario."
+    sp_receive_group: "Recibir o finalizar"
+    sp_receive_blurb: "Pega un slatepack que alguien te dio. Goblin recibe el pago, paga la factura, o lo finaliza y lo publica."
+    sp_process: "Procesar slatepack"
+    sp_paste_first: "Pega primero un slatepack."
+    sp_reply_ready: "Respuesta lista — envíasela de vuelta al remitente."
+    sp_finalizing: "Finalizando y publicando en la cadena…"
+    sp_create_group: "Crear un pago"
+    sp_create_blurb: "Crea un slatepack para entregárselo a alguien. Lo recibe, te envía la respuesta de vuelta, y tú lo finalizas arriba."
+    sp_amount_hint: "Monto en grin"
+    sp_addr_hint: "Dirección del destinatario (opcional)"
+    sp_create: "Crear slatepack"
+    sp_ready: "Slatepack listo — entrégaselo al destinatario."
+    sp_amount_gt_zero: "Ingresa un monto mayor que cero."
+    sp_to_send: "Slatepack para enviar"
+    sp_copy: "Copiar slatepack"
+    rotate_line1: "• Obtienes una clave ALEATORIA totalmente nueva; el npub anterior deja de recibir. No hay ninguna cadena de derivación entre ellas."
+    rotate_line2: "• La nueva clave NO se puede recuperar desde tu frase de recuperación — respalda el nuevo nsec justo después de rotar."
+    rotate_line3: "• Tu nombre de usuario queda LIBERADO — reclama el mismo u otro nuevo justo después (cualquier otra persona puede tomarlo en cuanto quede libre)."
+    rotate_line4: "• Los pagos aún en camino hacia la clave anterior SE INTERRUMPIRÁN — espera a que terminen los pagos pendientes antes de continuar."
+    rotate_line5: "• Los contactos que guardaron tu npub directamente deberán encontrarte de nuevo — comparte tu nuevo npub o tu nombre de usuario reclamado de nuevo."
+    cancel: "Cancelar"
+    continue: "Continuar"
+    final_confirmation: "Confirmación final"
+    rotate_confirm_blurb: "Esto no se puede deshacer desde la app. Escribe RESET e ingresa tu contraseña de billetera para rotar."
+    type_reset: "Escribe RESET"
+    wallet_password: "Contraseña de la billetera"
+    rotate_key_btn: "Rotar clave"
+    rotating_key: "Rotando clave…"
+    key_rotated: "Clave rotada"
+    new_npub: "Nuevo npub: %{npub}"
+    backup_new_key: "Respalda la NUEVA clave secreta ahora — tu frase de recuperación no puede recuperarla."
+    copy_new_nsec: "Copiar respaldo del nuevo nsec"
+    done: "Listo"
+    rotation_failed: "Error al rotar"
+    close: "Cerrar"
+    import_identity_title: "Importar identidad"
+    import_blurb: "Reemplaza la identidad nostr de esta billetera — elige un archivo .backup de GOBLIN, o pega un nsec directamente. Un respaldo también restaura tu nombre de usuario e historial. Respalda primero la clave actual si aún la necesitas."
+    import_nsec_hint: "nsec1… o respaldo pegado"
+    backup_password_hint: "Contraseña del respaldo (solo si se exportó en otro lugar)"
+    import_btn: "Importar"
+    importing: "Importando…"
+    identity_replaced: "Identidad reemplazada"
+    now_using: "Ahora usando: %{npub}"
+    import_failed: "Error al importar"
+    name_authority: "Autoridad de nombres"
+    name_authority_title: "Cambiar autoridad de nombres"
+    name_authority_blurb: "El servidor que registra y verifica los nombres. Apúntalo a otra instancia para usar y pagar nombres alojados allí."
+    name_authority_invalid: "Ingresa una URL completa (https://…)."
+    reset: "Restablecer"
+    save: "Guardar"
+    backup_file: "Respaldar en un archivo"
+    choose_backup_file: "Elegir un archivo .backup"
+    backup_read_failed: "No se pudo leer ese archivo."
+    backup_saved: "Respaldo guardado"
+    backup_saved_sub: "Mantén el archivo .backup a salvo — cualquiera que lo tenga JUNTO CON tu contraseña puede restaurar tu identidad."
+    backup_file_title: "Respaldar identidad"
+    backup_file_blurb: "Crea un archivo .backup cifrado con tu nombre de usuario y clave. Ingresa tu contraseña de billetera para sellarlo."
+    backup_write_failed: "No se pudo guardar el archivo."
+    create_backup: "Crear respaldo"
+    registered: "%{name} registrado"
+    released_msg: "Liberado — el nombre está disponible"
+    release_confirm: "¿Liberar %{name}?"
+    release_blurb: "Queda disponible en cuanto se libera — cualquiera puede reclamarlo, incluida la próxima clave a la que rotes. No podrás registrar otro nombre de usuario durante 10 minutos."
+    releasing: "Liberando…"
+    keep_it: "Conservarlo"
+    release_it: "Liberarlo"
+    username: "Nombre de usuario"
+    username_note: "Se muestra como tu nombre. Público en goblin.st. Los pagos permanecen cifrados."
+    release_username: "Liberar nombre de usuario"
+    pick_username: "Elige un nombre de usuario — opcional"
+    working: "Procesando…"
+    claim: "Reclamar"
+    err_just_taken: "Ese nombre de usuario acaba de ser tomado"
+    err_cooldown: "Liberaste recientemente un nombre de usuario — podrás registrar uno nuevo dentro de 10 minutos."
+    err_unreachable: "No se pudo conectar con goblin.st — problema de conexión. Inténtalo de nuevo."
+    err_release: "No se pudo liberar: %{err}"
+    avail_available: "¡Disponible!"
+    avail_taken: "Ocupado"
+    avail_reserved: "Reservado"
+    avail_invalid: "Los nombres tienen entre 3 y 20 caracteres: a–z, 0–9, _ o -"
+    avail_quarantined: "No disponible"
+    avail_unknown: "No se pudo verificar — problema de conexión. Inténtalo de nuevo."
+    username_none: "No establecido"
+    advanced_privacy: "Privacidad avanzada"
+    tap_reveal: "Toca para revelar"
+    notif_someone: "Alguien"
+    notif_private_received: "Te pagaron. Abre Goblin para ver los detalles."
+    notif_private_requested: "Nueva solicitud de pago. Abre Goblin para ver los detalles."
+  username:
+    title: "Nombre de usuario"
+    authority: "Autoridad de nombres"
+    authority_blurb: "Dónde se registra y verifica tu nombre de usuario. Elige una conocida o apunta Goblin a otra instancia para usar los nombres alojados allí."
+    custom: "Autoridad personalizada"
+  advprivacy:
+    intro: "Controla lo que revelan tus notificaciones, y oculta tu saldo e historial en este dispositivo."
+    notifications: "Notificaciones"
+    hide_names: "Ocultar nombres"
+    hide_names_sub: "Omite quién pagó en las notificaciones"
+    hide_details: "Ocultar todos los detalles"
+    hide_details_sub: "Muestra solo una alerta privada, sin nombre ni monto"
+    anon: "Modo anónimo"
+    anon_toggle: "Difuminar saldo y actividad"
+    anon_sub: "Tu saldo y actividad se muestran como puntos hasta que toques para revelarlos"
+  advanced:
+    title: "Avanzado"
+    intro: "Herramientas de billetera de bajo nivel de GRIM. Normalmente no las necesitarás."
+    own_node_desc: "Sincroniza un nodo Grin completo en este dispositivo en lugar de confiar en uno público."
+    own_node_active: "Ejecutando tu propio nodo"
+    repair: "Reparar billetera"
+    repair_desc: "Vuelve a escanear la cadena y restaura las salidas faltantes. Esto puede tardar un rato."
+    repair_unavailable: "Primero necesitas una conexión sincronizada al nodo."
+    repairing: "Reparando… %{pct}%"
+    restore: "Restaurar billetera"
+    restore_desc: "Elimina los datos locales y reconstrúyelos desde tu frase de recuperación. Usa esto si una reparación no ayudó — volverás a abrir la billetera después."
+    restore_confirm: "Toca de nuevo para restaurar"
+    show_phrase: "Frase de recuperación"
+    phrase_desc: "Tus 24 palabras semilla de grin — la única forma de recuperar los fondos. Mantenlas fuera de línea y en privado."
+    reveal: "Mostrar frase"
+    hide: "Ocultar"
+    password: "Contraseña de la billetera"
+    wrong_password: "Contraseña incorrecta."
+    delete: "Eliminar billetera"
+    delete_desc: "Elimina permanentemente esta billetera de este dispositivo. Sin tu frase de recuperación, los fondos no se pueden recuperar."
+    delete_confirm: "Toca de nuevo para eliminar"
+    manage_node: "Administrar conexión del nodo"
+    repair_confirm: "Sí, reparar ahora"
+    repair_confirm_note: "La reparación vuelve a escanear la cadena y puede tardar unos minutos."
+    restore_confirm_note: "Esto borra los datos locales y los reconstruye desde tu frase de recuperación — puede tardar varios minutos."
+    nostr_key: "Clave nostr"
+    nostr_key_desc: "Tu nsec, la clave secreta de tu identidad nostr. Cópiala o muestra su código QR para iniciar sesión en apps de nostr como magick.market. Quien la tenga controla tu identidad, así que mantenla en privado."
+    reveal_nsec: "Mostrar clave"
+    copy_nsec: "Copiar nsec"
+    show_qr: "Mostrar QR"
+    hide_qr: "Ocultar QR"
+  privacy:
+    title: "Privacidad de red"
+    intro: "Goblin envía su tráfico privado a través de Tor, lo que oculta tu IP del relé — el cifrado oculta el resto, de modo que un relé no puede vincular un pago contigo."
+    payments: "Pagos"
+    payments_blurb: "Cada mensaje de nostr que transporta un slatepack."
+    usernames: "nombres de usuario"
+    usernames_blurb: "Búsquedas de nombres NIP-05 hacia y desde goblin.st."
+    price_avatars: "Precio"
+    price_avatars_blurb: "La tasa de cambio en vivo que se muestra junto a los montos."
+    over_mixnet: "Por Tor"
+    direct_connection: "Conexión directa"
+    grin_node: "Nodo de Grin"
+    grin_node_blurb: "Sincronización de bloques y transmisión de tu transacción a la red. Estos son datos públicos de la cadena, iguales para todos, y no están vinculados a tu identidad."
+  pairing:
+    title: "Referencia de precio"
+    intro: "Aquello contra lo que se muestran tu saldo y tus montos."
+    pair_with: "Vincular con"
+    rates_note: "Las tasas se obtienen por Tor, solo mientras haya una referencia activa — desactivado significa que ninguna solicitud de tasa sale de tu dispositivo."
+  relays:
+    title: "Relés"
+    intro: "Los mensajes de pago se replican en cada relé de abajo; basta con que uno sea alcanzable para recibir."
+    your_relays: "Tus relés"
+    add_relay: "Agregar relé"
+    add_relay_btn: "Agregar relé"
+    save_reconnect: "Guardar y reconectar"
+    none: "ninguno"
+    count: "%{n} relés"
+  node:
+    title: "Nodo"
+    connection: "Conexión"
+    integrated: "Nodo integrado"
+    applies_after: "Se aplica después de bloquear y desbloquear la billetera de nuevo."
+    add_external: "Agregar nodo externo"
+    api_secret_hint: "Secreto de API (opcional)"
+    add_node: "Agregar nodo"
+    integrated_host: "nodo integrado"
+    summary_syncing: "%{conn} · sincronizando"
+    summary_block: "Bloque %{height} · %{conn}"
+  nips:
+    title: "nostr y NIPs"
+    intro1: "Goblin habla nostr — un protocolo abierto de mensajes firmados que se transmiten a través de servidores relé simples. Tu billetera lleva su propia identidad nostr: una clave aleatoria independiente, mantenida deliberadamente separada de tus fondos y tu frase de recuperación. Cada pago viaja como un mensaje directo cifrado de extremo a extremo entre identidades, con el slatepack dentro."
+    intro2: "goblin.st es el servicio de nombres de Goblin: reclamar un nombre de usuario publica allí una asignación de nombre → clave (NIP-05), para que la gente pueda pagarte a ti en lugar de a un npub largo. El nombre de usuario es público; el contenido de los pagos nunca lo es. Los NIPs son los componentes del protocolo — toca uno para leer la especificación."
+    n05_title: "Nombres"
+    n05_blurb: "Asocia usuario@goblin.st con tu clave, de modo que los identificadores funcionen como direcciones."
+    n17_title: "Mensajes privados"
+    n17_blurb: "El sobre de mensaje directo cifrado en el que viaja cada pago."
+    n44_title: "Cifrado"
+    n44_blurb: "El cifrado autenticado usado dentro de esos mensajes."
+    n49_title: "Cifrado de clave"
+    n49_blurb: "Cómo se almacena la clave secreta en reposo, bloqueada por tu contraseña."
+    n59_title: "Envoltura de regalo"
+    n59_blurb: "Envuelve los mensajes para que los relés no puedan ver quién habla con quién."
+    n98_title: "Autenticación HTTP"
+    n98_blurb: "Firma la solicitud de registro de nombre de usuario ante goblin.st."
+  batch:
+    title: "Aprobar %{n} facturas"
+    blurb: "Emite %{n} solicitudes de pago de %{amount} cada una a %{name} — %{total} en total. Cada solicitud recibe su propia dirección de pago nueva."
+    approve: "Aprobar"
+  login:
+    title: "Iniciar sesión"
+    headline: "¿Iniciar sesión en %{domain}?"
+    identity: "Iniciando sesión como"
+    explain: "Esto firma una solicitud de inicio de sesión de un solo uso. No comparte tu clave ni permite que el sitio actúe en tu nombre."
+    pass_prompt: "Ingresa tu contraseña de billetera para iniciar sesión."
+    confirm: "Iniciar sesión"
+    sent: "Sesión iniciada en %{domain}"
+    failed: "No se pudo conectar con %{domain}. El inicio de sesión no se entregó."
+  authorize:
+    title: "Autorizar"
+    headline: "¿Autorizar %{domain}?"
+    kind_post: "Publicación pública"
+    kind_repost: "Republicación"
+    kind_reaction: "Reacción"
+    kind_article: "Artículo (formato largo)"
+    kind_unknown: "Tipo %{n} (no reconocido)"
+    unknown_caution: "Goblin no reconoce este tipo de evento. Aprueba solo si confías en %{domain}."
+    identity: "Firmando como"
+    explain: "Al aprobar se firma este único evento y se entrega a %{domain}. Goblin no publica nada, no se comparte ninguna clave, y el sitio no obtiene sesión ni capacidad futura."
+    pass_prompt: "Ingresa tu contraseña de billetera para autorizar."
+    confirm: "Autorizar"
+    sent: "%{domain} autorizado"
+    failed: "No se pudo conectar con %{domain}. No se entregó nada."
+    truncated: "truncado, %{n} caracteres más"
+    show_full: "Mostrar todo"
+    show_less: "Mostrar menos"
+    replying_to: "respondiendo a %{id}"
+    mentions: "menciona a %{id}"
+    repost_of: "republica %{id}"
+    by_author: "por %{id}"
+    reacts_to: "reacciona a %{id}"
+    article_title: "Título: %{title}"
+  trust:
+    title: "Confianza"
+    headline: "¿Confiar en %{domain}?"
+    identity: "Iniciando sesión como"
+    lead: "%{domain} puede actuar por ti durante esta sesión sin preguntar cada vez. Todo lo que gasta dinero siempre pregunta."
+    grant_intro: "Puede firmar sin preguntar:"
+    cat_social: "Publicaciones y reacciones"
+    cat_dm: "Mensajes directos"
+    cat_market: "Anuncios"
+    cat_identity: "Perfil y listas"
+    cat_delete: "Eliminaciones"
+    cat_http: "Subidas y autenticación HTTP"
+    cat_unknown: "Otro tipo de evento (tipo %{n})"
+    login_excluded: "El inicio de sesión nunca se otorga a un sitio."
+    money_line: "El dinero siempre pide tu contraseña. Nada se gasta ni se vende en silencio."
+    duration: "Dura solo esta sesión. Termínala cuando quieras en Ajustes, Sitios de confianza."
+    pass_prompt: "Ingresa tu contraseña de billetera para confiar en este sitio."
+    confirm_hold: "Mantén presionado para confiar durante esta sesión"
+    sent: "Confiando en %{domain} durante esta sesión"
+    failed: "No se pudo conectar con %{domain}. La sesión no se inició."
+    announce_failed: "Confianza otorgada, pero %{domain} aún no confirmó la sesión."
+    notice_volume: "Un sitio de confianza está firmando mucho."
+    notice_decrypt: "Un sitio de confianza está leyendo tus mensajes."
+  money:
+    title: "Confirmar"
+    headline: "¿Confirmar en %{domain}?"
+    identity: "Firmando como %{id}"
+    explain: "Esto mueve o compromete valor, así que siempre pregunta. Aprobar firma esta única acción."
+    pass_prompt: "Ingresa tu contraseña de billetera para confirmar."
+    confirm_hold: "Mantén presionado para confirmar"
+    encrypt_desc: "Un mensaje de pedido cifrado que compromete un pago."
+  trusted_sites:
+    title: "Sitios de confianza"
+    intro: "Los sitios en los que confiaste esta sesión pueden firmar acciones de bajo riesgo sin preguntar. El dinero siempre pregunta. Termina cualquier sesión aquí."
+    empty: "No hay sitios de confianza. Confía en un sitio al iniciar sesión para darle una sesión de firma."
+    none: "nada"
+    can_sign: "Puede firmar en silencio: %{cats}"
+    time_left: "Termina en %{mins} min"
+    paused: "En pausa, firmando mucho"
+    resume: "Reanudar"
+    end: "Terminar sesión"
+  identities:
+    title: "Identidades"
+    switch_hint: "Cambiar de identidad"
+    blurb: "Tus identidades son los nombres bajo los que te pagan. Todas pagan a esta misma billetera. Agrega una nueva, cambia entre ellas, o elimina la que no necesites."
+    privacy_note: "Estas identidades comparten una billetera y un saldo — puertas de entrada separadas, no fondos separados. Para dinero verdaderamente separado, usa una billetera aparte."
+    held: "Identidades guardadas"
+    add: "Agregar identidad"
+    add_title: "Agregar una identidad"
+    nsec_hint: "Pega un nsec"
+    generate_note: "Se creará una clave nueva y anónima para esta billetera."
+    generate: "Generar"
+    import: "Importar"
+    choose_backup: "Elegir un archivo .backup"
+    backup_selected: "Archivo de respaldo seleccionado"
+    delete_short: "Eliminar identidad"
+    delete_title: "¿Eliminar %{name}?"
+    delete_blurb: "Esto elimina permanentemente la identidad de esta billetera. El dinero ya recibido permanece en tu saldo."
+    delete_backup_note: "Respáldala primero — sin su nsec o su archivo .backup no se puede recuperar."
+    delete_confirm: "Eliminar"
+    manage_title: "Administrar identidad"
+    tag_note: "Dale un nombre privado. Solo tú lo ves — nunca se comparte."
+    tag_hint: "Nombre privado"
+    tag_save: "Guardar"
+    pass_prompt: "Tu contraseña de billetera cifra y desbloquea cada identidad. Ingrésala para continuar."
+    working: "Procesando…"
+  onboarding:
+    intro:
+      private_money_head: "Dinero privado"
+      private_money_body: "Goblin es una billetera para grin — dinero digital sin montos ni direcciones en su cadena."
+      send_like_message_head: "Envía como un mensaje"
+      send_like_message_body: "Paga a un nombre de usuario o npub y llega como un mensaje cifrado de extremo a extremo por nostr y Tor — nadie en el medio puede ver el monto ni quién está involucrado."
+      yours_alone_head: "Solo tuyo"
+      yours_alone_body: "Las claves, los nombres y el historial viven en este dispositivo. Basado en la billetera GRIM."
+      get_started: "Comenzar"
+      footnote: "Toma alrededor de un minuto. Puedes cambiar todo después."
+    node:
+      kicker: "PASO 1 DE 3 · RED"
+      title: "¿Cómo debería Goblin\nvigilar la cadena?"
+      own_title: "Ejecutar mi propio nodo"
+      own_badge: "Privado"
+      own_body: "No confía en nadie — tu billetera verifica la cadena por sí misma. Se sincroniza en segundo plano mientras terminas la configuración."
+      connect_title: "Conectar a un nodo"
+      connect_badge: "Instantáneo"
+      connect_body: "Sin espera de sincronización. El nodo que elijas puede ver las consultas de tu billetera."
+      changeable: "Modificable en cualquier momento en Ajustes → Nodo."
+      continue: "Continuar"
+      url_invalid: "La URL del nodo debe comenzar con http:// o https://"
+    wallet:
+      kicker: "PASO 2 DE 3 · BILLETERA"
+      title: "Configura tu billetera"
+      create_new: "Crear nueva"
+      restore_from_seed: "Restaurar desde la frase semilla"
+      import_identity: "Importar identidad"
+      import_identity_hint: "Traerás tu clave existente (un archivo .backup o nsec) después de este paso."
+      name_hint: "Nombre de la billetera"
+      password_hint: "Contraseña"
+      repeat_password_hint: "Repite la contraseña"
+      restore_hint: "Ten a mano tus palabras semilla — las ingresarás a continuación."
+      create_hint: "A continuación obtendrás 24 palabras semilla para anotar. Son el dinero — quien las tenga tiene tus fondos."
+      continue: "Continuar"
+      passwords_no_match: "Las contraseñas no coinciden"
+    words:
+      kicker: "PASO 2 DE 3 · BILLETERA"
+      title_restore: "Ingresa tus palabras semilla"
+      title_create: "Anota estas palabras"
+      write_down_hint: "En papel, en orden. Cualquiera con estas palabras puede tomar tus fondos; sin ellas, un dispositivo perdido significa fondos perdidos."
+      paste: "Pegar"
+      scan_qr: "Escanear QR"
+      copy_clipboard: "Copiar al portapapeles (evita esto)"
+      restore_wallet: "Restaurar billetera"
+      wrote_them_down: "Ya las anoté"
+      fill_every_word: "Completa cada palabra — toca una palabra para editarla, o pega la frase."
+    confirm:
+      kicker: "PASO 2 DE 3 · BILLETERA"
+      title: "Ahora demuéstralo"
+      enter_hint: "Ingresa las palabras que acabas de anotar. Toca una palabra para escribirla."
+      paste: "Pegar"
+      create_wallet: "Crear billetera"
+      keep_going: "Sigue así — cada palabra, en orden."
+    identity:
+      kicker: "PASO 3 DE 3 · IDENTIDAD"
+      title: "Tu identidad de pago"
+      key_being_made: "creando clave…"
+      connected_nym: "conectado por Tor"
+      connecting_nym: "conectando por Tor…"
+      fresh_key_blurb: "Una clave de pago que no forma parte de tu frase de recuperación — rótala cuando quieras para mantener la privacidad, sin tocar tus fondos."
+      clean_slate_blurb: "¿Quieres empezar de cero? Cambia a una clave totalmente nueva cuando quieras — el nuevo tú no está vinculado al anterior. Misma billetera, cara nueva."
+      pick_username: "Elige un nombre de usuario — opcional"
+      username_blurb: "Tus amigos pagan a tu nombre en lugar de a una clave larga. Opcional — reclama uno cuando quieras."
+      username_field_hint: "tunombre"
+      working: "Procesando…"
+      claim_username: "Reclamar nombre de usuario"
+      available_when_connected: "Disponible en cuanto se conecte Tor — o sáltalo y reclama uno después."
+      youre: "Eres %{name}"
+      claimed_title: "%{name} es tuyo"
+      claimed_blurb: "Tus amigos ya pueden pagarte por nombre. Todo listo — abre tu billetera."
+      open_wallet: "Abrir mi billetera"
+      skip_for_now: "Saltar por ahora"
+      import_existing: "¿Ya tienes una identidad de Goblin? Impórtala"
+      import_title: "Importa tu identidad"
+      import_blurb: "Pega tu nsec o elige un archivo .backup para conservar tu clave y nombre de usuario existentes en lugar de este nuevo."
+    errors:
+      cant_open: "No se pudo abrir la billetera: %{err}"
+      cant_create: "No se pudo crear la billetera: %{err}"
+  send:
+    scan_to_request: "Escanear para solicitar"
+    scan_to_pay: "Escanear para pagar"
+    tab_scan: "Escanear"
+    tab_my_code: "Mi código"
+    request_from: "Solicitar a"
+    send_to: "Enviar a"
+    search_hint: "handle, npub o nombre"
+    suggested: "%{icon}  Sugerido"
+    no_contacts: "Aún no hay contactos. Busca a alguien por su handle."
+    no_profile: "sin perfil"
+    tag_contact: "contacto"
+    tag_on_nostr: "en nostr"
+    searching_nostr: "Buscando en nostr…"
+    unverified_title: "¿Pagar a una clave no verificada?"
+    unverified_body: "No hay ningún perfil de nostr publicado para esta clave — puede ser nueva, anónima o estar mal escrita. Verifica bien que sea la correcta antes de enviar."
+    keep_looking: "Seguir buscando"
+    pay_anyway: "Pagar de todos modos"
+    scan_not_recipient: "Ese código QR no es un destinatario de goblin — se esperaba un npub o handle"
+    scan_prompt: "Coloca un código goblin en la vista para activar"
+    scan_to_pay_me: "Escanea para pagarme"
+    share_btn: "%{icon} Compartir"
+    share_message: "Págame en Goblin — %{handle}\n%{link}\nnpub: %{npub}"
+    none_found: "No se encontró nadie para %{label}"
+    enter_recipient: "Ingresa un handle, npub o nombre"
+    amount_title: "Monto"
+    to_name: "Para %{name}"
+    not_enough: "No tienes suficiente grin"
+    max: "Máx"
+    note_label: "Nota"
+    note_hint: "Agregar una nota…"
+    add_note: "Agregar nota"
+    edit_note: "Editar nota"
+    note_cancel: "Cancelar"
+    note_save: "Guardar"
+    review_btn: "Revisar"
+    confirm_request: "Confirmar solicitud"
+    review_title: "Revisar"
+    requesting_from: "Solicitando a %{name}"
+    youre_sending: "Le estás enviando a %{name}"
+    row_from: "De"
+    row_to: "Para"
+    row_note: "Nota"
+    row_proof: "Comprobante de pago"
+    row_proof_val: "Incluido"
+    row_proof_shared: "Comprobante compartido con"
+    row_they_pay: "Ellos pagan"
+    row_they_pay_val: "Solo si aprueban"
+    row_delivery: "Entrega"
+    row_delivery_val: "Cifrado NIP-44, por Tor"
+    row_network_fee: "Comisión de red"
+    row_network_fee_val: "Deducida de tu saldo"
+    row_privacy: "Privacidad"
+    row_privacy_val: "Mimblewimble + Tor"
+    send_request_btn: "Enviar solicitud"
+    request_approve_hint: "Recibirán una solicitud para aprobar"
+    hold_to_send: "Mantén presionado para enviar"
+    lower_amount: "Vuelve atrás y reduce el monto"
+    hold_confirm_hint: "Mantén presionado para confirmar"
+    requesting: "Solicitando…"
+    sending: "Enviando…"
+    they: "Ellos"
+    request_blocked: "%{who} no está aceptando solicitudes. Pídele que te envíe grin en su lugar."
+    failed_request_title: "No se pudo solicitar"
+    failed_send_title: "No se pudo enviar"
+    failed_request_body: "No pudimos entregar la solicitud. Pídele que te envíe grin en su lugar."
+    failed_send_body: "El pago no se entregó. Tu grin está a salvo — inténtalo de nuevo."
+    try_again_btn: "Intentar de nuevo"
+    close_btn: "Cerrar"
+    success:
+      requested: "Solicitado"
+      sent: "Enviado"
+      from: "de"
+      to: "a"
+      subtitle: "%{dir} %{who} · justo ahora"
+      done_btn: "Listo"
+      receipt_btn: "Recibo"
