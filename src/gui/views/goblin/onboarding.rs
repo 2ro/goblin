@@ -82,6 +82,34 @@ pub struct OnboardingContent {
 	import: Option<OnbImport>,
 	/// Moment the recovery phrase was copied, for the transient "Copied" check.
 	words_copied: Option<std::time::Instant>,
+	/// Full-backup restore (restore-from-seed path): pick a `.backup` file that
+	/// carries the money seed AND every identity, unlock it, and let the seed feed
+	/// the normal 24-word creation path.
+	backup_restore: Option<BackupRestore>,
+	/// Captured at full-backup unlock: `(file contents, backup password)` to
+	/// reinstate every identity once the wallet has been created and opened.
+	pending_restore: Option<(String, String)>,
+	/// A full-backup identity restore is running in a worker after wallet open.
+	restore_busy: bool,
+	/// Worker result for the identity restore: `Ok(())` or an error message.
+	restore_result: std::sync::Arc<std::sync::Mutex<Option<Result<(), String>>>>,
+	/// Sticky error from the identity restore, shown on the identity step.
+	restore_error: Option<String>,
+}
+
+/// Full-backup restore sub-state on the restore-from-seed words step.
+#[derive(Default)]
+struct BackupRestore {
+	/// The picked `.backup` file contents.
+	blob: String,
+	/// The password the backup was sealed under.
+	password: String,
+	/// Last error (bad file / wrong password), shown inline.
+	error: String,
+	/// A native file pick is in flight (Android resolves the path asynchronously).
+	picking: bool,
+	/// The seed was decrypted and loaded into the word grid.
+	unlocked: bool,
 }
 
 /// Onboarding identity-import state. Reuses the wallet password the user just
@@ -124,6 +152,11 @@ impl Default for OnboardingContent {
 			claim: ClaimState::default(),
 			import: None,
 			words_copied: None,
+			backup_restore: None,
+			pending_restore: None,
+			restore_busy: false,
+			restore_result: std::sync::Arc::new(std::sync::Mutex::new(None)),
+			restore_error: None,
 		}
 	}
 }
@@ -601,6 +634,9 @@ impl OnboardingContent {
 				);
 			});
 			ui.add_space(14.0);
+			// Restore a FULL .backup file: its seed feeds this same word grid,
+			// and its identities are reinstated once the wallet opens.
+			self.backup_restore_ui(ui, cb);
 		} else {
 			// Transient "Copied" feedback (the Build 82/89 pattern): a silent
 			// copy of the recovery phrase reads as a dead button.
@@ -650,6 +686,111 @@ impl OnboardingContent {
 			);
 		}
 		self.error_ui(ui);
+	}
+
+	/// Restore-from-seed helper: pick a FULL `.backup` file (seed + all
+	/// identities), unlock it with its password, and load the recovered seed into
+	/// the word grid so the standard creation path takes over. The identities are
+	/// stashed in `pending_restore` and reinstated after the wallet opens.
+	fn backup_restore_ui(&mut self, ui: &mut egui::Ui, cb: &dyn PlatformCallbacks) {
+		let t = theme::tokens();
+		// Already unlocked: the seed is in the grid; just confirm and stop.
+		if self.backup_restore.as_ref().is_some_and(|b| b.unlocked) {
+			ui.label(
+				RichText::new(t!("goblin.onboarding.words.backup_unlocked"))
+					.font(FontId::new(12.5, fonts::regular()))
+					.color(t.pos),
+			);
+			ui.add_space(14.0);
+			return;
+		}
+		if self.backup_restore.is_none() {
+			self.backup_restore = Some(BackupRestore::default());
+		}
+		// Recovered seed to apply AFTER the `br` borrow ends (avoids a double
+		// mutable borrow of `self`): (seed phrase, backup blob, backup password).
+		let mut apply: Option<(String, String, String)> = None;
+		{
+			let br = self.backup_restore.as_mut().unwrap();
+			// Poll an async (Android) file pick.
+			if br.picking {
+				if let Some(path) = cb.picked_file() {
+					br.picking = false;
+					if !path.is_empty() {
+						match std::fs::read_to_string(&path) {
+							Ok(c) => br.blob = c.trim().to_string(),
+							Err(_) => {
+								br.error = t!("goblin.settings.backup_read_failed").to_string()
+							}
+						}
+					}
+				} else {
+					ui.ctx().request_repaint();
+				}
+			}
+			if w::chip(ui, &t!("goblin.settings.choose_backup_file"), false).clicked() {
+				br.error.clear();
+				match cb.pick_file() {
+					Some(path) if !path.is_empty() => match std::fs::read_to_string(&path) {
+						Ok(c) => br.blob = c.trim().to_string(),
+						Err(_) => br.error = t!("goblin.settings.backup_read_failed").to_string(),
+					},
+					// Empty string = Android async pick in flight.
+					Some(_) => br.picking = true,
+					None => {}
+				}
+			}
+			// Once a full backup is loaded, ask for its password and unlock it.
+			if crate::nostr::is_full_backup(&br.blob) {
+				ui.add_space(8.0);
+				w::field_well(ui, |ui| {
+					TextEdit::new(egui::Id::from("onb_restore_bpw"))
+						.focus(false)
+						.hint_text(t!("goblin.settings.backup_password_hint"))
+						.password()
+						.text_color(t.surface_text)
+						.body()
+						.ui(ui, &mut br.password, cb);
+				});
+				ui.add_space(8.0);
+				ui.add_enabled_ui(!br.password.is_empty(), |ui| {
+					if w::chip(ui, &t!("goblin.onboarding.words.unlock_backup"), false).clicked() {
+						match crate::nostr::open_full_backup(&br.blob, &br.password) {
+							Ok(full) => {
+								apply = Some((
+									full.seed_phrase.clone(),
+									br.blob.clone(),
+									br.password.clone(),
+								));
+							}
+							Err(_) => br.error = t!("goblin.advanced.wrong_password").to_string(),
+						}
+					}
+				});
+			}
+			if !br.error.is_empty() {
+				ui.add_space(6.0);
+				ui.label(
+					RichText::new(&br.error)
+						.font(FontId::new(12.5, fonts::regular()))
+						.color(t.neg),
+				);
+			}
+		}
+		ui.add_space(14.0);
+		// Apply outside the `br` borrow: fill the word grid with the recovered
+		// seed and stash the identities for post-open restore.
+		if let Some((phrase, blob, pw)) = apply {
+			self.mnemonic_setup
+				.mnemonic
+				.import(&ZeroingString::from(phrase));
+			self.pending_restore = Some((blob, pw));
+			if let Some(br) = self.backup_restore.as_mut() {
+				br.unlocked = true;
+				br.password.clear();
+				br.error.clear();
+			}
+		}
 	}
 
 	fn confirm_ui(
@@ -741,6 +882,21 @@ impl OnboardingContent {
 				wallets.add(w.clone());
 				match w.open(pass) {
 					Ok(_) => {
+						// A full-backup restore: reinstate every identity from the
+						// backup in a worker once nostr is up (the seed itself was
+						// already restored through this creation path).
+						if let Some((blob, bpw)) = self.pending_restore.take() {
+							let wallet_pw = self.pass.clone();
+							let wallet = w.clone();
+							let slot = self.restore_result.clone();
+							self.restore_busy = true;
+							self.restore_error = None;
+							std::thread::spawn(move || {
+								let res =
+									wallet.restore_full_backup_identities(&blob, &bpw, &wallet_pw);
+								*slot.lock().unwrap() = Some(res);
+							});
+						}
 						self.wallet = Some(w);
 						self.error = None;
 						self.step = Step::Identity;
@@ -859,6 +1015,47 @@ impl OnboardingContent {
 			);
 		});
 		ui.add_space(14.0);
+
+		// Full-backup identity restore in flight: poll the worker, and while it
+		// runs show a restoring card instead of the claim/import UI so the user
+		// never acts on the throwaway key it is replacing.
+		if self.restore_busy
+			&& let Some(res) = self.restore_result.lock().unwrap().take()
+		{
+			self.restore_busy = false;
+			if let Err(e) = res {
+				self.restore_error = Some(e);
+			}
+		}
+		if self.restore_busy {
+			w::card(ui, |ui| {
+				ui.set_min_width(ui.available_width());
+				ui.horizontal(|ui| {
+					View::small_loading_spinner(ui);
+					ui.add_space(8.0);
+					ui.label(
+						RichText::new(t!("goblin.onboarding.identity.restoring"))
+							.font(FontId::new(13.0, fonts::regular()))
+							.color(t.surface_text_dim),
+					);
+				});
+			});
+			ui.add_space(14.0);
+			ui.ctx()
+				.request_repaint_after(std::time::Duration::from_millis(300));
+			if w::big_action(ui, &t!("goblin.onboarding.identity.open_wallet"), false).clicked() {
+				return Some(wallet);
+			}
+			return None;
+		}
+		if let Some(err) = &self.restore_error {
+			ui.label(
+				RichText::new(err)
+					.font(FontId::new(12.5, fonts::regular()))
+					.color(t.neg),
+			);
+			ui.add_space(14.0);
+		}
 
 		// Optional username claim — the same machinery as Settings.
 		if let Some(msg) = self.claim.result.lock().unwrap().take() {

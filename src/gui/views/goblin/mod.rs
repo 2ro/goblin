@@ -5416,7 +5416,7 @@ impl GoblinWalletView {
 							if w::big_action(ui, &t!("goblin.settings.create_backup"), false)
 								.clicked()
 							{
-								match wallet.create_nostr_backup(&bk.password) {
+								match wallet.create_full_backup(&bk.password) {
 									Ok(envelope) => {
 										let stamp = chrono::Local::now().format("%Y-%m-%d-%H%M");
 										let fname = format!("GOBLIN-{stamp}.backup");

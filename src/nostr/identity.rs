@@ -331,9 +331,216 @@ impl NostrIdentity {
 	}
 }
 
+/// The decrypted contents of a full wallet backup (see [`build_full_backup`]):
+/// the money seed phrase plus every held identity (each with its unlocked keys),
+/// and the hex of the identity that was active when the backup was made.
+pub struct FullBackup {
+	/// The 24-word grin recovery phrase, in memory only.
+	pub seed_phrase: String,
+	/// Hex pubkey of the identity that was active at backup time (may be empty).
+	pub active: String,
+	/// Every held identity with its unlocked keys, re-openable by the restorer.
+	pub identities: Vec<(NostrIdentity, Keys)>,
+}
+
+/// Seal an arbitrary UTF-8 string under a password with NO plaintext, reusing the
+/// exact two-layer scheme of [`NostrIdentity::to_encrypted_backup`]: a fresh
+/// random wrapper key is password-protected as a NIP-49 ncryptsec (scrypt), and
+/// the text is NIP-44-sealed to that key. Returns `(k, d)` — the ncryptsec and
+/// the sealed blob. The wrapper key is otherwise meaningless; only recovering the
+/// text matters. No new crypto and no new dependency: same primitives the
+/// identity backup already uses.
+pub fn seal_secret_text(
+	plaintext: &str,
+	password: &str,
+) -> Result<(String, String), IdentityError> {
+	let wrapper = Keys::generate();
+	let encrypted = EncryptedSecretKey::new(
+		wrapper.secret_key(),
+		password,
+		NCRYPTSEC_LOG_N,
+		KeySecurity::Medium,
+	)
+	.map_err(|e| IdentityError::Key(format!("encrypt failed: {e}")))?;
+	let k = encrypted
+		.to_bech32()
+		.map_err(|e| IdentityError::Key(format!("bech32 failed: {e}")))?;
+	let d = nip44::encrypt(
+		wrapper.secret_key(),
+		&wrapper.public_key(),
+		plaintext,
+		nip44::Version::V2,
+	)
+	.map_err(|e| IdentityError::Key(format!("seal failed: {e}")))?;
+	Ok((k, d))
+}
+
+/// Reverse [`seal_secret_text`]: unlock the wrapper key with the password, then
+/// open the NIP-44-sealed text. A wrong password fails at the ncryptsec layer.
+pub fn open_secret_text(k: &str, d: &str, password: &str) -> Result<String, IdentityError> {
+	let enc = EncryptedSecretKey::from_bech32(k)
+		.map_err(|e| IdentityError::Key(format!("invalid backup: {e}")))?;
+	let secret = enc
+		.decrypt(password)
+		.map_err(|_| IdentityError::WrongPassword)?;
+	let keys = Keys::new(secret);
+	nip44::decrypt(keys.secret_key(), &keys.public_key(), d)
+		.map_err(|_| IdentityError::WrongPassword)
+}
+
+/// Build the contents of a FULL wallet `.backup` file (format version 2): the
+/// money seed AND every held identity, all sealed under one password. The seed is
+/// sealed with [`seal_secret_text`]; each identity is sealed with the SAME
+/// per-identity scheme as the single-identity backup ([`NostrIdentity::to_encrypted_backup`]),
+/// so every element is itself a valid v1 identity envelope. No plaintext (no
+/// seed, no npub, no name) ever appears in the output. `identities` carries each
+/// identity with its already-unlocked keys; `active_hex` is the identity active
+/// at backup time.
+pub fn build_full_backup(
+	seed_phrase: &str,
+	identities: &[(NostrIdentity, Keys)],
+	active_hex: &str,
+	password: &str,
+) -> Result<String, IdentityError> {
+	let (k, d) = seal_secret_text(seed_phrase, password)?;
+	let mut elems = Vec::with_capacity(identities.len());
+	for (id, keys) in identities {
+		elems.push(id.to_encrypted_backup(keys)?);
+	}
+	let envelope = serde_json::json!({
+		"goblin_backup": 2,
+		"seed": { "k": k, "d": d },
+		"identities": elems,
+		"active": active_hex,
+	});
+	serde_json::to_string(&envelope).map_err(IdentityError::from)
+}
+
+/// True if `s` is a FULL wallet backup (format version 2 — seed + identities),
+/// as opposed to a v1 single-identity backup or a bare nsec. Both formats set
+/// `goblin_backup`; only v2 carries a seed, so callers that must create the
+/// wallet check this FIRST.
+pub fn is_full_backup(s: &str) -> bool {
+	serde_json::from_str::<serde_json::Value>(s.trim())
+		.ok()
+		.and_then(|v| v.get("goblin_backup").and_then(|x| x.as_u64()))
+		.map(|ver| ver >= 2)
+		.unwrap_or(false)
+}
+
+/// Open a full wallet backup with its password, returning the seed phrase, the
+/// active identity's hex, and every held identity with its unlocked keys. A wrong
+/// password fails at the seed's ncryptsec layer.
+pub fn open_full_backup(blob: &str, password: &str) -> Result<FullBackup, IdentityError> {
+	let v: serde_json::Value = serde_json::from_str(blob.trim())?;
+	let seed = v
+		.get("seed")
+		.ok_or_else(|| IdentityError::Key("backup missing seed".into()))?;
+	let k = seed
+		.get("k")
+		.and_then(|x| x.as_str())
+		.ok_or_else(|| IdentityError::Key("backup missing seed key".into()))?;
+	let d = seed
+		.get("d")
+		.and_then(|x| x.as_str())
+		.ok_or_else(|| IdentityError::Key("backup missing seed data".into()))?;
+	let seed_phrase = open_secret_text(k, d, password)?;
+	let active = v
+		.get("active")
+		.and_then(|x| x.as_str())
+		.unwrap_or("")
+		.to_string();
+	let mut identities = Vec::new();
+	if let Some(arr) = v.get("identities").and_then(|x| x.as_array()) {
+		for elem in arr {
+			let elem_str = elem
+				.as_str()
+				.ok_or_else(|| IdentityError::Key("malformed identity element".into()))?;
+			let (id, keys) = NostrIdentity::from_encrypted_backup(elem_str, password)?;
+			identities.push((id, keys));
+		}
+	}
+	Ok(FullBackup {
+		seed_phrase,
+		active,
+		identities,
+	})
+}
+
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	#[test]
+	fn full_backup_roundtrips_seed_identities_and_active() {
+		// Build a full backup from a seed + several identities, then reopen it:
+		// the seed text, every identity's key, and the active marker must survive,
+		// and NOTHING sensitive (seed word, npub, name) may appear in the file.
+		let seed = "abandon abandon abandon abandon abandon abandon abandon abandon \
+			abandon abandon abandon abandon abandon abandon abandon abandon abandon \
+			abandon abandon abandon abandon abandon abandon art";
+		let (mut a, ka) = NostrIdentity::create_random("walletpw").unwrap();
+		a.nip05 = Some("alice@goblin.st".to_string());
+		a.anonymous = false;
+		let (b, kb) = NostrIdentity::create_random("walletpw").unwrap();
+		let active_hex = b.pubkey_hex().unwrap();
+		let ids = vec![(a.clone(), ka.clone()), (b.clone(), kb.clone())];
+
+		let blob = build_full_backup(seed, &ids, &active_hex, "walletpw").unwrap();
+		assert!(is_full_backup(&blob));
+		// A full backup is NOT a v1 single-identity backup, but the shared
+		// `goblin_backup` marker still reads as "an encrypted backup".
+		assert!(NostrIdentity::is_encrypted_backup(&blob));
+		// Opaque: no seed word, no npub, no username leaks.
+		assert!(!blob.contains("abandon"));
+		assert!(!blob.contains(&a.npub));
+		assert!(!blob.contains(&b.npub));
+		assert!(!blob.contains("alice"));
+
+		let opened = open_full_backup(&blob, "walletpw").unwrap();
+		assert_eq!(opened.seed_phrase, seed);
+		assert_eq!(opened.active, active_hex);
+		assert_eq!(opened.identities.len(), 2);
+		// Both identities and their keys restore exactly, metadata intact.
+		let npubs: Vec<_> = opened
+			.identities
+			.iter()
+			.map(|(i, _)| i.npub.clone())
+			.collect();
+		assert!(npubs.contains(&a.npub));
+		assert!(npubs.contains(&b.npub));
+		let restored_a = opened
+			.identities
+			.iter()
+			.find(|(i, _)| i.npub == a.npub)
+			.unwrap();
+		assert_eq!(restored_a.0.nip05.as_deref(), Some("alice@goblin.st"));
+		assert!(!restored_a.0.anonymous);
+		assert_eq!(restored_a.1.public_key(), ka.public_key());
+		// Wrong password opens nothing.
+		assert!(open_full_backup(&blob, "wrong").is_err());
+	}
+
+	#[test]
+	fn old_single_identity_backup_is_not_a_full_backup() {
+		// A v1 single-identity envelope must NOT be mistaken for a full backup, and
+		// must keep restoring through the v1 path exactly as before.
+		let (a, keys) = NostrIdentity::create_random("pw-1").unwrap();
+		let v1 = a.to_encrypted_backup(&keys).unwrap();
+		assert!(NostrIdentity::is_encrypted_backup(&v1));
+		assert!(!is_full_backup(&v1), "v1 must not read as a full backup");
+		let (restored, _) = NostrIdentity::from_encrypted_backup(&v1, "pw-1").unwrap();
+		assert_eq!(restored.npub, a.npub);
+	}
+
+	#[test]
+	fn seal_secret_text_roundtrips_and_is_opaque() {
+		let secret = "the quick brown fox";
+		let (k, d) = seal_secret_text(secret, "pw").unwrap();
+		assert!(!k.contains(secret) && !d.contains(secret));
+		assert_eq!(open_secret_text(&k, &d, "pw").unwrap(), secret);
+		assert!(open_secret_text(&k, &d, "nope").is_err());
+	}
 
 	#[test]
 	fn backup_restores_under_new_password() {

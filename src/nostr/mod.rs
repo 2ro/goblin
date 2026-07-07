@@ -29,7 +29,9 @@ mod store;
 pub use store::NostrStore;
 
 mod identity;
-pub use identity::{IdentitySource, NostrIdentity};
+pub use identity::{
+	FullBackup, IdentitySource, NostrIdentity, build_full_backup, is_full_backup, open_full_backup,
+};
 
 pub mod identities;
 pub use identities::{HeldError, HeldIdentities, MAX_IDENTITIES, catchup_since};

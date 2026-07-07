@@ -622,6 +622,14 @@ impl Wallet {
 		old.unlock(&password)
 			.map_err(|_| "Wrong password".to_string())?;
 		let input = input.trim();
+		// A FULL wallet backup carries a seed and belongs to wallet creation, not
+		// to swapping one identity in an existing wallet. Reject it here with a
+		// clear pointer rather than failing obscurely on the v1 path below.
+		if crate::nostr::is_full_backup(input) {
+			return Err("That's a full wallet backup. Restore it when creating a \
+				wallet, not here."
+				.to_string());
+		}
 		let bpw = backup_password
 			.as_deref()
 			.filter(|s| !s.is_empty())
@@ -702,19 +710,135 @@ impl Wallet {
 		Ok(new_npub)
 	}
 
-	/// Build the contents of a `GOBLIN-*.backup` file: the whole nostr identity,
-	/// fully sealed under the wallet password. Verifies the password first.
-	pub fn create_nostr_backup(&self, password: &str) -> Result<String, String> {
-		let svc = self
-			.nostr_service()
-			.ok_or_else(|| "nostr is not running".to_string())?;
-		let identity = svc.identity.read().clone();
-		let keys = identity
-			.unlock(password)
+	/// Build the contents of a `GOBLIN-*.backup` file: the FULL wallet — the money
+	/// seed AND every held identity — sealed under the wallet password (format
+	/// version 2). The password both unlocks the seed (via [`get_recovery`], which
+	/// proves it) and unlocks each identity, so a wrong password fails before any
+	/// bytes are produced. The plaintext seed is assembled and sealed in memory and
+	/// never written to disk; the returned string is what the caller saves.
+	///
+	/// [`get_recovery`]: Self::get_recovery
+	pub fn create_full_backup(&self, password: &str) -> Result<String, String> {
+		// Unlock the seed first: this both verifies the wallet password and yields
+		// the phrase, held only in a zeroizing string that drops at end of scope.
+		let phrase = self
+			.get_recovery(password.to_string())
 			.map_err(|_| "Wrong password".to_string())?;
-		identity
-			.to_encrypted_backup(&keys)
+		let nostr_dir = self.get_config().get_nostr_path();
+		let index =
+			HeldIdentities::load(&nostr_dir).ok_or_else(|| "identities unavailable".to_string())?;
+		// Unlock every held identity under the same wallet password so each can be
+		// re-sealed into the backup with its own recoverable key.
+		let mut identities = Vec::new();
+		for entry in &index.identities {
+			let id = entry
+				.load(&nostr_dir)
+				.ok_or_else(|| "identity file unreadable".to_string())?;
+			let keys = id
+				.unlock(password)
+				.map_err(|_| "Wrong password".to_string())?;
+			identities.push((id, keys));
+		}
+		crate::nostr::build_full_backup(&phrase, &identities, &index.active, password)
 			.map_err(|e| format!("backup failed: {e}"))
+	}
+
+	/// Restore every identity from a FULL backup into THIS freshly created wallet,
+	/// re-encrypting each under the wallet password and making the backup's active
+	/// identity active. The seed itself was already restored through the normal
+	/// 24-word wallet-creation path (the caller decrypted the seed to feed that
+	/// path); this method only reinstates the identities. It replaces the fresh
+	/// random identity the new wallet minted on open with the backed-up active one,
+	/// then adds the rest as held identities — reusing the same on-disk index and
+	/// service-rebuild plumbing as add/import. `blob` is the full-backup file,
+	/// `backup_password` the password it was sealed under (may differ from this
+	/// wallet's on a new device), `wallet_password` this wallet's password.
+	pub fn restore_full_backup_identities(
+		&self,
+		blob: &str,
+		backup_password: &str,
+		wallet_password: &str,
+	) -> Result<(), String> {
+		let full = crate::nostr::open_full_backup(blob, backup_password)
+			.map_err(|_| "Couldn't open the backup — wrong password?".to_string())?;
+		if full.identities.is_empty() {
+			return Ok(());
+		}
+		// The new wallet starts nostr asynchronously on open; wait for the service
+		// so we replace a fully-initialized identity set rather than racing it.
+		let mut svc = None;
+		for _ in 0..200 {
+			if let Some(s) = self.nostr_service() {
+				svc = Some(s);
+				break;
+			}
+			thread::sleep(Duration::from_millis(100));
+		}
+		let svc = svc.ok_or_else(|| "nostr didn't start".to_string())?;
+		let config = self.get_config();
+		let nostr_dir = config.get_nostr_path();
+		// Re-encrypt every backed-up identity under THIS wallet's password.
+		let mut rebuilt: Vec<NostrIdentity> = Vec::new();
+		for (backup, keys) in &full.identities {
+			let mut ident = NostrIdentity::from_unlocked_keys(keys, wallet_password, backup.source)
+				.map_err(|e| format!("re-encryption failed: {e}"))?;
+			ident.nip05 = backup.nip05.clone();
+			ident.anonymous = backup.anonymous;
+			ident.prev_npubs = backup.prev_npubs.clone();
+			ident.private_tag = backup.private_tag.clone();
+			rebuilt.push(ident);
+		}
+		// The active identity (as marked at backup time; else the first) becomes
+		// identity #1 in identity.json, overwriting the throwaway random key the
+		// fresh wallet minted on open. A clean single-entry index is then written
+		// so the discarded random key leaves no held entry behind.
+		let active_pos = rebuilt
+			.iter()
+			.position(|i| i.pubkey_hex().as_deref() == Some(full.active.as_str()))
+			.unwrap_or(0);
+		let primary = rebuilt[active_pos].clone();
+		primary
+			.save(&nostr_dir)
+			.map_err(|e| format!("identity save failed: {e}"))?;
+		let mut index = HeldIdentities::from_legacy(&primary)
+			.ok_or_else(|| "identity has a malformed key".to_string())?;
+		index
+			.save(&nostr_dir)
+			.map_err(|e| format!("index save failed: {e}"))?;
+		let primary_hex = primary.pubkey_hex();
+		for (i, ident) in rebuilt.iter().enumerate() {
+			if i == active_pos || ident.pubkey_hex() == primary_hex {
+				continue;
+			}
+			// Skip duplicates / cap overflow without aborting the whole restore.
+			if let Err(e) = index.add(&nostr_dir, ident) {
+				warn!("nostr: skipping identity during restore: {e}");
+			}
+		}
+		// Rebuild the live service on the restored set, active identity active.
+		svc.stop();
+		for _ in 0..100 {
+			if !svc.is_running() {
+				break;
+			}
+			thread::sleep(Duration::from_millis(100));
+		}
+		let nostr_config = NostrConfig::load(PathBuf::from(config.get_data_path()));
+		let store = NostrStore::new(config.get_nostr_db_path());
+		let (recv, active_hex) = self
+			.unlock_all_identities(&nostr_dir, wallet_password)
+			.ok_or_else(|| "identity unlock failed".to_string())?;
+		let new_svc = NostrService::new(recv, &active_hex, nostr_config, store, nostr_dir);
+		{
+			let mut w_nostr = self.nostr.write();
+			*w_nostr = Some(new_svc.clone());
+		}
+		new_svc.start(self.clone());
+		info!(
+			"nostr: restored {} identit(ies) from full backup",
+			rebuilt.len()
+		);
+		Ok(())
 	}
 
 	// ── Held nostr identities (one wallet, one balance, many front doors) ──────
@@ -802,6 +926,11 @@ impl Wallet {
 		let (identity, _keys) = match import {
 			Some(blob) => {
 				let blob = blob.trim();
+				if crate::nostr::is_full_backup(blob) {
+					return Err("That's a full wallet backup. Restore it when \
+						creating a wallet, not here."
+						.to_string());
+				}
 				if NostrIdentity::is_encrypted_backup(blob) {
 					// A .backup: open it (same wallet password, since a backup made
 					// by this wallet is sealed under it), then re-encrypt under the
