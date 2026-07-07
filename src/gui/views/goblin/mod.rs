@@ -4224,10 +4224,8 @@ impl GoblinWalletView {
 			.auto_shrink([false; 2])
 			.scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
 			.show(ui, |ui| {
-				// Claim / release + the owned-name display.
-				self.claim_ui(ui, wallet, cb);
-
-				ui.add_space(18.0);
+				// Name authority first: pick where your name lives, then claim
+				// it on that authority below.
 				w::kicker(ui, &t!("goblin.username.authority"));
 				ui.add_space(8.0);
 				ui.label(
@@ -4374,6 +4372,10 @@ impl GoblinWalletView {
 						}
 					}
 				}
+
+				ui.add_space(18.0);
+				// Claim / release + the owned-name display.
+				self.claim_ui(ui, wallet, cb);
 				ui.add_space(16.0);
 			});
 	}
