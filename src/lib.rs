@@ -259,6 +259,9 @@ pub fn setup_fonts(ctx: &Context) {
 			),
 		),
 	);
+	// Noto Sans SC also carries a full hiragana/katakana repertoire plus the
+	// common (and kokuji) kanji the `ja` locale uses — verified glyph-by-glyph
+	// against locales/ja.yml, zero tofu — so `ja` needs no dedicated font file.
 	fonts.font_data.insert(
 		"noto".to_owned(),
 		Arc::new(

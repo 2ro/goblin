@@ -1,0 +1,967 @@
+lang_name: 日本語
+copy: コピー
+paste: 貼り付け
+continue: 続ける
+complete: 完了
+error: エラー
+retry: 再試行
+close: 閉じる
+change: 変更
+show: 表示
+delete: 削除
+clear: クリア
+create: 作成
+id: 識別子
+kernel: カーネル
+settings: 設定
+language: 言語
+scan: スキャン
+qr_code: QRコード
+scan_qr: QRコードをスキャン
+repeat: 繰り返し
+scan_result: スキャン結果
+back: 戻る
+share: 共有
+theme: 'テーマ:'
+dark: ダーク
+light: ライト
+file: ファイル
+choose_file: ファイルを選択
+choose_folder: フォルダを選択
+crash_report: クラッシュレポート
+crash_report_warning: 前回、アプリが予期せず終了しました。クラッシュレポートを開発者と共有できます。
+confirmation: 確認
+enter_url: URLを入力してください
+max_short: 最大
+files_location: ファイルの保存場所
+moving_files: ファイルを移動中
+wrong_path_error: 指定されたパスが正しくありません
+check_updates: 起動時にアップデートを確認
+update_available: アップデートがあります!
+changelog: '更新履歴:'
+wallets:
+  await_conf_amount: 確認待ち
+  await_fin_amount: 確定待ち
+  locked_amount: ロック中
+  txs_empty: '資金を手動または転送機能で受け取るには、画面下部の%{message}または%{transport}ボタンを使用してください。ウォレットの設定を変更するには%{settings}ボタンを押してください。'
+  title: Goblin
+  create_desc: 保存したリカバリーフレーズから既存のウォレットを作成またはインポートします。
+  add: ウォレットを追加
+  name: '名前:'
+  pass: 'パスワード:'
+  pass_empty: ウォレットのパスワードを入力してください
+  current_pass: '現在のパスワード:'
+  new_pass: '新しいパスワード:'
+  min_tx_conf_count: '取引に必要な最小確認数:'
+  recover: 復元
+  recovery_phrase: リカバリーフレーズ
+  words_count: '単語数:'
+  enter_word: '単語 #%{number} を入力してください:'
+  not_valid_word: 入力した単語が正しくありません
+  not_valid_phrase: 入力したフレーズが正しくありません
+  create_phrase_desc: リカバリーフレーズを安全に書き留めて保管してください。
+  restore_phrase_desc: 保存したリカバリーフレーズの単語を入力してください。
+  setup_conn_desc: ウォレットがネットワークに接続する方法を選択してください。
+  conn_method: 接続方法
+  ext_conn: '外部接続:'
+  add_node: ノードを追加
+  node_url: 'ノードURL:'
+  node_secret: 'APIシークレット(任意):'
+  invalid_url: 入力したURLが正しくありません
+  open: ウォレットを開く
+  wrong_pass: 入力したパスワードが間違っています
+  locked: ロック中
+  unlocked: ロック解除済み
+  enable_node: 'ウォレットを使用するには統合ノードを有効にするか、画面下部の%{settings}を選択して接続設定を変更してください。'
+  node_loading: '統合ノードの同期が完了するとウォレットが読み込まれます。画面下部の%{settings}を選択すると接続を変更できます。'
+  loading: 読み込み中
+  closing: 終了中
+  checking: 確認中
+  default_wallet: デフォルトウォレット
+  new_account_desc: '新しいアカウントの名前を入力してください:'
+  wallet_loading: ウォレットを読み込み中
+  wallet_closing: ウォレットを終了中
+  wallet_checking: ウォレットを確認中
+  tx_loading: 取引を読み込み中
+  default_account: デフォルトアカウント
+  accounts: アカウント
+  tx_sent: 送信済み
+  tx_received: 受信済み
+  tx_sending: 送信中
+  tx_receiving: 受信中
+  tx_confirming: 確認待ち
+  tx_canceled: キャンセル済み
+  tx_cancelling: キャンセル中
+  tx_finalizing: 確定中
+  tx_posting: 送信中
+  tx_confirmed: 確認済み
+  tx_stale: 保留が長すぎます
+  txs: 取引
+  tx: 取引
+  messages: メッセージ
+  transport: 転送
+  input_slatepack_desc: '受信したSlatepackメッセージを入力して、返信を作成するか要求を確定してください:'
+  parse_slatepack_err: 'メッセージの読み取り中にエラーが発生しました。入力内容を確認してください:'
+  pay_balance_error: 'アカウント残高が%{amount}ツとネットワーク手数料の支払いに不足しています。'
+  parse_i1_slatepack_desc: '%{amount}ツを支払うには、このメッセージを受取人に送ってください:'
+  parse_i2_slatepack_desc: '%{amount}ツを受け取るには取引を確定してください:'
+  parse_i3_slatepack_desc: '%{amount}ツの受け取りを確定するには取引を送信してください:'
+  parse_s1_slatepack_desc: '%{amount}ツを受け取るには、このメッセージを送信者に送ってください:'
+  parse_s2_slatepack_desc: '%{amount}ツを送るには取引を確定してください:'
+  parse_s3_slatepack_desc: '%{amount}ツの送信を確定するには取引を送信してください:'
+  resp_slatepack_err: '返信の作成中にエラーが発生しました。入力データを確認するか、もう一度お試しください:'
+  resp_exists_err: その取引はすでに存在します。
+  resp_canceled_err: その取引はすでにキャンセルされています。
+  create_request_desc: '資金を送るか受け取るための要求を作成してください:'
+  send_request_desc: '%{amount}ツを送るための要求を作成しました。このメッセージを受取人に送ってください:'
+  send_slatepack_err: 資金送付の要求作成中にエラーが発生しました。入力データを確認するか、もう一度お試しください。
+  invoice_desc: '%{amount}ツを受け取るための要求を作成しました。このメッセージを送信者に送ってください:'
+  invoice_slatepack_err: 請求書の発行中にエラーが発生しました。入力データを確認するか、もう一度お試しください。
+  finalize_slatepack_err: '確定処理中にエラーが発生しました。入力データを確認するか、もう一度お試しください:'
+  finalize: 確定
+  use_dandelion: Dandelionを使用
+  enter_amount_send: '%{amount}ツを保有しています。送る金額を入力してください:'
+  enter_amount_receive: '受け取る金額を入力してください:'
+  recovery: 復元
+  repair_wallet: ウォレットを修復
+  repair_desc: ウォレットを点検し、必要に応じて欠落しているアウトプットを修復・復元します。この操作には時間がかかります。
+  repair_unavailable: ノードへの有効な接続とウォレットの同期完了が必要です。
+  delete: ウォレットを削除
+  delete_conf: 本当にウォレットを削除しますか?
+  delete_desc: 後で資金にアクセスできるよう、リカバリーフレーズを必ず保存してください。
+  wallet_loading_err: 'ウォレットの同期中にエラーが発生しました。再試行するか、画面下部の%{settings}を選択して接続設定を変更できます。'
+  wallet: ウォレット
+  send: 送る
+  receive: 受け取る
+  settings: ウォレット設定
+  tx_send_cancel_conf: '%{amount}ツの送信をキャンセルしますか?'
+  tx_receive_cancel_conf: '%{amount}ツの受信をキャンセルしますか?'
+  rec_phrase_not_found: リカバリーフレーズが見つかりません。
+  restore_wallet_desc: 通常の修復で解決しない場合は、すべてのファイルを削除してウォレットを復元してください。その後、ウォレットを再度開く必要があります。
+  fee_base_desc: '手数料(基本値%{value}):'
+  payment_proof: 支払い証明
+  payment_proof_desc: '受信した支払い証明を入力して取引を検証してください:'
+  payment_proof_valid: '入力した支払い証明は有効です:'
+  payment_proof_error: '入力した支払い証明は無効です:'
+  tx_delete_confirmation: 履歴からこの取引を削除しますか?
+transport:
+  desc: '転送機能を使ってメッセージを同期的に送受信してください:'
+  tor_network: Torネットワーク
+  connected: 接続済み
+  connecting: 接続中
+  disconnecting: 切断中
+  conn_error: 接続エラー
+  disconnected: 切断済み
+  receiver_address: '受取人のアドレス:'
+  incorrect_addr_err: '入力したアドレスが正しくありません:'
+  tor_send_error: Tor経由の送信中にエラーが発生しました。受取人がオンラインか確認してください。取引はキャンセルされました。
+  tor_autorun_desc: ウォレットを開いたときにTorサービスを起動し、取引を同期的に受け取るかどうかです。
+  tor_sending: Tor経由で送信中
+  tor_settings: Tor設定
+  bridges: ブリッジ
+  bridges_desc: 通常の接続が機能しない場合、ブリッジを設定してTorネットワークの検閲を回避してください。
+  bin_file: 'バイナリファイル:'
+  conn_line: '接続文字列:'
+  bridges_disabled: ブリッジ無効
+  bridge_name: 'ブリッジ %{b}'
+network:
+  self: ネットワーク
+  type: 'ネットワークの種類:'
+  mainnet: メイン
+  testnet: テスト
+  connections: 接続
+  node: 統合ノード
+  metrics: 指標
+  mining: マイニング
+  settings: ノード設定
+  enable_node: ノードを有効化
+  autorun: 自動起動
+  disabled_server: '画面左上の%{dots}を押して統合ノードを有効にするか、別の接続方法を追加してください。'
+  no_ips: お使いのシステムに利用可能なIPアドレスがないため、サーバーを起動できません。ネットワーク接続を確認してください。
+  available: 利用可能
+  not_available: 利用不可
+  availability_check: 利用可否の確認
+  android_warning: Androidをお使いの方へ。統合ノードを正しく同期させるには、スマートフォンのシステム設定でGoblinアプリの通知アクセスを許可し、バッテリー使用の制限を解除する必要があります。これはアプリがバックグラウンドで正しく動作するために必要な操作です。
+sync_status:
+  node_restarting: ノードを再起動中です
+  node_down: ノードがダウンしています
+  initial: ノードを起動中です
+  no_sync: ノードは稼働中です
+  awaiting_peers: ピアを待っています
+  header_sync: ヘッダーをダウンロード中
+  header_sync_percent: 'ヘッダーをダウンロード中: %{percent}%'
+  tx_hashset_pibd: 状態をダウンロード中(PIBD)
+  tx_hashset_pibd_percent: '状態をダウンロード中(PIBD): %{percent}%'
+  tx_hashset_download: 状態をダウンロード中
+  tx_hashset_download_percent: '状態をダウンロード中: %{percent}%'
+  tx_hashset_setup_history: '状態を準備中(履歴): %{percent}%'
+  tx_hashset_setup_position: '状態を準備中(位置): %{percent}%'
+  tx_hashset_setup: 状態を準備中
+  tx_hashset_range_proofs_validation: '状態を検証中(範囲証明): %{percent}%'
+  tx_hashset_kernels_validation: '状態を検証中(カーネル): %{percent}%'
+  tx_hashset_save: チェーン状態を確定中
+  body_sync: ブロックをダウンロード中
+  body_sync_percent: 'ブロックをダウンロード中: %{percent}%'
+  shutdown: ノードを終了中です
+network_node:
+  header: ヘッダー
+  block: ブロック
+  hash: ハッシュ
+  height: 高さ
+  difficulty: 難易度
+  time: 時刻
+  main_pool: メインプール
+  stem_pool: ステムプール
+  data: データ
+  size: サイズ(GB)
+  peers: ピア
+  error_clean: ノードデータが破損しました。再同期が必要です。
+  resync: 再同期
+  error_p2p_api: '%{p2p_api}サーバーの初期化中にエラーが発生しました。画面下部の%{settings}を選択して%{p2p_api}の設定を確認してください。'
+  error_config: '設定の初期化中にエラーが発生しました。画面下部の%{settings}を選択して設定を確認してください。'
+  error_unknown: '初期化中にエラーが発生しました。画面下部の%{settings}を選択して統合ノードの設定を確認するか、再同期してください。'
+network_metrics:
+  loading: 指標は同期が完了すると利用できます
+  emission: 発行量
+  inflation: インフレ率
+  supply: 供給量
+  block_time: ブロックタイム
+  reward: 報酬
+  difficulty_window: '難易度ウィンドウ %{size}'
+network_mining:
+  loading: マイニングは同期が完了すると利用できます
+  info: 'マイニングサーバーが有効になっています。画面下部の%{settings}を選択して設定を変更できます。デバイスが接続されるとデータが更新されます。'
+  restart_server_required: 変更を適用するにはサーバーの再起動が必要です。
+  rewards_wallet: 報酬受取用ウォレット
+  server: Stratumサーバー
+  address: アドレス
+  miners: マイナー
+  devices: デバイス
+  blocks_found: 発見したブロック数
+  hashrate: 'ハッシュレート(C%{bits})'
+  connected: 接続済み
+  disconnected: 切断済み
+network_settings:
+  change_value: 値を変更
+  stratum_ip: 'Stratum IPアドレス:'
+  stratum_port: 'Stratumポート:'
+  port_unavailable: 指定したポートは使用できません
+  restart_node_required: 変更を適用するにはノードの再起動が必要です。
+  choose_wallet: ウォレットを選択
+  stratum_wallet_warning: 報酬を受け取るにはウォレットを開いておく必要があります。
+  enable: 有効化
+  disable: 無効化
+  restart: 再起動
+  server: サーバー
+  api_ip: 'API IPアドレス:'
+  api_port: 'APIポート:'
+  api_secret: 'REST APIおよびV2 Owner APIトークン:'
+  foreign_api_secret: 'Foreign APIトークン:'
+  disabled: 無効
+  enabled: 有効
+  ftl: 'Future Time Limit(FTL):'
+  ftl_description: 新しいブロックが承認されるために許容される、ノードのローカル時刻から見た未来方向のタイムスタンプのずれの上限(秒単位)です。
+  not_valid_value: 入力した値が正しくありません
+  full_validation: 完全検証
+  full_validation_description: 各ブロックの処理時にチェーン全体の完全な検証を実行するかどうかです(同期中を除く)。
+  archive_mode: アーカイブモード
+  archive_mode_desc: ノードを完全アーカイブモードで実行します(同期により多くのディスク容量と時間が必要になります)。
+  attempt_time: 'マイニング試行時間(秒):'
+  attempt_time_desc: 特定のヘッダーでマイニングを試みてから、いったん停止してプールから取引を再収集するまでの時間です
+  min_share_diff: '許容される最小シェア難易度:'
+  reset_settings_desc: ノード設定を初期値にリセットします
+  reset_settings: 設定をリセット
+  reset: リセット
+  tx_pool: 取引プール
+  pool_fee: 'プールに受け入れられる基本手数料:'
+  reorg_period: '再編成キャッシュの保持期間(分):'
+  max_tx_pool: 'プール内の取引の最大数:'
+  max_tx_stempool: 'ステムプール内の取引の最大数:'
+  max_tx_weight: 'ブロック生成のために選択できる取引の最大合計ウェイト:'
+  epoch_duration: 'エポック期間(秒):'
+  embargo_timer: 'エンバーゴタイマー(秒):'
+  aggregation_period: '集約期間(秒):'
+  stem_probability: 'ステムフェーズの確率:'
+  stem_txs: ステム取引
+  p2p_server: P2Pサーバー
+  p2p_port: 'P2Pポート:'
+  add_seed: DNSシードを追加
+  seed_address: 'DNSシードアドレス:'
+  add_peer: ピアを追加
+  peer_address: 'ピアアドレス:'
+  peer_address_error: 'IPアドレスまたはDNS名を正しい形式で入力してください(指定したホストが利用可能であることを確認してください)。例: 192.168.0.1:1234 または example.com:5678'
+  default: デフォルト
+  allow_list: 許可リスト
+  allow_list_desc: このリストにあるピアにのみ接続します。
+  deny_list: 拒否リスト
+  deny_list_desc: このリストにあるピアには接続しません。
+  favourites: お気に入り
+  favourites_desc: 優先的に接続するピアのリストです。
+  ban_window: 'BANされたピアがBAN状態を維持する時間(秒):'
+  ban_window_desc: BANするかどうかは、ピアから受信したデータの正確性に基づいてノードが判断します。
+  max_inbound_count: '受信ピア接続の最大数:'
+  max_outbound_count: '送信ピア接続の最大数:'
+  reset_data_desc: ノードデータをリセットします。同期に問題がある場合にのみ、注意して使用してください。
+  reset_data: データをリセット
+modal:
+  cancel: キャンセル
+  save: 保存
+  add: 追加
+modal_exit:
+  description: 本当にアプリを終了しますか?
+  exit: 終了
+app_settings:
+  proxy: プロキシ
+  proxy_desc: アプリからのネットワークリクエストにプロキシを使用するかどうかです。
+keyboard:
+  1: 1
+  2: 2
+  3: 3
+  4: 4
+  5: 5
+  6: 6
+  7: 7
+  8: 8
+  9: 9
+  0: 0
+  01: '-'
+  q: q
+  w: w
+  e: e
+  r: r
+  t: t
+  y: y
+  u: u
+  i: i
+  o: o
+  p: p
+  p1: '"'
+  a: a
+  s: s
+  d: d
+  f: f
+  g: g
+  h: h
+  j: j
+  k: k
+  l: l
+  l1: \
+  l2: ':'
+  z: z
+  x: x
+  c: c
+  v: v
+  b: b
+  n: n
+  m: m
+  m1: ','
+  m2: .
+  m3: /
+goblin:
+  home:
+    anonymous: "匿名"
+    connected_nym: "Tor経由で接続済み"
+    nym_ready: "Tor準備完了 · リレー…"
+    connecting_nym: "Torに接続中…"
+    cant_reach_node: "ノードに接続できません"
+    node_synced: "ノード同期済み"
+    syncing: "同期中…"
+    balance_updating: "残高を更新中…"
+    balance_stale: "ノードに接続できません · 最終確認済みの残高"
+    fiat_unavailable: "レート取得不可"
+    listening: "支払いの受信を待機中"
+    block: "ブロック %{height}"
+    waiting_for_chain: "チェーンを待機中…"
+    nav_wallet: "ウォレット"
+    nav_pay: "支払う"
+    nav_activity: "アクティビティ"
+    nav_receive: "受け取る"
+    nav_settings: "設定"
+    back_again: "もう一度戻るを押すとウォレットを切り替えます"
+    activity: "アクティビティ"
+    news: "お知らせ"
+    empty_title: "まだアクティビティがありません"
+    empty_sub: "grinを送るか受け取って始めましょう。"
+    recent: "最近"
+    scan_to_pay: "スキャンして支払う"
+    type_amount: "金額を入力"
+    request: "リクエスト"
+    pay: "支払う"
+    enter_amount: "支払うかリクエストする金額を入力してください"
+  activity:
+    canceled: "キャンセル済み"
+    pending: "保留中"
+    earlier: "それ以前"
+    today: "今日"
+    yesterday: "昨日"
+    title: "アクティビティ"
+    requests: "リクエスト"
+    empty_title: "まだアクティビティがありません"
+    empty_sub: "支払いの履歴がここに表示されます。"
+    pending_header: "保留中"
+  receipt:
+    title: "領収書"
+    not_found: "取引が見つかりません"
+    for_note: "%{note}について"
+    details: "取引の詳細"
+    canceled: "キャンセル済み"
+    expired: "期限切れ"
+    funds_returned: "資金は返却されました"
+    complete: "完了"
+    payment_received: "支払いを受け取りました"
+    payment_sent: "支払いを送信しました"
+    pending: "保留中"
+    confs: "確認 %{c}/%{r}"
+    waiting_to_confirm: "確認を待っています"
+    paying: "支払い中…"
+    you: "自分"
+    to: "宛先"
+    from: "送信元"
+    nostr: "nostr"
+    identity: "アイデンティティ"
+    fee_none: "なし"
+    network_fee: "ネットワーク手数料"
+    privacy: "プライバシー"
+    privacy_value: "Mimblewimble + Tor"
+    transaction: "取引"
+    cancel_request: "リクエストをキャンセル"
+    cancel_send: "支払いをキャンセル"
+    stale_note: "この支払いはしばらく保留状態です。"
+    cancel_send_confirm: "もう一度タップしてキャンセル — 相手にはすでに届いている可能性があります"
+    cancel_send_done: "支払いをキャンセルしました — 資金は再び利用可能です"
+    cancel_send_too_late: "この支払いはすでに完了しており、キャンセルできません"
+    waiting_to_receive: "%{name}が受け取るのを待っています…"
+  request:
+    title: "%{name}のリクエスト"
+    approve: "承認"
+    decline: "拒否"
+    review_title: "リクエストを確認"
+    hold_to_accept: "長押しで承認"
+    hold_accept_hint: "長押ししてこのリクエストに支払う"
+  receive:
+    title: "受け取る"
+    requesting: "%{amt}%{tsu}をリクエスト中 — 共有して支払いを受け取りましょう"
+    clear_request: "リクエストを消去"
+    share_handle: "ハンドルを共有して支払いを受け取りましょう"
+    share_npub: "npubを共有して支払いを受け取りましょう"
+    copied: "コピーしました"
+    copy_nostr_id: "nostr IDをコピー"
+    copy_address: "アドレスをコピー"
+    copy_npub: "npubをコピー"
+    share_message: "Goblin(goblin.st)で支払ってください — %{npub}"
+    privacy_note: "ユーザー名は公開されます。支払い内容はネットワーク上で暗号化されたままです。"
+    privacy_note_npub: "npubは公開されます。支払い内容はネットワーク上で暗号化されたままです。"
+  profile:
+    title: "プロフィール"
+    activity: "アクティビティ"
+    no_activity: "この相手とのアクティビティはまだありません。"
+    unblock: "ブロック解除"
+    block: "ブロック"
+    blocked_blurb: "ブロック済み — 相手の支払いとリクエストは破棄されます。"
+    block_blurb: "ブロックすると、相手からの支払いとリクエストは破棄されます。"
+  settings:
+    title: "設定"
+    connected_nostr: "nostrに接続済み"
+    connecting_relays: "リレーに接続中…"
+    identity: "アイデンティティ"
+    copy_npub: "npubをコピー(公開)"
+    rotate_key: "nostrキーをローテーション"
+    import_identity: "アイデンティティをインポート(.backup / nsec)"
+    backup_note: "機種変更しますか? 両方をバックアップしてください: リカバリーフレーズ(資金)と、アイデンティティの.backupファイル(名前 + キー)。"
+    wallet: "ウォレット"
+    display_unit: "表示単位"
+    relays: "リレー"
+    nostr_relays: "Nostrリレー"
+    node: "ノード"
+    min_conf: "最小確認数"
+    integrated_node: "統合ノードの設定"
+    node_advanced: "詳細設定"
+    slatepacks: "Slatepack"
+    slatepacks_value: "手動取引"
+    trusted_sites: "信頼済みサイト"
+    lock_wallet: "ウォレットをロック"
+    switch_wallet: "ウォレットを切り替え"
+    advanced: "詳細設定"
+    privacy: "プライバシー"
+    mixnet_routing: "Torルーティング"
+    messages_lookups: "メッセージと検索"
+    auto_accept: "自動承認"
+    pairing: "価格通貨"
+    accept_anyone: "誰でも"
+    accept_contacts: "連絡先のみ"
+    accept_ask: "毎回確認"
+    requests: "リクエスト"
+    incoming_requests: "受信リクエスト"
+    incoming_requests_sub: "他の人が自分にお金をリクエストできるようにします"
+    hide_amounts: "金額を非表示"
+    hide_amounts_sub: "通知で受信金額を非表示にします"
+    language: "言語"
+    update_available: "アップデートあり"
+    appearance: "外観"
+    theme: "テーマ"
+    theme_light: "ライト"
+    theme_dark: "ダーク"
+    theme_yellow: "イエロー"
+    archive: "アーカイブ"
+    export_archive: "アーカイブをエクスポート"
+    wipe_history: "支払い履歴を消去"
+    wipe_history_confirm: "もう一度タップして消去 — 元に戻せません"
+    about: "アプリについて"
+    goblin: "Goblin"
+    build: "ビルド %{build}"
+    network: "ネットワーク"
+    network_value: "MW + Tor + nostr"
+    third_party: "サードパーティ"
+    grim: "GRIM(アップストリームウォレット)"
+    grin_node: "Grinノード"
+    sp_intro: "詳細設定 — GRIMと同じように、生のslatepackを手動でやり取りします。ユーザー名で支払いや受け取りができない場合にのみ使用してください。"
+    sp_receive_group: "受け取り・確定"
+    sp_receive_blurb: "誰かから受け取ったslatepackを貼り付けてください。Goblinが支払いを受け取ったり、請求書を支払ったり、確定して送信したりします。"
+    sp_process: "slatepackを処理"
+    sp_paste_first: "まずslatepackを貼り付けてください。"
+    sp_reply_ready: "返信の準備ができました — 送信者に送り返してください。"
+    sp_finalizing: "確定してチェーンに送信中…"
+    sp_create_group: "支払いを作成"
+    sp_create_blurb: "誰かに渡すためのslatepackを作成します。相手がそれを受け取って返信を送り返したら、上で確定してください。"
+    sp_amount_hint: "金額(grin)"
+    sp_addr_hint: "受取人のアドレス(任意)"
+    sp_create: "slatepackを作成"
+    sp_ready: "slatepackの準備ができました — 受取人に渡してください。"
+    sp_amount_gt_zero: "0より大きい金額を入力してください。"
+    sp_to_send: "送信するslatepack"
+    sp_copy: "slatepackをコピー"
+    rotate_line1: "• まったく新しいランダムなキーが発行されます。古いnpubは以降受け取れなくなります。両者の間に派生関係はありません。"
+    rotate_line2: "• 新しいキーはリカバリーフレーズから復元できません — ローテーション直後に新しいnsecを必ずバックアップしてください。"
+    rotate_line3: "• ユーザー名は解放されます — 直後に同じ名前か新しい名前を登録してください(解放された瞬間、他の人も取得できるようになります)。"
+    rotate_line4: "• 古いキー宛てに送信中の支払いは中断されます — 先に保留中の支払いが完了するのを待ってください。"
+    rotate_line5: "• npubを直接保存していた連絡先は、あなたを改めて見つける必要があります — 新しいnpubか再登録したユーザー名を共有してください。"
+    cancel: "キャンセル"
+    continue: "続ける"
+    final_confirmation: "最終確認"
+    rotate_confirm_blurb: "この操作はアプリから元に戻せません。RESETと入力し、ウォレットのパスワードを入力してローテーションしてください。"
+    type_reset: "RESETと入力"
+    wallet_password: "ウォレットのパスワード"
+    rotate_key_btn: "キーをローテーション"
+    rotating_key: "キーをローテーション中…"
+    key_rotated: "キーをローテーションしました"
+    new_npub: "新しいnpub: %{npub}"
+    backup_new_key: "今すぐ新しい秘密鍵をバックアップしてください — リカバリーフレーズでは復元できません。"
+    copy_new_nsec: "新しいnsecバックアップをコピー"
+    done: "完了"
+    rotation_failed: "ローテーションに失敗しました"
+    close: "閉じる"
+    import_identity_title: "アイデンティティをインポート"
+    import_blurb: "このウォレットのnostrアイデンティティを置き換えます — GOBLINの.backupファイルを選ぶか、nsecをそのまま貼り付けてください。バックアップファイルを使うとユーザー名と履歴も復元されます。現在のキーがまだ必要な場合は、先にバックアップしてください。"
+    import_nsec_hint: "nsec1…、または貼り付けたバックアップ"
+    backup_password_hint: "バックアップのパスワード(他の場所でエクスポートした場合のみ)"
+    import_btn: "インポート"
+    importing: "インポート中…"
+    identity_replaced: "アイデンティティを置き換えました"
+    now_using: "現在使用中: %{npub}"
+    import_failed: "インポートに失敗しました"
+    name_authority: "名前認証局"
+    name_authority_title: "名前認証局を変更"
+    name_authority_blurb: "名前を登録・検証するサーバーです。別のインスタンスを指定すると、そこでホストされている名前を使用・支払いに利用できます。"
+    name_authority_invalid: "完全なURLを入力してください(https://…)。"
+    reset: "リセット"
+    save: "保存"
+    backup_file: "ファイルにバックアップ"
+    choose_backup_file: ".backupファイルを選択"
+    backup_read_failed: "そのファイルを読み込めませんでした。"
+    backup_saved: "バックアップを保存しました"
+    backup_saved_sub: ".backupファイルは安全に保管してください — このファイルとパスワードの両方を持つ人は誰でもアイデンティティを復元できます。"
+    backup_file_title: "アイデンティティをバックアップ"
+    backup_file_blurb: "ユーザー名とキーを含む暗号化された.backupファイルを1つ作成します。ウォレットのパスワードを入力して保護してください。"
+    backup_write_failed: "ファイルを保存できませんでした。"
+    create_backup: "バックアップを作成"
+    registered: "%{name}を登録しました"
+    released_msg: "解放されました — この名前は誰でも取得できます"
+    release_confirm: "%{name}を解放しますか?"
+    release_blurb: "解放された瞬間、誰でも取得できるようになります — 次にローテーションするキーも例外ではありません。10分間は別のユーザー名を登録できなくなります。"
+    releasing: "解放中…"
+    keep_it: "維持する"
+    release_it: "解放する"
+    username: "ユーザー名"
+    username_note: "あなたの名前として表示されます。goblin.stで公開されます。支払いは暗号化されたままです。"
+    release_username: "ユーザー名を解放"
+    pick_username: "ユーザー名を選択 — 任意"
+    working: "処理中…"
+    claim: "登録"
+    err_just_taken: "そのユーザー名はたった今取得されました"
+    err_cooldown: "最近ユーザー名を解放しました — 10分以内に新しい名前を登録できます。"
+    err_unreachable: "goblin.stに接続できませんでした — 接続に問題が発生しました。もう一度お試しください。"
+    err_release: "解放できませんでした: %{err}"
+    avail_available: "利用可能です!"
+    avail_taken: "使用済み"
+    avail_reserved: "予約済み"
+    avail_invalid: "名前は3~20文字: a~z、0~9、_ または -"
+    avail_quarantined: "利用できません"
+    avail_unknown: "確認できませんでした — 接続に問題が発生しました。もう一度お試しください。"
+    username_none: "未設定"
+    advanced_privacy: "詳細プライバシー"
+    tap_reveal: "タップして表示"
+    notif_someone: "誰か"
+    notif_private_received: "支払いを受け取りました。Goblinを開いて確認してください。"
+    notif_private_requested: "新しい支払いリクエストがあります。Goblinを開いて確認してください。"
+  username:
+    title: "ユーザー名"
+    authority: "名前認証局"
+    authority_blurb: "ユーザー名が登録・検証される場所です。既知の認証局を選ぶか、Goblinを別のインスタンスに向けて、そこでホストされている名前を使用してください。"
+    custom: "カスタム認証局"
+  advprivacy:
+    intro: "通知に表示する内容を制御し、この端末上で残高と履歴を非表示にします。"
+    notifications: "通知"
+    hide_names: "名前を非表示"
+    hide_names_sub: "通知で支払った相手の名前を省略します"
+    hide_details: "すべての詳細を非表示"
+    hide_details_sub: "名前や金額を含まない、非公開の通知のみを表示します"
+    anon: "匿名モード"
+    anon_toggle: "残高とアクティビティをぼかす"
+    anon_sub: "タップして表示するまで、残高とアクティビティは点で表示されます"
+  advanced:
+    title: "詳細設定"
+    intro: "GRIM由来の低レベルなウォレットツールです。通常は必要ありません。"
+    own_node_desc: "公開ノードを信頼する代わりに、この端末でGrinのフルノードを同期します。"
+    own_node_active: "自分のノードを実行中"
+    repair: "ウォレットを修復"
+    repair_desc: "チェーンを再スキャンし、欠落しているアウトプットを復元します。しばらく時間がかかることがあります。"
+    repair_unavailable: "先に同期済みのノードへの接続が必要です。"
+    repairing: "修復中… %{pct}%"
+    restore: "ウォレットを復元"
+    restore_desc: "ローカルデータを削除し、リカバリーフレーズから再構築します。修復で解決しない場合に使用してください — その後ウォレットを再度開くことになります。"
+    restore_confirm: "もう一度タップして復元"
+    show_phrase: "リカバリーフレーズ"
+    phrase_desc: "24個のgrinリカバリー単語です — 資金を復元する唯一の方法です。オフラインで、他人に見せずに保管してください。"
+    reveal: "フレーズを表示"
+    hide: "非表示"
+    password: "ウォレットのパスワード"
+    wrong_password: "パスワードが間違っています。"
+    delete: "ウォレットを削除"
+    delete_desc: "この端末からこのウォレットを完全に削除します。リカバリーフレーズがなければ資金は復元できません。"
+    delete_confirm: "もう一度タップして削除"
+    manage_node: "ノード接続を管理"
+    repair_confirm: "はい、今すぐ修復する"
+    repair_confirm_note: "修復はチェーンを再スキャンするため、数分かかることがあります。"
+    restore_confirm_note: "ローカルデータを消去し、リカバリーフレーズから再構築します — 数分かかることがあります。"
+    nostr_key: "Nostrキー"
+    nostr_key_desc: "nostrアイデンティティの秘密鍵であるnsecです。コピーするかQRコードを表示して、magick.marketのようなnostrアプリにログインできます。これを持つ人は誰でもあなたのアイデンティティを操作できるため、他人に見せないよう保管してください。"
+    reveal_nsec: "キーを表示"
+    copy_nsec: "nsecをコピー"
+    show_qr: "QRを表示"
+    hide_qr: "QRを非表示"
+  privacy:
+    title: "ネットワークプライバシー"
+    intro: "Goblinはプライベートな通信をTor経由で送信し、リレーからIPアドレスを隠します — 暗号化がそれ以外の情報を隠すため、リレーが支払いをあなたに結び付けることはできません。"
+    payments: "支払い"
+    payments_blurb: "slatepackを運ぶすべてのnostrメッセージです。"
+    usernames: "ユーザー名"
+    usernames_blurb: "goblin.stとの間で行われるNIP-05の名前検索です。"
+    price_avatars: "価格"
+    price_avatars_blurb: "金額の隣に表示されるリアルタイムの法定通貨レートです。"
+    over_mixnet: "Tor経由"
+    direct_connection: "直接接続"
+    grin_node: "Grinノード"
+    grin_node_blurb: "ブロックの同期と、取引をネットワークにブロードキャストする処理です。これは誰にとっても同じ公開されたチェーンデータであり、あなたのアイデンティティとは結び付いていません。"
+  pairing:
+    title: "価格通貨"
+    intro: "残高や金額を表示する際の基準となる通貨です。"
+    pair_with: "通貨を選択"
+    rates_note: "レートはペアリングがオンのときのみTor経由で取得されます — オフの場合、レートのリクエストは端末から送信されません。"
+  relays:
+    title: "リレー"
+    intro: "支払いメッセージは以下のすべてのリレーに複製されます。1つでも接続可能なリレーがあれば受信できます。"
+    your_relays: "自分のリレー"
+    add_relay: "リレーを追加"
+    add_relay_btn: "リレーを追加"
+    save_reconnect: "保存して再接続"
+    none: "なし"
+    count: "リレー %{n}件"
+  node:
+    title: "ノード"
+    connection: "接続"
+    integrated: "統合ノード"
+    applies_after: "ウォレットを一度ロックしてから再度ロック解除すると適用されます。"
+    add_external: "外部ノードを追加"
+    api_secret_hint: "APIシークレット(任意)"
+    add_node: "ノードを追加"
+    integrated_host: "統合ノード"
+    summary_syncing: "%{conn} · 同期中"
+    summary_block: "ブロック %{height} · %{conn}"
+  nips:
+    title: "nostrとNIP"
+    intro1: "Goblinはnostrを利用します — 署名されたメッセージをシンプルなリレーサーバー経由でやり取りするオープンなプロトコルです。あなたのウォレットは独自のnostrアイデンティティを持っています。これは資金やリカバリーフレーズとは意図的に切り離された、単独のランダムなキーです。すべての支払いは、アイデンティティ間のエンドツーエンド暗号化されたダイレクトメッセージとして送られ、その中にslatepackが含まれています。"
+    intro2: "goblin.stはGoblinのネームサービスです。ユーザー名を登録すると、名前→キーのマッピングがそこに公開され(NIP-05)、長いnpubの代わりに名前で支払いを受けられるようになります。ユーザー名は公開されますが、支払い内容は決して公開されません。NIPはこのプロトコルを構成する要素です — タップして仕様を読んでみましょう。"
+    n05_title: "名前"
+    n05_blurb: "username@goblin.stをあなたのキーに紐付け、ハンドルがアドレスのように機能するようにします。"
+    n17_title: "プライベートメッセージ"
+    n17_blurb: "すべての支払いが送られる、暗号化されたDMの封筒です。"
+    n44_title: "暗号化"
+    n44_blurb: "それらのメッセージ内で使用される認証付き暗号方式です。"
+    n49_title: "キーの暗号化"
+    n49_blurb: "秘密鍵が保存時にパスワードでロックされて保管される方法です。"
+    n59_title: "ギフトラップ"
+    n59_blurb: "メッセージを包み、誰が誰と話しているのかをリレーが見られないようにします。"
+    n98_title: "HTTP認証"
+    n98_blurb: "goblin.stへのユーザー名登録リクエストに署名します。"
+  batch:
+    title: "%{n}件の請求書を承認"
+    blurb: "%{name}に対して、それぞれ%{amount}の支払いリクエストを%{n}件発行します — 合計%{total}。各リクエストには新しい支払いアドレスが割り当てられます。"
+    approve: "承認"
+  login:
+    title: "サインイン"
+    headline: "%{domain}にサインインしますか?"
+    identity: "サインインするアイデンティティ:"
+    explain: "これは一度限りのログインリクエストに署名します。キーが共有されることも、サイトがあなたに成り代わって行動することもありません。"
+    pass_prompt: "サインインするにはウォレットのパスワードを入力してください。"
+    confirm: "サインイン"
+    sent: "%{domain}にサインインしました"
+    failed: "%{domain}に接続できませんでした。サインインは届いていません。"
+  authorize:
+    title: "承認"
+    headline: "%{domain}を承認しますか?"
+    kind_post: "公開投稿"
+    kind_repost: "リポスト"
+    kind_reaction: "リアクション"
+    kind_article: "記事(長文)"
+    kind_unknown: "種類 %{n}(未確認)"
+    unknown_caution: "Goblinはこのイベントの種類を認識できません。%{domain}を信頼できる場合にのみ承認してください。"
+    identity: "署名するアイデンティティ:"
+    explain: "承認すると、このイベント1件に署名して%{domain}に渡します。Goblinが何かを公開することはなく、キーが共有されることもなく、サイトがセッションや今後の権限を得ることもありません。"
+    pass_prompt: "承認するにはウォレットのパスワードを入力してください。"
+    confirm: "承認"
+    sent: "%{domain}を承認しました"
+    failed: "%{domain}に接続できませんでした。何も送信されていません。"
+    truncated: "省略、他%{n}文字"
+    show_full: "全文を表示"
+    show_less: "折りたたむ"
+    replying_to: "%{id}への返信"
+    mentions: "%{id}に言及"
+    repost_of: "%{id}をリポスト"
+    by_author: "%{id}による"
+    reacts_to: "%{id}にリアクション"
+    article_title: "タイトル: %{title}"
+  trust:
+    title: "信頼"
+    headline: "%{domain}を信頼しますか?"
+    identity: "サインインするアイデンティティ:"
+    lead: "%{domain}はこのセッション中、毎回確認することなくあなたの代わりに行動できます。お金が動く操作は必ず確認を求めます。"
+    grant_intro: "確認なしで署名できる操作:"
+    cat_social: "投稿とリアクション"
+    cat_dm: "ダイレクトメッセージ"
+    cat_market: "出品"
+    cat_identity: "プロフィールとリスト"
+    cat_delete: "削除"
+    cat_http: "アップロードとHTTP認証"
+    cat_unknown: "その他のイベントの種類(種類%{n})"
+    login_excluded: "ログイン権限がサイトに付与されることはありません。"
+    money_line: "お金が動く操作は必ずパスワードを求めます。無断で支出や販売が行われることはありません。"
+    duration: "このセッションの間のみ有効です。設定の信頼済みサイトからいつでも終了できます。"
+    pass_prompt: "このサイトを信頼するにはウォレットのパスワードを入力してください。"
+    confirm_hold: "長押しでこのセッションを信頼"
+    sent: "このセッションで%{domain}を信頼しています"
+    failed: "%{domain}に接続できませんでした。セッションは開始されていません。"
+    announce_failed: "信頼しましたが、%{domain}はまだセッションを確認していません。"
+    notice_volume: "信頼済みサイトが大量の署名を行っています。"
+    notice_decrypt: "信頼済みサイトがあなたのメッセージを読んでいます。"
+  money:
+    title: "確認"
+    headline: "%{domain}で確認しますか?"
+    identity: "%{id}として署名"
+    explain: "これは価値を移動または確定させる操作のため、必ず確認を求めます。承認するとこの1つの操作に署名します。"
+    pass_prompt: "確認するにはウォレットのパスワードを入力してください。"
+    confirm_hold: "長押しで確認"
+    encrypt_desc: "支払いを確定する、暗号化された注文メッセージです。"
+  trusted_sites:
+    title: "信頼済みサイト"
+    intro: "このセッションで信頼したサイトは、リスクの低い操作を確認なしで署名できます。お金が動く操作は必ず確認します。ここでいつでもセッションを終了できます。"
+    empty: "信頼済みサイトはありません。サインイン時にサイトを信頼すると、署名セッションが付与されます。"
+    none: "なし"
+    can_sign: "確認なしで署名可能: %{cats}"
+    time_left: "あと%{mins}分で終了"
+    paused: "一時停止中(署名が多いため)"
+    resume: "再開"
+    end: "セッションを終了"
+  identities:
+    title: "アイデンティティ"
+    switch_hint: "アイデンティティを切り替え"
+    blurb: "アイデンティティとは、支払いを受け取る際の名前です。すべてこの1つのウォレットに支払われます。新しいアイデンティティを追加したり、切り替えたり、不要なものを削除したりできます。"
+    privacy_note: "これらのアイデンティティは1つのウォレットと1つの残高を共有します — 別々の玄関口であり、別々の資金ではありません。本当に資金を分けたい場合は、別のウォレットを使用してください。"
+    held: "保有しているアイデンティティ"
+    add: "アイデンティティを追加"
+    add_title: "アイデンティティを追加"
+    nsec_hint: "nsecを貼り付け"
+    generate_note: "このウォレット用に、新しい匿名のキーが作成されます。"
+    generate: "生成"
+    import: "インポート"
+    choose_backup: ".backupファイルを選択"
+    backup_selected: "バックアップファイルを選択しました"
+    delete_short: "アイデンティティを削除"
+    delete_title: "%{name}を削除しますか?"
+    delete_blurb: "このウォレットからアイデンティティを完全に削除します。すでに受け取った資金は残高に残ります。"
+    delete_backup_note: "先にバックアップしてください — nsecや.backupファイルがなければ復元できません。"
+    delete_confirm: "削除"
+    manage_title: "アイデンティティを管理"
+    tag_note: "非公開の名前を付けましょう。自分にしか見えず、共有されることはありません。"
+    tag_hint: "非公開の名前"
+    tag_save: "保存"
+    pass_prompt: "ウォレットのパスワードで各アイデンティティが暗号化・解除されます。続けるには入力してください。"
+    working: "処理中…"
+  onboarding:
+    intro:
+      private_money_head: "プライベートなお金"
+      private_money_body: "Goblinはgrin用のウォレットです — チェーン上に金額もアドレスも残らないデジタルキャッシュです。"
+      send_like_message_head: "メッセージのように送る"
+      send_like_message_body: "ユーザー名かnpubに支払うと、nostrとTor経由でエンドツーエンド暗号化されたメッセージとして届きます — 途中の誰にも金額や関係者を見られません。"
+      yours_alone_head: "あなただけのもの"
+      yours_alone_body: "キー、名前、履歴はすべてこの端末上にあります。GRIMウォレットをベースに構築されています。"
+      get_started: "始める"
+      footnote: "所要時間は約1分です。後からすべて変更できます。"
+    node:
+      kicker: "ステップ1/3 · ネットワーク"
+      title: "Goblinはどうやって
+チェーンを監視しますか?"
+      own_title: "自分のノードを実行"
+      own_badge: "プライベート"
+      own_body: "誰も信頼しません — ウォレット自身がチェーンを確認します。セットアップを完了する間、バックグラウンドで同期します。"
+      connect_title: "ノードに接続"
+      connect_badge: "即時"
+      connect_body: "同期を待つ必要はありません。選んだノードはウォレットの問い合わせ内容を見ることができます。"
+      changeable: "設定 → ノードでいつでも変更できます。"
+      continue: "続ける"
+      url_invalid: "ノードのURLはhttp://またはhttps://で始まる必要があります"
+    wallet:
+      kicker: "ステップ2/3 · ウォレット"
+      title: "ウォレットをセットアップ"
+      create_new: "新規作成"
+      restore_from_seed: "リカバリーフレーズから復元"
+      import_identity: "アイデンティティをインポート"
+      import_identity_hint: "このステップの後で、既存のキー(.backupファイルまたはnsec)を取り込みます。"
+      name_hint: "ウォレット名"
+      password_hint: "パスワード"
+      repeat_password_hint: "パスワード(確認)"
+      restore_hint: "リカバリー単語を手元に準備してください — 次に入力します。"
+      create_hint: "次に、書き留めるべき24個のリカバリー単語が表示されます。これがお金そのものです — この単語を持つ人が資金を持つことになります。"
+      continue: "続ける"
+      passwords_no_match: "パスワードが一致しません"
+    words:
+      kicker: "ステップ2/3 · ウォレット"
+      title_restore: "リカバリー単語を入力してください"
+      title_create: "これらの単語を書き留めてください"
+      write_down_hint: "紙に、順番通りに書いてください。この単語を持つ人は誰でも資金を奪えます。単語がなければ、端末を失うことは資金を失うことを意味します。"
+      paste: "貼り付け"
+      scan_qr: "QRをスキャン"
+      copy_clipboard: "クリップボードにコピー(推奨しません)"
+      restore_wallet: "ウォレットを復元"
+      wrote_them_down: "書き留めました"
+      fill_every_word: "すべての単語を入力してください — 単語をタップして編集するか、フレーズを貼り付けてください。"
+    confirm:
+      kicker: "ステップ2/3 · ウォレット"
+      title: "確認してみましょう"
+      enter_hint: "先ほど書き留めた単語を入力してください。単語をタップして入力します。"
+      paste: "貼り付け"
+      create_wallet: "ウォレットを作成"
+      keep_going: "続けてください — すべての単語を、順番通りに。"
+    identity:
+      kicker: "ステップ3/3 · アイデンティティ"
+      title: "あなたの支払いアイデンティティ"
+      key_being_made: "キーを作成中…"
+      connected_nym: "Tor経由で接続済み"
+      connecting_nym: "Tor経由で接続中…"
+      fresh_key_blurb: "リカバリーフレーズの一部ではない支払い用のキーです — 資金に影響を与えることなく、いつでもローテーションしてプライバシーを保てます。"
+      clean_slate_blurb: "まっさらな状態にしたいですか? いつでもまったく新しいキーに切り替えられます — 新しいあなたは古いあなたと結び付きません。同じウォレットで、新しい顔になります。"
+      pick_username: "ユーザー名を選択 — 任意"
+      username_blurb: "友人は長いキーの代わりに、あなたの名前で支払います。任意です — いつでも登録できます。"
+      username_field_hint: "yourname"
+      working: "処理中…"
+      claim_username: "ユーザー名を登録"
+      available_when_connected: "Torが接続されると利用できます — またはスキップして後で登録することもできます。"
+      youre: "あなたは%{name}です"
+      claimed_title: "%{name}はあなたのものです"
+      claimed_blurb: "友人は名前であなたに支払えるようになりました。準備完了です — ウォレットを開きましょう。"
+      open_wallet: "ウォレットを開く"
+      skip_for_now: "今はスキップ"
+      import_existing: "すでにGoblinのアイデンティティをお持ちですか? インポートする"
+      import_title: "アイデンティティをインポート"
+      import_blurb: "nsecを貼り付けるか.backupファイルを選んで、この新しいものではなく既存のキーとユーザー名を維持してください。"
+    errors:
+      cant_open: "ウォレットを開けませんでした: %{err}"
+      cant_create: "ウォレットを作成できませんでした: %{err}"
+  send:
+    scan_to_request: "スキャンしてリクエスト"
+    scan_to_pay: "スキャンして支払う"
+    tab_scan: "スキャン"
+    tab_my_code: "マイコード"
+    request_from: "リクエスト先"
+    send_to: "送信先"
+    search_hint: "ハンドル、npub、または名前"
+    suggested: "%{icon}  おすすめ"
+    no_contacts: "まだ連絡先がありません。ハンドルで相手を探してください。"
+    no_profile: "プロフィールなし"
+    tag_contact: "連絡先"
+    tag_on_nostr: "nostr上"
+    searching_nostr: "nostrを検索中…"
+    unverified_title: "未検証のキーに支払いますか?"
+    unverified_body: "このキーに対して公開されているnostrプロフィールがありません — 新規、匿名、または入力ミスの可能性があります。送信する前に正しい相手か再確認してください。"
+    keep_looking: "探し続ける"
+    pay_anyway: "このまま支払う"
+    scan_not_recipient: "そのQRコードはgoblinの受取人ではありません — npubまたはハンドルが必要です"
+    scan_prompt: "goblinコードを画面内に収めると起動します"
+    scan_to_pay_me: "スキャンして私に支払う"
+    share_btn: "%{icon} 共有"
+    share_message: "Goblinで私に支払ってください — %{handle}
+%{link}
+npub: %{npub}"
+    none_found: "%{label}に該当する相手が見つかりません"
+    enter_recipient: "ハンドル、npub、または名前を入力してください"
+    amount_title: "金額"
+    to_name: "%{name}へ"
+    not_enough: "grinが不足しています"
+    max: "最大"
+    note_label: "メモ"
+    note_hint: "メモを追加…"
+    add_note: "メモを追加"
+    edit_note: "メモを編集"
+    note_cancel: "キャンセル"
+    note_save: "保存"
+    review_btn: "確認"
+    confirm_request: "リクエストを確認"
+    review_title: "確認"
+    requesting_from: "%{name}にリクエスト中"
+    youre_sending: "%{name}に送信中"
+    row_from: "送信元"
+    row_to: "宛先"
+    row_note: "メモ"
+    row_proof: "支払い証明"
+    row_proof_val: "あり"
+    row_proof_shared: "証明の共有先"
+    row_they_pay: "相手の支払い"
+    row_they_pay_val: "承認した場合のみ"
+    row_delivery: "配信方法"
+    row_delivery_val: "NIP-44暗号化、Tor経由"
+    row_network_fee: "ネットワーク手数料"
+    row_network_fee_val: "残高から差し引かれます"
+    row_privacy: "プライバシー"
+    row_privacy_val: "Mimblewimble + Tor"
+    send_request_btn: "リクエストを送信"
+    request_approve_hint: "相手に承認用のリクエストが届きます"
+    hold_to_send: "長押しで送信"
+    lower_amount: "戻って金額を減らしてください"
+    hold_confirm_hint: "長押しして確認"
+    requesting: "リクエスト中…"
+    sending: "送信中…"
+    they: "相手"
+    request_blocked: "%{who}はリクエストを受け付けていません。代わりにgrinを送ってもらうよう頼んでください。"
+    failed_request_title: "リクエストできませんでした"
+    failed_send_title: "送信できませんでした"
+    failed_request_body: "リクエストを届けられませんでした。代わりにgrinを送ってもらうよう頼んでください。"
+    failed_send_body: "支払いは届きませんでした。grinは安全です — もう一度お試しください。"
+    try_again_btn: "もう一度試す"
+    close_btn: "閉じる"
+    success:
+      requested: "リクエスト済み"
+      sent: "送信済み"
+      from: "送信元"
+      to: "宛先"
+      subtitle: "%{dir}: %{who} · たった今"
+      done_btn: "完了"
+      receipt_btn: "領収書"

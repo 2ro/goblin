@@ -4099,7 +4099,7 @@ impl GoblinWalletView {
 			});
 	}
 
-	/// Language picker: the six shipped locales, each in its own name. Tapping one
+	/// Language picker: the nine shipped locales, each in its own name. Tapping one
 	/// switches the active locale and persists it (mirrors the GRIM interface
 	/// settings, but in Goblin's row style like the pairing picker).
 	fn language_settings_ui(&mut self, ui: &mut egui::Ui) {
