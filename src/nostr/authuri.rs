@@ -309,10 +309,10 @@ pub(crate) fn domain_bound(callback: &str, domain: &str) -> bool {
 /// is a single boolean gate on the existing best-effort app-switch). Absent,
 /// empty, malformed, or any value other than an explicit `0` yields the default
 /// `true` (return enabled), so pre-flag URIs and any garbage keep the Build 151
-/// same-device behavior — the fail-closed default is the backward-compatible one.
+/// same-device behavior: the fail-closed default is the backward-compatible one.
 /// Only `rt=0` disables the return (the QR-scan case, where there is no caller and
 /// the browser picks the result up by polling); `rt=1` is the explicit default.
-/// The match is byte-exact on the (percent-decoded) value — no trimming — so only
+/// The match is byte-exact on the (percent-decoded) value, no trimming, so only
 /// a clean `0` disables and anything padded or decorated stays the safe default.
 /// Duplicate `rt=` is resolved by each parser's first-occurrence-wins loop before
 /// this is called.
@@ -321,6 +321,25 @@ pub(crate) fn parse_return_flag(raw: Option<&str>) -> bool {
 		Some(v) => String::from_utf8_lossy(&percent_decode(v)) != "0",
 		None => true,
 	}
+}
+
+/// The return-to-caller DECISION for a login/authorize/trust flow. True only
+/// when the URI allowed the return (`allowed`, the parsed `rt` flag) AND the
+/// flow is FULLY complete: the callback POST finished successfully
+/// (`post_ok == Some(true)`; `None` means still in flight) and any follow-on
+/// publish is confirmed delivered (`publish_confirmed`; flows without one pass
+/// `true`, the trust flow passes its session-open announce confirmation).
+/// Returning any earlier is the Build 153 QR-trust bug: the app switch stops
+/// the GUI frame pump and the Build 95 heartbeat then idles the nostr side, so
+/// pending completion work (the outcome poll, session creation, the
+/// session-open publish) never runs and the site never sees the login.
+/// Pure, total, no I/O.
+pub fn should_return_to_caller(
+	allowed: bool,
+	post_ok: Option<bool>,
+	publish_confirmed: bool,
+) -> bool {
+	allowed && post_ok == Some(true) && publish_confirmed
 }
 
 /// Decode and validate the `e` template. Unpadded base64url only (any `=`
@@ -1058,6 +1077,34 @@ mod tests {
 			!parse_return_flag(Some("%30")),
 			"%30 decodes to 0 -> no return"
 		);
+	}
+
+	#[test]
+	fn return_decision_waits_for_completion() {
+		// The return decision is NEVER taken while the POST is pending (None) or
+		// after it failed, and never while a required publish is unconfirmed:
+		// backgrounding early strands the completion work in a paused app.
+		assert!(
+			!should_return_to_caller(true, None, true),
+			"pending POST must not return"
+		);
+		assert!(
+			!should_return_to_caller(true, Some(false), true),
+			"failed POST must not return"
+		);
+		assert!(
+			!should_return_to_caller(true, Some(true), false),
+			"unconfirmed publish must not return"
+		);
+		assert!(
+			!should_return_to_caller(true, None, false),
+			"nothing done yet must not return"
+		);
+		// Only a fully complete flow with the flag allowing it returns.
+		assert!(should_return_to_caller(true, Some(true), true));
+		// And the rt=0 flag suppresses the return even when fully complete.
+		assert!(!should_return_to_caller(false, Some(true), true));
+		assert!(!should_return_to_caller(false, None, false));
 	}
 
 	#[test]

@@ -153,6 +153,10 @@ pub struct GoblinWalletView {
 	/// this OR `login`/`authorize`/`money` is `Some`, new incoming requests are
 	/// ignored (one approval at a time).
 	trust: Option<TrustState>,
+	/// A granted trust whose `session-open` announce is still unconfirmed: the
+	/// toast and any return-to-caller wait here until the service loop confirms
+	/// the publish reached a relay (or the deadline passes).
+	trust_wait: Option<TrustWait>,
 	/// The hold-to-confirm gesture for the single high-value trust decision.
 	trust_hold: w::HoldToSend,
 	/// A money-tier sign or encrypt arriving mid-session that must be
@@ -299,6 +303,7 @@ impl Default for GoblinWalletView {
 			authorize: None,
 			login_toast: None,
 			trust: None,
+			trust_wait: None,
 			trust_hold: w::HoldToSend::default(),
 			money: None,
 			money_hold: w::HoldToSend::default(),
@@ -399,6 +404,29 @@ const LOGIN_EXPIRY_SECS: u64 = 120;
 /// The login callback POST gives up after this many seconds.
 const LOGIN_POST_TIMEOUT_SECS: u64 = 15;
 
+/// How long the trust flow waits for the `session-open` announce to be
+/// confirmed handed to a relay before giving up with an honest toast. The
+/// service loop ticks every 2s and the publish itself is bounded by its own
+/// send timeout, so this comfortably covers the normal path.
+const TRUST_ANNOUNCE_TIMEOUT_SECS: u64 = 15;
+
+/// A granted trust waiting on its `session-open` announce confirmation. The
+/// success toast and the return-to-caller decision (same-device flows) are
+/// deferred until [`crate::nostr::NostrService::session_announced`] turns true
+/// for `channel_pk`, or `deadline` passes. Keeping the app foreground for this
+/// window is what fixes the Build 153 QR-trust bug: backgrounding stops the
+/// frame pump and strands the announce in the paused service.
+struct TrustWait {
+	/// The wallet channel pubkey (hex) identifying the announced session.
+	channel_pk: String,
+	/// The granted domain, for the toast.
+	domain: String,
+	/// Give-up time for the confirmation wait.
+	deadline: std::time::Instant,
+	/// The parsed `rt` flag: whether a completed flow may hand focus back.
+	want_return: bool,
+}
+
 /// One pending "Sign in with Goblin" approval. Single-use by construction:
 /// once the event is signed (`posting`), or on cancel/expiry, the state is
 /// dropped and only a fresh URI can start another.
@@ -477,6 +505,9 @@ struct TrustState {
 	channel: nostr_sdk::Keys,
 	/// A friendly label for the identity (for the Trusted Sites list).
 	label: String,
+	/// Whether the collapsed permission detail (categories, money line,
+	/// duration) is expanded. The modal leads with the one-line gist.
+	show_full: bool,
 	/// Result slot the login-POST worker fills.
 	result: std::sync::Arc<std::sync::Mutex<Option<Result<(), String>>>>,
 }
@@ -865,18 +896,25 @@ impl GoblinWalletView {
 		let mut login_outcome = None;
 		if let Some(st) = &self.login {
 			if st.posting {
+				// The return decision only counts as FRESH within the posting
+				// window: if the user backgrounded the wallet themselves and the
+				// result is consumed on a much-later resume, bouncing them back
+				// out again would be a surprise, not a completion.
+				let fresh =
+					st.created.elapsed().as_secs() <= LOGIN_EXPIRY_SECS + LOGIN_POST_TIMEOUT_SECS;
 				login_outcome = st
 					.result
 					.lock()
 					.unwrap()
 					.take()
-					.map(|res| (res, st.uri.domain.clone()));
+					.map(|res| (res, st.uri.domain.clone(), st.uri.return_to_caller && fresh));
 				if login_outcome.is_none() {
 					ui.ctx().request_repaint();
 				}
 			}
 		}
-		if let Some((res, domain)) = login_outcome {
+		if let Some((res, domain, want_return)) = login_outcome {
+			let posted_ok = res.is_ok();
 			let text = match res {
 				Ok(()) => t!("goblin.login.sent", domain => domain).to_string(),
 				Err(e) => {
@@ -886,6 +924,11 @@ impl GoblinWalletView {
 			};
 			self.login_toast = Some((text, std::time::Instant::now()));
 			self.login = None;
+			// The flow is fully complete only NOW (POST result in hand); a
+			// failed POST keeps the user in the wallet with the honest toast.
+			if crate::nostr::authuri::should_return_to_caller(want_return, Some(posted_ok), true) {
+				cb.return_to_caller();
+			}
 		}
 		// The sign-in approval modal itself.
 		if Modal::opened() == Some(LOGIN_MODAL) {
@@ -938,18 +981,23 @@ impl GoblinWalletView {
 		let mut authorize_outcome = None;
 		if let Some(st) = &self.authorize {
 			if st.posting {
+				// Same freshness rule as login: a result consumed on a late
+				// resume must not bounce the user back out.
+				let fresh =
+					st.created.elapsed().as_secs() <= LOGIN_EXPIRY_SECS + LOGIN_POST_TIMEOUT_SECS;
 				authorize_outcome = st
 					.result
 					.lock()
 					.unwrap()
 					.take()
-					.map(|res| (res, st.uri.domain.clone()));
+					.map(|res| (res, st.uri.domain.clone(), st.uri.return_to_caller && fresh));
 				if authorize_outcome.is_none() {
 					ui.ctx().request_repaint();
 				}
 			}
 		}
-		if let Some((res, domain)) = authorize_outcome {
+		if let Some((res, domain, want_return)) = authorize_outcome {
+			let posted_ok = res.is_ok();
 			let text = match res {
 				Ok(()) => t!("goblin.authorize.sent", domain => domain).to_string(),
 				Err(e) => {
@@ -959,6 +1007,11 @@ impl GoblinWalletView {
 			};
 			self.login_toast = Some((text, std::time::Instant::now()));
 			self.authorize = None;
+			// Fully complete only NOW (POST result in hand); a failed POST keeps
+			// the user in the wallet with the honest toast.
+			if crate::nostr::authuri::should_return_to_caller(want_return, Some(posted_ok), true) {
+				cb.return_to_caller();
+			}
 		}
 		// The authorize approval modal itself.
 		if Modal::opened() == Some(AUTHORIZE_MODAL) {
@@ -992,6 +1045,7 @@ impl GoblinWalletView {
 						posting: false,
 						channel: nostr_sdk::Keys::generate(),
 						label,
+						show_full: false,
 						result: std::sync::Arc::new(std::sync::Mutex::new(None)),
 					});
 					self.trust_hold = w::HoldToSend::default();
@@ -1032,6 +1086,7 @@ impl GoblinWalletView {
 			let st = self.trust.take();
 			let text = match (res, st) {
 				(Ok(()), Some(st)) => {
+					let mut session_added = false;
 					if let Some(svc) = wallet.nostr_service() {
 						if let (Ok(site_pk), Ok(id_pk)) = (
 							nostr_sdk::PublicKey::from_hex(&st.uri.site_session_pubkey),
@@ -1052,17 +1107,78 @@ impl GoblinWalletView {
 								now,
 							);
 							svc.add_session(session);
+							session_added = true;
 						}
 					}
-					t!("goblin.trust.sent", domain => domain).to_string()
+					if session_added {
+						// The grant is NOT complete yet: the session-open channel
+						// event still has to reach the relay (the service loop
+						// publishes it on its next tick). Hold the success toast
+						// AND the return-to-caller decision until the announce is
+						// confirmed, or the site never learns the session exists
+						// (the Build 153 QR-trust bug).
+						self.trust_wait = Some(TrustWait {
+							channel_pk: st.channel.public_key().to_hex(),
+							domain,
+							deadline: std::time::Instant::now()
+								+ std::time::Duration::from_secs(TRUST_ANNOUNCE_TIMEOUT_SECS),
+							want_return: st.uri.return_to_caller,
+						});
+						ui.ctx().request_repaint();
+						None
+					} else {
+						// No service / bad keys: no session, no announce. Show the
+						// login-sent toast (the 22242 POST did succeed) but never
+						// return-to-caller on an incomplete grant.
+						Some(t!("goblin.trust.sent", domain => domain).to_string())
+					}
 				}
 				(Err(e), _) => {
 					log::warn!("trust login callback failed: {e}");
-					t!("goblin.trust.failed", domain => domain).to_string()
+					Some(t!("goblin.trust.failed", domain => domain).to_string())
 				}
-				(Ok(()), None) => t!("goblin.trust.sent", domain => domain).to_string(),
+				(Ok(()), None) => Some(t!("goblin.trust.sent", domain => domain).to_string()),
+			};
+			if let Some(text) = text {
+				self.login_toast = Some((text, std::time::Instant::now()));
+			}
+		}
+		// Wait out the session-open announce: the service loop confirms the
+		// publish reached a relay, then (and only then) the grant is complete,
+		// the toast shows, and a same-device flow may hand focus back. The
+		// repaint keeps frames pumping so the app stays foreground while waiting.
+		let mut trust_wait_done = None;
+		if let Some(wt) = &self.trust_wait {
+			let announced = wallet
+				.nostr_service()
+				.map(|s| s.session_announced(&wt.channel_pk))
+				.unwrap_or(false);
+			if announced {
+				// Fresh only within the wait window: an announce observed on a
+				// late resume (the user backgrounded the wallet themselves) shows
+				// the toast but must not bounce them back out.
+				let fresh = std::time::Instant::now() < wt.deadline;
+				trust_wait_done = Some((true, wt.domain.clone(), wt.want_return && fresh));
+			} else if std::time::Instant::now() >= wt.deadline {
+				trust_wait_done = Some((false, wt.domain.clone(), wt.want_return));
+			} else {
+				ui.ctx().request_repaint();
+			}
+		}
+		if let Some((announced, domain, want_return)) = trust_wait_done {
+			self.trust_wait = None;
+			let text = if announced {
+				t!("goblin.trust.sent", domain => domain).to_string()
+			} else {
+				// Honest: the login went through and the session exists in the
+				// wallet, but the site has not confirmably received it.
+				log::warn!("trust session-open announce unconfirmed for {domain}");
+				t!("goblin.trust.announce_failed", domain => domain).to_string()
 			};
 			self.login_toast = Some((text, std::time::Instant::now()));
+			if crate::nostr::authuri::should_return_to_caller(want_return, Some(true), announced) {
+				cb.return_to_caller();
+			}
 		}
 
 		// A money-tier request arriving over a live session channel raises the
@@ -6591,7 +6707,6 @@ impl GoblinWalletView {
 			let st = self.login.as_mut().unwrap();
 			st.pass.clear();
 			st.wrong_pass = false;
-			let return_to_caller = st.uri.return_to_caller;
 			match crate::nostr::loginuri::build_login_event(
 				&keys,
 				&st.uri.challenge,
@@ -6627,15 +6742,11 @@ impl GoblinWalletView {
 						*slot.lock().unwrap() = Some(res);
 					});
 					Modal::close();
-					// Signed and handed to the POST worker: return the user to
-					// the app that deep-linked in (the polling browser tab),
-					// without waiting on the HTTP response. Success path only, and
-					// only for a same-device deep-link (the default); a QR-scanned
-					// URI carries `rt=0`, so we stay in the wallet and the browser
-					// picks the login up by polling.
-					if return_to_caller {
-						cb.return_to_caller();
-					}
+					// The return-to-caller decision is DEFERRED to the outcome
+					// poll: returning now would background the app with the POST
+					// still in flight, stop the frame pump, and strand the
+					// completion work (the Build 153 QR-trust bug). The app stays
+					// foreground (frames pumping) until the POST result lands.
 				}
 				Err(e) => {
 					// Signing failed (never expected): consume the request and
@@ -7022,7 +7133,6 @@ impl GoblinWalletView {
 			let st = self.authorize.as_mut().unwrap();
 			st.pass.clear();
 			st.wrong_pass = false;
-			let return_to_caller = st.uri.return_to_caller;
 			match crate::nostr::authuri::build_authorize_event(&keys, &st.uri.template) {
 				Ok(event) => {
 					// Signed: the request is consumed from here on, whatever the
@@ -7057,15 +7167,9 @@ impl GoblinWalletView {
 						*slot.lock().unwrap() = Some(res);
 					});
 					Modal::close();
-					// Signed and handed to the POST worker: return the user to
-					// the app that deep-linked in (the polling browser tab),
-					// without waiting on the HTTP response. Success path only, and
-					// only for a same-device deep-link (the default); a QR-scanned
-					// URI carries `rt=0`, so we stay in the wallet and the browser
-					// picks the result up by polling.
-					if return_to_caller {
-						cb.return_to_caller();
-					}
+					// Return-to-caller is DEFERRED to the outcome poll (see the
+					// login flow): the app must stay foreground until the POST
+					// result lands, or the completion work freezes backgrounded.
 				}
 				Err(e) => {
 					// Signing failed (never expected): consume the request and
@@ -7183,20 +7287,14 @@ impl GoblinWalletView {
 				ui.label(RichText::new(&short).size(12.5).color(Colors::gray()));
 			}
 			ui.add_space(12.0);
-			// What the silent grant covers, as human categories.
+			// The gist in one short line (grant + the money rule), with the full
+			// permission detail behind a small disclosure for anyone who wants it.
 			ui.label(
-				RichText::new(t!("goblin.trust.grant_intro", domain => domain.clone()))
-					.size(13.0)
-					.color(Colors::gray()),
+				RichText::new(t!("goblin.trust.lead", domain => domain.clone()))
+					.size(13.5)
+					.color(Colors::text(false)),
 			);
-			ui.add_space(6.0);
-			for cat in &display.categories {
-				ui.label(
-					RichText::new(format!("• {}", t!(cat.key())))
-						.size(13.5)
-						.color(Colors::text(false)),
-				);
-			}
+			// Caution lines are safety-relevant and stay visible even collapsed.
 			for kind in &display.unknown_kinds {
 				ui.label(
 					RichText::new(format!(
@@ -7214,19 +7312,57 @@ impl GoblinWalletView {
 						.color(Colors::red()),
 				);
 			}
-			ui.add_space(10.0);
-			// The fixed money line: the low-tier grant is not a money grant.
-			ui.label(
-				RichText::new(t!("goblin.trust.money_line"))
-					.size(13.5)
-					.color(Colors::title(false)),
-			);
 			ui.add_space(8.0);
-			ui.label(
-				RichText::new(t!("goblin.trust.duration"))
-					.size(12.5)
-					.color(Colors::gray()),
+			// The disclosure toggle, same idiom as the authorize full-content view.
+			let toggle = if st.show_full {
+				t!("goblin.authorize.show_less")
+			} else {
+				t!("goblin.authorize.show_full")
+			};
+			let rect = ui
+				.label(RichText::new(toggle).size(13.0).color(Colors::green()))
+				.rect;
+			let hit = ui.interact(
+				rect,
+				egui::Id::from(modal.id).with("trust_showfull"),
+				Sense::click(),
 			);
+			if hit
+				.on_hover_cursor(egui::CursorIcon::PointingHand)
+				.clicked()
+			{
+				st.show_full = !st.show_full;
+			}
+			if st.show_full {
+				ui.add_space(6.0);
+				// What the silent grant covers, as human categories.
+				ui.label(
+					RichText::new(t!("goblin.trust.grant_intro"))
+						.size(13.0)
+						.color(Colors::gray()),
+				);
+				ui.add_space(4.0);
+				for cat in &display.categories {
+					ui.label(
+						RichText::new(format!("• {}", t!(cat.key())))
+							.size(13.5)
+							.color(Colors::text(false)),
+					);
+				}
+				ui.add_space(6.0);
+				// The fixed money line: the low-tier grant is not a money grant.
+				ui.label(
+					RichText::new(t!("goblin.trust.money_line"))
+						.size(13.0)
+						.color(Colors::title(false)),
+				);
+				ui.add_space(4.0);
+				ui.label(
+					RichText::new(t!("goblin.trust.duration"))
+						.size(12.5)
+						.color(Colors::gray()),
+				);
+			}
 			ui.add_space(12.0);
 			ui.label(
 				RichText::new(t!("goblin.trust.pass_prompt"))
@@ -7302,7 +7438,6 @@ impl GoblinWalletView {
 			let st = self.trust.as_mut().unwrap();
 			st.pass.clear();
 			st.wrong_pass = false;
-			let return_to_caller = st.uri.return_to_caller;
 			// Sign and POST the kind-22242 login event exactly as Build 150 does;
 			// the session is created by the router once this POST succeeds.
 			match crate::nostr::loginuri::build_login_event(
@@ -7337,12 +7472,11 @@ impl GoblinWalletView {
 						*slot.lock().unwrap() = Some(res);
 					});
 					Modal::close();
-					// Same-device deep-link only (the default); a QR-scanned trust
-					// URI carries `rt=0`, so we stay in the wallet and the browser
-					// picks the session up by polling.
-					if return_to_caller {
-						cb.return_to_caller();
-					}
+					// Return-to-caller is DEFERRED even further than login: past
+					// the POST outcome AND past the session-open announce
+					// confirmation (the trust_wait poll). Returning here was the
+					// Build 153 QR-trust bug: the app backgrounded with the POST
+					// in flight and the session-open never published.
 				}
 				Err(e) => {
 					log::error!("trust login event signing failed: {e}");

@@ -177,6 +177,13 @@ pub struct NostrService {
 	/// A single non-blocking "signing a lot" notice for the GUI toast, set when a
 	/// session trips the soft rate cap.
 	session_notice: RwLock<Option<String>>,
+	/// Wallet channel pubkeys (hex) whose `session-open` announce was CONFIRMED
+	/// handed to at least one relay connection. The trust GUI waits on this
+	/// before it may background the app (return-to-caller): backgrounding stops
+	/// the frame pump, and an announce still queued behind `sessions_dirty`
+	/// would freeze in the paused service (the Build 153 QR-trust bug).
+	/// Transient and tiny (one entry per grant this run).
+	announced_ok: RwLock<std::collections::HashSet<String>>,
 }
 
 /// Phase of the most recent outgoing send, polled by the send UI.
@@ -232,6 +239,7 @@ impl NostrService {
 			money_pending: Mutex::new(Vec::new()),
 			money_answers: Mutex::new(Vec::new()),
 			session_notice: RwLock::new(None),
+			announced_ok: RwLock::new(std::collections::HashSet::new()),
 		})
 	}
 
@@ -264,6 +272,14 @@ impl NostrService {
 	pub fn add_session(&self, session: crate::nostr::session::Session) {
 		self.sessions.write().push(session);
 		self.sessions_dirty.store(true, Ordering::SeqCst);
+	}
+
+	/// True once the `session-open` announce for the session with this wallet
+	/// channel pubkey (hex) was actually handed to a relay connection. The trust
+	/// GUI polls this before taking the return-to-caller decision, so the app
+	/// never backgrounds with the announce still pending in the service.
+	pub fn session_announced(&self, wallet_channel_pk_hex: &str) -> bool {
+		self.announced_ok.read().contains(wallet_channel_pk_hex)
 	}
 
 	/// True when at least one session is live (for the Trusted Sites badge/list).
@@ -2325,7 +2341,26 @@ async fn announce_new_sessions(svc: &Arc<NostrService>, client: &Client) {
 		}
 	}
 	for ev in events {
-		let _ = tokio::time::timeout(SEND_TIMEOUT, client.send_event_to(&relays, &ev)).await;
+		// The event's own pubkey IS the wallet channel key (see
+		// `session_open_event`). Record delivery only when at least one relay
+		// actually accepted the event, so the GUI's return-to-caller wait is a
+		// real confirmation, not a queued-and-hoping.
+		let pk_hex = ev.pubkey.to_hex();
+		let confirmed =
+			match tokio::time::timeout(SEND_TIMEOUT, client.send_event_to(&relays, &ev)).await {
+				Ok(Ok(out)) => !out.success.is_empty(),
+				Ok(Err(e)) => {
+					warn!("nostr: session-open publish failed: {e}");
+					false
+				}
+				Err(_) => {
+					warn!("nostr: session-open publish timed out");
+					false
+				}
+			};
+		if confirmed {
+			svc.announced_ok.write().insert(pk_hex);
+		}
 	}
 }
 
