@@ -84,6 +84,39 @@ pub fn avatar_any(
 	}
 }
 
+/// Fixed Goblin yellow for the anonymous-mode censored avatar (#FED60E). A
+/// literal constant, never seeded by an identity or read from the theme, so
+/// every censored tile is byte-identical and no per-user color can leak.
+const CENSOR_AVATAR_FILL: Color32 = Color32::from_rgb(0xFE, 0xD6, 0x0E);
+
+/// The anonymous-mode censored avatar: one uniform tile that replaces every
+/// real picture, gradient, or initial while anonymous mode is on. A solid
+/// Goblin-yellow circle with the Goblin mark inked dark on top (the same mark
+/// [`super::widgets_logo`] draws), tinted with the dark ink so it reads on the
+/// yellow in both light and dark themes. Identical for every identity on the
+/// home, activity, and Recent surfaces, so nothing about who the counterparty
+/// is leaks. `size` matches the avatar it stands in for; the row still taps
+/// through (the returned `Response` senses clicks) so tap-to-reveal is intact.
+pub fn avatar_censored(ui: &mut Ui, size: f32) -> Response {
+	let (rect, resp) = ui.allocate_exact_size(Vec2::splat(size), Sense::click());
+	ui.painter()
+		.circle_filled(rect.center(), rect.width() / 2.0, CENSOR_AVATAR_FILL);
+	// Goblin mark centered at ~62% of the tile, inked dark so it reads on the
+	// yellow regardless of theme. Small marks use the pre-rendered raster (same
+	// crossover as widgets_logo_sized) for cleaner antialiasing.
+	let mark = size * 0.62;
+	let mrect = egui::Rect::from_center_size(rect.center(), Vec2::splat(mark));
+	egui::Image::new(if mark <= 32.0 {
+		egui::include_image!("../../../../img/goblin-logo2-48.png")
+	} else {
+		egui::include_image!("../../../../img/goblin-logo2.svg")
+	})
+	.tint(Color32::from_rgb(0x0E, 0x0E, 0x0C))
+	.fit_to_exact_size(Vec2::splat(mark))
+	.paint_at(ui, mrect);
+	resp
+}
+
 /// Draw a balance/amount: big bold number + smaller ツ mark, tight.
 /// Geist (sans) per the design; mono is reserved for kernel/block ids.
 pub fn amount_text(ui: &mut Ui, value: &str, size: f32) {
@@ -618,6 +651,7 @@ pub fn activity_row(
 	canceled: bool,
 	system: bool,
 	tex: Option<&egui::TextureHandle>,
+	anon: bool,
 ) -> Response {
 	let t = theme::tokens();
 	// A touch taller than a single-line row so the amount can sit centered
@@ -648,6 +682,10 @@ pub fn activity_row(
 				FontId::new(20.0, fonts::regular()),
 				t.text,
 			);
+		} else if anon {
+			// Anonymous mode: the uniform censored tile stands in for every
+			// counterparty avatar, so nothing about who they are leaks.
+			avatar_censored(ui, 40.0);
 		} else {
 			avatar_any(ui, title, id, 40.0, tex);
 		}
