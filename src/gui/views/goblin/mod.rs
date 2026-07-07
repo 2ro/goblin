@@ -6591,6 +6591,7 @@ impl GoblinWalletView {
 			let st = self.login.as_mut().unwrap();
 			st.pass.clear();
 			st.wrong_pass = false;
+			let return_to_caller = st.uri.return_to_caller;
 			match crate::nostr::loginuri::build_login_event(
 				&keys,
 				&st.uri.challenge,
@@ -6628,8 +6629,13 @@ impl GoblinWalletView {
 					Modal::close();
 					// Signed and handed to the POST worker: return the user to
 					// the app that deep-linked in (the polling browser tab),
-					// without waiting on the HTTP response. Success path only.
-					cb.return_to_caller();
+					// without waiting on the HTTP response. Success path only, and
+					// only for a same-device deep-link (the default); a QR-scanned
+					// URI carries `rt=0`, so we stay in the wallet and the browser
+					// picks the login up by polling.
+					if return_to_caller {
+						cb.return_to_caller();
+					}
 				}
 				Err(e) => {
 					// Signing failed (never expected): consume the request and
@@ -7016,6 +7022,7 @@ impl GoblinWalletView {
 			let st = self.authorize.as_mut().unwrap();
 			st.pass.clear();
 			st.wrong_pass = false;
+			let return_to_caller = st.uri.return_to_caller;
 			match crate::nostr::authuri::build_authorize_event(&keys, &st.uri.template) {
 				Ok(event) => {
 					// Signed: the request is consumed from here on, whatever the
@@ -7052,8 +7059,13 @@ impl GoblinWalletView {
 					Modal::close();
 					// Signed and handed to the POST worker: return the user to
 					// the app that deep-linked in (the polling browser tab),
-					// without waiting on the HTTP response. Success path only.
-					cb.return_to_caller();
+					// without waiting on the HTTP response. Success path only, and
+					// only for a same-device deep-link (the default); a QR-scanned
+					// URI carries `rt=0`, so we stay in the wallet and the browser
+					// picks the result up by polling.
+					if return_to_caller {
+						cb.return_to_caller();
+					}
 				}
 				Err(e) => {
 					// Signing failed (never expected): consume the request and
@@ -7290,6 +7302,7 @@ impl GoblinWalletView {
 			let st = self.trust.as_mut().unwrap();
 			st.pass.clear();
 			st.wrong_pass = false;
+			let return_to_caller = st.uri.return_to_caller;
 			// Sign and POST the kind-22242 login event exactly as Build 150 does;
 			// the session is created by the router once this POST succeeds.
 			match crate::nostr::loginuri::build_login_event(
@@ -7324,7 +7337,12 @@ impl GoblinWalletView {
 						*slot.lock().unwrap() = Some(res);
 					});
 					Modal::close();
-					cb.return_to_caller();
+					// Same-device deep-link only (the default); a QR-scanned trust
+					// URI carries `rt=0`, so we stay in the wallet and the browser
+					// picks the session up by polling.
+					if return_to_caller {
+						cb.return_to_caller();
+					}
 				}
 				Err(e) => {
 					log::error!("trust login event signing failed: {e}");
