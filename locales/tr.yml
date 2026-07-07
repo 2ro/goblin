@@ -502,6 +502,7 @@ goblin:
     theme_yellow: "Sarı"
     archive: "Arşiv"
     export_archive: "Arşivi dışa aktar"
+    export_archive_caption: "Kişilerinizi, ödeme geçmişinizi ve istekleri JSON olarak panoya kopyalar."
     wipe_history: "Ödeme geçmişini sil"
     wipe_history_confirm: "Silmek için tekrar dokun — geri alınamaz"
     about: "Hakkında"

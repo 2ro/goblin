@@ -502,6 +502,7 @@ goblin:
     theme_yellow: "Yellow"
     archive: "Archive"
     export_archive: "Export archive"
+    export_archive_caption: "Copies your contacts, payment history, and requests to the clipboard as JSON."
     wipe_history: "Wipe payment history"
     wipe_history_confirm: "Tap again to wipe — this can't be undone"
     about: "About"

@@ -1728,23 +1728,6 @@ impl GoblinWalletView {
 				// Mobile header: wordmark left, avatar (opens settings) right.
 				if !wide {
 					ui.add_space(10.0);
-					let (header_handle, header_hex) = wallet
-						.nostr_service()
-						.map(|s| {
-							let id = s.identity.read();
-							let hex = hex_of(&id.npub);
-							// With a verified handle show "@name"; otherwise fall back to
-							// the short npub (avatar_any then draws the deterministic
-							// pubkey-seeded gradient).
-							let h = id
-								.nip05
-								.clone()
-								.map(|n| n.split('@').next().unwrap_or("").to_string())
-								.unwrap_or_else(|| data::short_npub(&hex));
-							(h, hex)
-						})
-						.unwrap_or_else(|| ("N".to_string(), String::new()));
-					let header_tex = self.handle_tex(ui.ctx(), wallet, &header_handle);
 					ui.horizontal(|ui| {
 						// Owner-sized: +50% over the original 24px mark so the lockup
 						// carries the same visual weight as the 40-44px right cluster.
@@ -1756,15 +1739,9 @@ impl GoblinWalletView {
 								.color(theme::tokens().text),
 						);
 						ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-							if w::avatar_any(
-								ui,
-								&header_handle,
-								&header_hex,
-								40.0,
-								header_tex.as_ref(),
-							)
-							.clicked()
-							{
+							// The user's own avatar is always the flat yellow + Grin
+							// mark tile (opens settings), never a picture or gradient.
+							if w::avatar_self(ui, 40.0).clicked() {
 								self.tab = Tab::Me;
 							}
 							// Scan-to-pay, left of the avatar. No frame: a bold white QR
@@ -1991,21 +1968,6 @@ impl GoblinWalletView {
 	fn pay_ui(&mut self, ui: &mut egui::Ui, wallet: &Wallet, cb: &dyn PlatformCallbacks) {
 		let t = theme::tokens();
 		ui.add_space(8.0);
-		// Header identity for the avatar (→ settings), mirroring the Home header.
-		let (header_handle, header_hex) = wallet
-			.nostr_service()
-			.map(|s| {
-				let id = s.identity.read();
-				let hex = hex_of(&id.npub);
-				let h = id
-					.nip05
-					.clone()
-					.map(|n| n.split('@').next().unwrap_or("").to_string())
-					.unwrap_or_else(|| data::short_npub(&hex));
-				(h, hex)
-			})
-			.unwrap_or_else(|| ("N".to_string(), String::new()));
-		let header_tex = self.handle_tex(ui.ctx(), wallet, &header_handle);
 		ui.horizontal(|ui| {
 			// Goblin mark (left), sized to match the right-side controls.
 			ui.add(
@@ -2016,7 +1978,9 @@ impl GoblinWalletView {
 			// Right cluster: scan QR (black, no background) then the profile
 			// picture at the far right; all three controls about the same size.
 			ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-				if w::avatar_any(ui, &header_handle, &header_hex, 40.0, header_tex.as_ref())
+				// The user's own avatar is always the flat yellow + Grin mark tile
+				// (opens settings), never a picture or gradient.
+				if w::avatar_self(ui, 40.0)
 					.on_hover_cursor(egui::CursorIcon::PointingHand)
 					.clicked()
 				{
@@ -2790,11 +2754,20 @@ impl GoblinWalletView {
 
 	fn activity_ui(&mut self, ui: &mut egui::Ui, wallet: &Wallet, cb: &dyn PlatformCallbacks) {
 		ui.add_space(8.0);
-		ui.label(
-			RichText::new(t!("goblin.activity.title"))
-				.font(FontId::new(28.0, fonts::bold()))
-				.color(theme::tokens().text),
-		);
+		ui.horizontal(|ui| {
+			ui.label(
+				RichText::new(t!("goblin.activity.title"))
+					.font(FontId::new(28.0, fonts::bold()))
+					.color(theme::tokens().text),
+			);
+			// The user's own avatar (opens settings): the flat yellow + Grin mark
+			// tile, matching the Home and Pay headers.
+			ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+				if w::avatar_self(ui, 40.0).clicked() {
+					self.tab = Tab::Me;
+				}
+			});
+		});
 		ui.add_space(12.0);
 
 		// Recent contacts strip (payment-app-style row above the feed).
@@ -3369,7 +3342,7 @@ impl GoblinWalletView {
 			SettingsPage::Slatepack => return self.slatepack_ui(ui, wallet, cb),
 			SettingsPage::Privacy => return self.privacy_ui(ui),
 			SettingsPage::Username => return self.username_ui(ui, wallet, cb),
-			SettingsPage::AdvancedPrivacy => return self.advanced_privacy_ui(ui),
+			SettingsPage::AdvancedPrivacy => return self.advanced_privacy_ui(ui, wallet, cb),
 			SettingsPage::Advanced => return self.advanced_ui(ui, wallet, cb),
 			SettingsPage::Identities => return self.identities_ui(ui, wallet, cb),
 			SettingsPage::TrustedSites => return self.trusted_sites_ui(ui, wallet, cb),
@@ -3824,36 +3797,6 @@ impl GoblinWalletView {
 				if open_language {
 					self.settings_page = SettingsPage::Language;
 				}
-
-				ui.add_space(16.0);
-				w::kicker(ui, &t!("goblin.settings.archive"));
-				ui.add_space(8.0);
-				w::card(ui, |ui| {
-					if settings_row_btn(ui, &t!("goblin.settings.export_archive"), COPY) {
-						if let Some(s) = wallet.nostr_service() {
-							let json = s.store.export_json(&s.npub());
-							cb.copy_string_to_buffer(json);
-							cb.vibrate_copy();
-						}
-					}
-					// Destructive: danger styling + tap-twice confirm (like the
-					// receipt's "Cancel payment") before the archive is wiped.
-					let wipe_label = if self.wipe_confirm {
-						t!("goblin.settings.wipe_history_confirm")
-					} else {
-						t!("goblin.settings.wipe_history")
-					};
-					if settings_row_danger(ui, &wipe_label, crate::gui::icons::X) {
-						if self.wipe_confirm {
-							if let Some(s) = wallet.nostr_service() {
-								s.store.wipe_archive();
-							}
-							self.wipe_confirm = false;
-						} else {
-							self.wipe_confirm = true;
-						}
-					}
-				});
 
 				ui.add_space(16.0);
 				settings_group(ui, &t!("goblin.settings.about"), |ui| {
@@ -4324,7 +4267,12 @@ impl GoblinWalletView {
 	/// Advanced Privacy page — notification hiding (amounts / names / all
 	/// details) and the anonymous-mode toggle that dots the home balance and the
 	/// activity list. All presentation-only; nothing here touches the money path.
-	fn advanced_privacy_ui(&mut self, ui: &mut egui::Ui) {
+	fn advanced_privacy_ui(
+		&mut self,
+		ui: &mut egui::Ui,
+		wallet: &Wallet,
+		cb: &dyn PlatformCallbacks,
+	) {
 		let t = theme::tokens();
 		if self.sub_header(ui, &t!("goblin.settings.advanced_privacy")) {
 			self.settings_page = SettingsPage::Main;
@@ -4376,6 +4324,37 @@ impl GoblinWalletView {
 						crate::AppConfig::anonymous_mode(),
 					) {
 						crate::AppConfig::set_anonymous_mode(v);
+					}
+				});
+				ui.add_space(16.0);
+				// The local archive (contacts + payment history + requests) lives
+				// here under Advanced privacy.
+				settings_group(ui, &t!("goblin.settings.archive"), |ui| {
+					if settings_row_btn(ui, &t!("goblin.settings.export_archive"), COPY) {
+						if let Some(s) = wallet.nostr_service() {
+							let json = s.store.export_json(&s.npub());
+							cb.copy_string_to_buffer(json);
+							cb.vibrate_copy();
+						}
+					}
+					advanced_desc(ui, &t!("goblin.settings.export_archive_caption"));
+					ui.add_space(10.0);
+					// Destructive: danger styling + tap-twice confirm (like the
+					// receipt's "Cancel payment") before the archive is wiped.
+					let wipe_label = if self.wipe_confirm {
+						t!("goblin.settings.wipe_history_confirm")
+					} else {
+						t!("goblin.settings.wipe_history")
+					};
+					if settings_row_danger(ui, &wipe_label, crate::gui::icons::X) {
+						if self.wipe_confirm {
+							if let Some(s) = wallet.nostr_service() {
+								s.store.wipe_archive();
+							}
+							self.wipe_confirm = false;
+						} else {
+							self.wipe_confirm = true;
+						}
 					}
 				});
 				ui.add_space(16.0);

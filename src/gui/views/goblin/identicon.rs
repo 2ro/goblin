@@ -106,6 +106,21 @@ pub fn gradient_stops(id: &str) -> ((u8, u8, u8), (u8, u8, u8), f32) {
 	(c1, c2, angle as f32)
 }
 
+/// The anonymous-mode / self avatar as a standalone SVG: a flat Goblin-yellow
+/// (`#FED60E`) tile with the SAME Grin mark the gradient avatar composites on top
+/// (identical [`GRIN_PATH`], 90% scale, and 67%-black ink), just over a flat fill
+/// instead of the per-identity gradient. Keeping the mark geometry identical to
+/// [`gradient_avatar_svg`] means the anonymous and self tiles draw the Grin mark
+/// exactly the way a normal avatar does.
+pub fn censored_avatar_svg(size: u32) -> String {
+	let target = size as f64 * LOGO_FRAC;
+	let scale = target / GRIN_NATIVE;
+	let off = (size as f64 - target) / 2.0;
+	format!(
+		r##"<svg xmlns="http://www.w3.org/2000/svg" width="{size}" height="{size}" viewBox="0 0 {size} {size}" role="img"><rect width="{size}" height="{size}" fill="#FED60E"/><g transform="translate({off:.2},{off:.2}) scale({scale:.4})"><path d="{GRIN_PATH}" fill="#000000" fill-opacity="{LOGO_OPACITY}"/></g></svg>"##
+	)
+}
+
 /// The gradient avatar as a standalone SVG document, seeded by `hex` (lowercase
 /// hex pubkey). `id_suffix` makes the gradient element id unique when several
 /// are inlined into ONE html document; for a standalone document (how egui

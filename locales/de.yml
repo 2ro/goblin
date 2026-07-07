@@ -502,6 +502,7 @@ goblin:
     theme_yellow: "Gelb"
     archive: "Archiv"
     export_archive: "Archiv exportieren"
+    export_archive_caption: "Kopiert deine Kontakte, deinen Zahlungsverlauf und Anfragen als JSON in die Zwischenablage."
     wipe_history: "Zahlungsverlauf löschen"
     wipe_history_confirm: "Zum Löschen erneut tippen — kann nicht rückgängig gemacht werden"
     about: "Über"

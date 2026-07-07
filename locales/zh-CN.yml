@@ -502,6 +502,7 @@ goblin:
     theme_yellow: "黄色"
     archive: "存档"
     export_archive: "导出存档"
+    export_archive_caption: "将您的联系人、付款记录和请求以 JSON 格式复制到剪贴板。"
     wipe_history: "清除付款记录"
     wipe_history_confirm: "再次点按以清除 — 无法撤销"
     about: "关于"

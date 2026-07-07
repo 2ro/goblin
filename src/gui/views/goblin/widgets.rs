@@ -84,37 +84,37 @@ pub fn avatar_any(
 	}
 }
 
-/// Fixed Goblin yellow for the anonymous-mode censored avatar (#FED60E). A
-/// literal constant, never seeded by an identity or read from the theme, so
-/// every censored tile is byte-identical and no per-user color can leak.
-const CENSOR_AVATAR_FILL: Color32 = Color32::from_rgb(0xFE, 0xD6, 0x0E);
-
 /// The anonymous-mode censored avatar: one uniform tile that replaces every
-/// real picture, gradient, or initial while anonymous mode is on. A solid
-/// Goblin-yellow circle with the Goblin mark inked dark on top (the same mark
-/// [`super::widgets_logo`] draws), tinted with the dark ink so it reads on the
-/// yellow in both light and dark themes. Identical for every identity on the
+/// real picture, gradient, or initial while anonymous mode is on. A flat
+/// Goblin-yellow (`#FED60E`) circle with the GRIN mark composited on top exactly
+/// the way a normal gradient avatar draws it (same path, 90% scale, 67%-black
+/// ink — see [`super::identicon::censored_avatar_svg`]), just over a flat fill
+/// instead of the per-identity gradient. Identical for every identity on the
 /// home, activity, and Recent surfaces, so nothing about who the counterparty
 /// is leaks. `size` matches the avatar it stands in for; the row still taps
 /// through (the returned `Response` senses clicks) so tap-to-reveal is intact.
 pub fn avatar_censored(ui: &mut Ui, size: f32) -> Response {
 	let (rect, resp) = ui.allocate_exact_size(Vec2::splat(size), Sense::click());
-	ui.painter()
-		.circle_filled(rect.center(), rect.width() / 2.0, CENSOR_AVATAR_FILL);
-	// Goblin mark centered at ~62% of the tile, inked dark so it reads on the
-	// yellow regardless of theme. Small marks use the pre-rendered raster (same
-	// crossover as widgets_logo_sized) for cleaner antialiasing.
-	let mark = size * 0.62;
-	let mrect = egui::Rect::from_center_size(rect.center(), Vec2::splat(mark));
-	egui::Image::new(if mark <= 32.0 {
-		egui::include_image!("../../../../img/goblin-logo2-48.png")
-	} else {
-		egui::include_image!("../../../../img/goblin-logo2.svg")
+	let px = (rect.width() * 2.0) as u32;
+	let svg = super::identicon::censored_avatar_svg(px);
+	let uri = format!("bytes://gobcensored-{}.svg", rect.width() as u32);
+	egui::Image::new(egui::ImageSource::Bytes {
+		uri: uri.into(),
+		bytes: svg.into_bytes().into(),
 	})
-	.tint(Color32::from_rgb(0x0E, 0x0E, 0x0C))
-	.fit_to_exact_size(Vec2::splat(mark))
-	.paint_at(ui, mrect);
+	.corner_radius(CornerRadius::same((rect.width() / 2.0) as u8))
+	.fit_to_exact_size(rect.size())
+	.paint_at(ui, rect);
 	resp
+}
+
+/// The user's OWN avatar as shown top-right on the front surfaces (home, pay,
+/// activity). Always the flat Goblin-yellow tile with the Grin mark — never a
+/// custom picture or per-identity gradient — so "you" is a stable brand mark
+/// regardless of identity or anonymous mode. Same tile as [`avatar_censored`];
+/// taps through to settings.
+pub fn avatar_self(ui: &mut Ui, size: f32) -> Response {
+	avatar_censored(ui, size)
 }
 
 /// Draw a balance/amount: big bold number + smaller ツ mark, tight.

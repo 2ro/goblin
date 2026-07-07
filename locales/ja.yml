@@ -502,6 +502,7 @@ goblin:
     theme_yellow: "イエロー"
     archive: "アーカイブ"
     export_archive: "アーカイブをエクスポート"
+    export_archive_caption: "連絡先、支払い履歴、リクエストを JSON 形式でクリップボードにコピーします。"
     wipe_history: "支払い履歴を消去"
     wipe_history_confirm: "もう一度タップして消去 — 元に戻せません"
     about: "アプリについて"

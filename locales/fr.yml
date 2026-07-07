@@ -502,6 +502,7 @@ goblin:
     theme_yellow: "Jaune"
     archive: "Archive"
     export_archive: "Exporter l'archive"
+    export_archive_caption: "Copie vos contacts, votre historique de paiement et vos demandes dans le presse-papiers au format JSON."
     wipe_history: "Effacer l'historique des paiements"
     wipe_history_confirm: "Appuyez à nouveau pour effacer — action irréversible"
     about: "À propos"

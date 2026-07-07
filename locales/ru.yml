@@ -502,6 +502,7 @@ goblin:
     theme_yellow: "Жёлтая"
     archive: "Архив"
     export_archive: "Экспорт архива"
+    export_archive_caption: "Копирует ваши контакты, историю платежей и запросы в буфер обмена в формате JSON."
     wipe_history: "Стереть историю платежей"
     wipe_history_confirm: "Нажмите ещё раз, чтобы стереть — это нельзя отменить"
     about: "О приложении"

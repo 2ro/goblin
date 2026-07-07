@@ -502,6 +502,7 @@ goblin:
     theme_yellow: "Amarillo"
     archive: "Archivo"
     export_archive: "Exportar archivo"
+    export_archive_caption: "Copia tus contactos, historial de pagos y solicitudes al portapapeles en formato JSON."
     wipe_history: "Borrar historial de pagos"
     wipe_history_confirm: "Toca de nuevo para borrar — esto no se puede deshacer"
     about: "Acerca de"

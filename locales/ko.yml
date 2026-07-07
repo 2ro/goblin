@@ -502,6 +502,7 @@ goblin:
     theme_yellow: "옐로우"
     archive: "보관함"
     export_archive: "보관함 내보내기"
+    export_archive_caption: "연락처, 결제 내역, 요청을 JSON 형식으로 클립보드에 복사합니다."
     wipe_history: "결제 내역 지우기"
     wipe_history_confirm: "지우려면 다시 탭하세요 — 되돌릴 수 없습니다"
     about: "정보"
