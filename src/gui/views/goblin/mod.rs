@@ -3462,7 +3462,7 @@ impl GoblinWalletView {
 								RichText::new(format!(
 									"{} {}",
 									crate::gui::icons::CHECK,
-									t!("goblin.receipt.copied")
+									t!("goblin.receive.copied")
 								))
 								.font(FontId::new(13.0, fonts::medium()))
 								.color(t.pos),
