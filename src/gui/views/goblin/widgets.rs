@@ -402,7 +402,7 @@ pub fn chip(ui: &mut Ui, label: &str, active: bool) -> Response {
 pub fn qr_code(ui: &mut Ui, text: &str, size: f32) {
 	let plate = Color32::WHITE;
 	let ink = Color32::from_rgb(0x0E, 0x0E, 0x0C);
-	// High error correction tolerates the center mark covering modules.
+	// Plain QR (no center mark): High ECC retained for robust scanning.
 	let Ok(qr) = qrcodegen::QrCode::encode_text(text, qrcodegen::QrCodeEcc::High) else {
 		return;
 	};
@@ -429,19 +429,6 @@ pub fn qr_code(ui: &mut Ui, text: &str, size: f32) {
 			}
 		}
 	}
-	// Goblin mark on a yellow backing square in the center, 19% footprint (larger
-	// obscures too many modules for a reliable decode). Yellow reads as "light" to
-	// a scanner like white, so the covered center is recovered by the High ECC.
-	let t = theme::tokens();
-	let backing = size * 0.19;
-	let b_rect = egui::Rect::from_center_size(rect.center(), Vec2::splat(backing));
-	ui.painter()
-		.rect_filled(b_rect, CornerRadius::same((backing * 0.18) as u8), t.accent);
-	let m_rect = egui::Rect::from_center_size(rect.center(), Vec2::splat(backing * 0.72));
-	egui::Image::new(egui::include_image!("../../../../img/goblin-logo2.svg"))
-		.tint(t.accent_ink)
-		.fit_to_exact_size(m_rect.size())
-		.paint_at(ui, m_rect);
 }
 
 /// A filled input well for a text field sitting on a card, so the field

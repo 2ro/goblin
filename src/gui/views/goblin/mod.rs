@@ -1650,11 +1650,13 @@ impl GoblinWalletView {
 						.unwrap_or_else(|| ("N".to_string(), String::new()));
 					let header_tex = self.handle_tex(ui.ctx(), wallet, &header_handle);
 					ui.horizontal(|ui| {
-						widgets_logo(ui);
-						ui.add_space(8.0);
+						// Owner-sized: +50% over the original 24px mark so the lockup
+						// carries the same visual weight as the 40-44px right cluster.
+						widgets_logo_sized(ui, 36.0);
+						ui.add_space(9.0);
 						ui.label(
 							RichText::new("goblin")
-								.font(FontId::new(18.0, fonts::bold()))
+								.font(FontId::new(26.0, fonts::bold()))
 								.color(theme::tokens().text),
 						);
 						ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -1882,12 +1884,23 @@ impl GoblinWalletView {
 			.unwrap_or_else(|| ("N".to_string(), String::new()));
 		let header_tex = self.handle_tex(ui.ctx(), wallet, &header_handle);
 		ui.horizontal(|ui| {
-			// Goblin mark (left), sized to match the right-side controls.
-			ui.add(
-				egui::Image::new(egui::include_image!("../../../../img/goblin-logo2.svg"))
-					.tint(t.text)
-					.fit_to_exact_size(Vec2::splat(40.0)),
-			);
+			// Official GoblinPay lockup (left): the black Apple-Pay-style badge on
+			// light surfaces, the white wordmark on dark. Owner-specified brand mark.
+			if t.dark_base {
+				ui.add(
+					egui::Image::new(egui::include_image!(
+						"../../../../img/goblinpay-wordmark.svg"
+					))
+					.fit_to_exact_size(Vec2::new(84.0, 33.0)),
+				);
+			} else {
+				ui.add(
+					egui::Image::new(egui::include_image!(
+						"../../../../img/goblinpay-badge-black.svg"
+					))
+					.fit_to_exact_size(Vec2::new(98.0, 40.0)),
+				);
+			}
 			// Right cluster: scan QR (black, no background) then the profile
 			// picture at the far right; all three controls about the same size.
 			ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
