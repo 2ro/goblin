@@ -655,9 +655,14 @@ pub struct Session {
 	pub paused: bool,
 	/// Set when the session has ended (logout, wallet end, TTL, idle).
 	pub ended: bool,
-	/// True once the wallet has published its `session-open` envelope and
-	/// subscribed the channel for this session (a one-time runtime step).
+	/// True once the wallet's `session-open` envelope was CONFIRMED accepted by a
+	/// relay the site is listening on (the hint relay). Only then is the channel
+	/// live for the site; until then the loop keeps re-publishing.
 	pub announced: bool,
+	/// How many times the loop has attempted to publish this session's
+	/// `session-open`. Bounds the confirm-or-retry loop so a dead hint relay can
+	/// never spin the service for the whole session TTL.
+	pub announce_attempts: u32,
 	/// Replay-dedup ring: request id -> cached response JSON. A duplicate id
 	/// returns the cached result, never a second signature.
 	seen: HashMap<String, String>,
@@ -724,6 +729,7 @@ impl Session {
 			paused: false,
 			ended: false,
 			announced: false,
+			announce_attempts: 0,
 			seen: HashMap::new(),
 			seen_order: VecDeque::new(),
 			silent_times: VecDeque::new(),

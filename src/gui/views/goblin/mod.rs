@@ -434,10 +434,11 @@ const LOGIN_EXPIRY_SECS: u64 = 120;
 const LOGIN_POST_TIMEOUT_SECS: u64 = 15;
 
 /// How long the trust flow waits for the `session-open` announce to be
-/// confirmed handed to a relay before giving up with an honest toast. The
-/// service loop ticks every 2s and the publish itself is bounded by its own
-/// send timeout, so this comfortably covers the normal path.
-const TRUST_ANNOUNCE_TIMEOUT_SECS: u64 = 15;
+/// confirmed accepted by the site's relay before giving up with an honest
+/// toast. The service loop ticks every 2s and re-publishes until a hint relay
+/// confirms, so this covers a cold Tor circuit to a relay we weren't already
+/// connected to (which can take well over 15s on the first reach).
+const TRUST_ANNOUNCE_TIMEOUT_SECS: u64 = 30;
 
 /// A granted trust waiting on its `session-open` announce confirmation. The
 /// success toast and the return-to-caller decision (same-device flows) are
