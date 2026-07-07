@@ -197,8 +197,21 @@ impl IdentityCueCtx {
 	}
 }
 
+/// The settings sub-page for the coming frame: reset to the root once the user
+/// is off the Settings (Me) tab, otherwise keep the current page. Pure so the
+/// leave/enter boundary rule is unit-testable without an egui context. Deep
+/// links open a sub-page while setting the tab to Me in the same frame, so they
+/// are preserved.
+fn settings_page_after(tab: Tab, page: SettingsPage) -> SettingsPage {
+	if tab == Tab::Me {
+		page
+	} else {
+		SettingsPage::Main
+	}
+}
+
 /// Sub-pages of the Settings tab.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum SettingsPage {
 	Main,
 	Node,
@@ -788,6 +801,13 @@ impl GoblinWalletView {
 			self.authorize = None;
 			self.login_toast = None;
 		}
+
+		// Settings navigation resets to its ROOT whenever the user is not on the
+		// Settings (Me) tab, so leaving Settings and coming back always lands on
+		// the top-level page instead of the last sub-page. One reset at the
+		// leave/enter boundary — deep links that open a sub-page set the tab to Me
+		// in the same frame, so they are unaffected (the tab is Me by next frame).
+		self.settings_page = settings_page_after(self.tab, self.settings_page);
 
 		// Transient login-outcome toast (drawn as a Foreground area, so it rides
 		// above whatever surface or overlay is showing).
@@ -1733,7 +1753,7 @@ impl GoblinWalletView {
 				// fiat lookup is skipped entirely while censored (fiat_line is what
 				// kicks the rate fetch) and only fires once revealed.
 				if crate::AppConfig::anonymous_mode() && !self.balance_revealed {
-					if censored_balance_hero(ui) {
+					if censored_balance_hero(ui, total) {
 						self.balance_revealed = true;
 					}
 				} else {
@@ -2772,7 +2792,9 @@ impl GoblinWalletView {
 		// the "reveal" the spec calls for.
 		let anon = crate::AppConfig::anonymous_mode();
 		let amount = if anon {
-			"•••".to_string()
+			// Fixed dot count, never digit-matched, so a censored row can't leak
+			// the amount's magnitude.
+			censored_amount_dots(item.amount, false)
 		} else {
 			format!("{}{}{}", sign, w::amount_str(item.amount), w::TSU)
 		};
@@ -8198,7 +8220,13 @@ fn settings_row_toggle(ui: &mut egui::Ui, label: &str, sub: &str, on: bool) -> O
 	let t = theme::tokens();
 	let mut toggled = None;
 	ui.horizontal(|ui| {
+		// Reserve room for the switch and bound the text column, so a long
+		// label/subtitle WRAPS onto another line instead of running under the
+		// switch and clipping (longer locales clipped worst). 46px switch + gap.
+		let toggle_w = 58.0;
+		let text_w = (ui.available_width() - toggle_w).max(0.0);
 		ui.vertical(|ui| {
+			ui.set_width(text_w);
 			ui.label(
 				RichText::new(label)
 					.font(FontId::new(15.0, fonts::medium()))
@@ -8517,10 +8545,24 @@ fn fiat_line(data: &Option<WalletData>) -> Option<w::FiatLine> {
 	})
 }
 
+/// Number of dots a censored money value renders as. FIXED (never the real
+/// digit count) so anonymous mode can't leak the balance magnitude.
+const CENSOR_DOT_COUNT: usize = 5;
+
+/// The anonymous-mode censor for a money value: always [`CENSOR_DOT_COUNT`]
+/// dots, deliberately ignoring the real amount so its magnitude never leaks.
+/// `spaced` widens the dots for the balance hero; activity amounts pass false.
+fn censored_amount_dots(_atomic: u64, spaced: bool) -> String {
+	let sep = if spaced { "  " } else { "" };
+	["•"; CENSOR_DOT_COUNT].join(sep)
+}
+
 /// The anonymous-mode balance: a centered row of dots standing in for the
 /// number, tappable to reveal. Returns true on the frame it is tapped. No fiat
-/// line is drawn (and no rate fetch is triggered) while censored.
-fn censored_balance_hero(ui: &mut egui::Ui) -> bool {
+/// line is drawn (and no rate fetch is triggered) while censored. `total` is
+/// passed only so the censor is computed the same way everywhere; it is ignored
+/// (the dot count is fixed) so the balance size never leaks.
+fn censored_balance_hero(ui: &mut egui::Ui, total: u64) -> bool {
 	let t = theme::tokens();
 	let mut clicked = false;
 	ui.vertical_centered(|ui| {
@@ -8528,7 +8570,7 @@ fn censored_balance_hero(ui: &mut egui::Ui) -> bool {
 		ui.add_space(6.0);
 		let resp = ui.add(
 			egui::Label::new(
-				RichText::new("•  •  •  •")
+				RichText::new(censored_amount_dots(total, true))
 					.font(FontId::new(56.0, fonts::bold()))
 					.color(t.text),
 			)
@@ -8620,4 +8662,59 @@ fn fit_news_title_pt(ui: &egui::Ui, text: &str, avail: f32) -> f32 {
 		pt -= 0.5;
 	}
 	FLOOR
+}
+
+#[cfg(test)]
+mod anon_censor_tests {
+	use super::{CENSOR_DOT_COUNT, SettingsPage, Tab, censored_amount_dots, settings_page_after};
+
+	/// The censored money display must be a fixed number of dots that never
+	/// reflects the real amount — otherwise anonymous mode leaks the magnitude
+	/// (a bigger balance would show more/longer digits).
+	#[test]
+	fn censored_amount_is_fixed_width_regardless_of_size() {
+		for spaced in [false, true] {
+			let zero = censored_amount_dots(0, spaced);
+			let small = censored_amount_dots(1, spaced);
+			let huge = censored_amount_dots(u64::MAX, spaced);
+			assert_eq!(zero, small, "censor must not vary with amount");
+			assert_eq!(small, huge, "censor must not vary with amount");
+			assert_eq!(
+				zero.chars().filter(|c| *c == '•').count(),
+				CENSOR_DOT_COUNT,
+				"censor must always show exactly {CENSOR_DOT_COUNT} dots"
+			);
+		}
+	}
+
+	/// Leaving the Settings tab resets the sub-page to the root, so re-entering
+	/// always lands on the top-level Settings page. Staying on the Settings tab
+	/// preserves the current sub-page (so deep links into a sub-page survive).
+	#[test]
+	fn settings_nav_resets_to_root_off_settings_tab() {
+		// Off the Settings tab: any sub-page collapses to the root.
+		for tab in [Tab::Home, Tab::Pay, Tab::Activity, Tab::Receive] {
+			assert_eq!(
+				settings_page_after(tab, SettingsPage::AdvancedPrivacy),
+				SettingsPage::Main
+			);
+			assert_eq!(
+				settings_page_after(tab, SettingsPage::Username),
+				SettingsPage::Main
+			);
+		}
+		// On the Settings tab: the current sub-page is preserved.
+		assert_eq!(
+			settings_page_after(Tab::Me, SettingsPage::Username),
+			SettingsPage::Username
+		);
+		assert_eq!(
+			settings_page_after(Tab::Me, SettingsPage::AdvancedPrivacy),
+			SettingsPage::AdvancedPrivacy
+		);
+		assert_eq!(
+			settings_page_after(Tab::Me, SettingsPage::Main),
+			SettingsPage::Main
+		);
+	}
 }
