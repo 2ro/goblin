@@ -160,6 +160,10 @@ pub struct GoblinWalletView {
 	money: Option<MoneyState>,
 	/// The hold-to-confirm gesture for a money-tier approval.
 	money_hold: w::HoldToSend,
+	/// Anonymous mode: whether the home balance has been tapped to reveal this
+	/// visit. Presentation-only and transient — reset whenever the user leaves
+	/// the Home tab so a later glance is censored again.
+	balance_revealed: bool,
 }
 
 /// Whether the per-identity cue is drawn on activity rows (owner-approved). The
@@ -168,6 +172,11 @@ pub struct GoblinWalletView {
 /// `ActivityItem.owner_pubkey`), so a glance clusters which of your identities
 /// each payment used. Only shown when the wallet holds more than one identity.
 const SHOW_ROW_IDENTITY_CUE: bool = true;
+
+/// Known name authorities offered on the Username page as a tappable list, on top
+/// of the free-typed custom entry. Kept to servers we actually run; anything else
+/// goes through the custom field. `(display, base URL)`.
+const KNOWN_AUTHORITIES: &[(&str, &str)] = &[("goblin.st", "https://goblin.st")];
 
 /// Per-frame identity context for the activity rows: whether the wallet holds
 /// more than one identity (the cue only shows then) and the primary identity's
@@ -201,6 +210,12 @@ enum SettingsPage {
 	Language,
 	Slatepack,
 	Privacy,
+	/// Everything username: claim, release, and the name authority (known list
+	/// plus a free-typed custom one). The single home for names.
+	Username,
+	/// Notification privacy (hide amounts / names / all details) plus the
+	/// anonymous-mode toggle that dots the home balance and activity list.
+	AdvancedPrivacy,
 	Advanced,
 	/// The identity switcher: one wallet, one balance, many nostr identities.
 	Identities,
@@ -302,6 +317,7 @@ impl Default for GoblinWalletView {
 			trust_hold: w::HoldToSend::default(),
 			money: None,
 			money_hold: w::HoldToSend::default(),
+			balance_revealed: false,
 		}
 	}
 }
@@ -1231,6 +1247,11 @@ impl GoblinWalletView {
 				} else {
 					Content::SIDE_PANEL_WIDTH * 1.2
 				};
+				// Leaving Home re-censors the balance (anonymous mode): the reveal
+				// is a per-visit tap, never sticky.
+				if self.tab != Tab::Home {
+					self.balance_revealed = false;
+				}
 				w::centered_column(ui, col_width, |ui| match self.tab {
 					Tab::Home => self.home_ui(ui, wallet, cb, wide_desktop),
 					Tab::Pay => self.pay_ui(ui, wallet, cb),
@@ -1708,16 +1729,25 @@ impl GoblinWalletView {
 				// Distinguish "still updating" from "can't reach the node" so a
 				// node outage never renders as a silent zero (see balance_hero).
 				let error = wallet.sync_error();
-				w::balance_hero(
-					ui,
-					total,
-					spendable,
-					updating,
-					error,
-					wallet.info_sync_progress(),
-					fiat_line(&data),
-					56.0,
-				);
+				// Anonymous mode: the balance is a row of dots until tapped. The
+				// fiat lookup is skipped entirely while censored (fiat_line is what
+				// kicks the rate fetch) and only fires once revealed.
+				if crate::AppConfig::anonymous_mode() && !self.balance_revealed {
+					if censored_balance_hero(ui) {
+						self.balance_revealed = true;
+					}
+				} else {
+					w::balance_hero(
+						ui,
+						total,
+						spendable,
+						updating,
+						error,
+						wallet.info_sync_progress(),
+						fiat_line(&data),
+						56.0,
+					);
+				}
 				ui.add_space(20.0);
 				let (send, receive) = w::send_receive(ui);
 				if send {
@@ -2737,15 +2767,32 @@ impl GoblinWalletView {
 		} else {
 			"− "
 		};
-		let amount = format!("{}{}{}", sign, w::amount_str(item.amount), w::TSU);
+		// Anonymous mode dots the name and amount (and drops the avatar/memo so
+		// nothing leaks); the row still taps through to the full detail, which is
+		// the "reveal" the spec calls for.
+		let anon = crate::AppConfig::anonymous_mode();
+		let amount = if anon {
+			"•••".to_string()
+		} else {
+			format!("{}{}{}", sign, w::amount_str(item.amount), w::TSU)
+		};
 		let (note, time) = Self::activity_note_time(item);
-		let tex = self.handle_tex(ui.ctx(), wallet, &item.title);
+		let tex = if anon {
+			None
+		} else {
+			self.handle_tex(ui.ctx(), wallet, &item.title)
+		};
+		let (title, note_ref, id_ref): (&str, &str, &str) = if anon {
+			("••••••", "", "")
+		} else {
+			(&item.title, &note, item.npub.as_deref().unwrap_or(""))
+		};
 		let resp = w::activity_row(
 			ui,
-			&item.title,
-			&note,
+			title,
+			note_ref,
 			&time,
-			item.npub.as_deref().unwrap_or(""),
+			id_ref,
 			&amount,
 			item.incoming,
 			item.canceled,
@@ -2759,7 +2806,7 @@ impl GoblinWalletView {
 		// is 40px, flush to the row's left and vertically centred, so its
 		// bottom-right corner is at (left+40, mid+20); the badge overhangs that
 		// corner by ~4px (matching the mock's right:-4/bottom:-4, 14px badge).
-		if SHOW_ROW_IDENTITY_CUE && id_cue.multi && !item.system {
+		if !anon && SHOW_ROW_IDENTITY_CUE && id_cue.multi && !item.system {
 			let seed = item.owner_pubkey.clone().or_else(|| id_cue.primary.clone());
 			if let Some(seed) = seed {
 				let r = resp.rect;
@@ -3193,6 +3240,8 @@ impl GoblinWalletView {
 			SettingsPage::Language => return self.language_settings_ui(ui),
 			SettingsPage::Slatepack => return self.slatepack_ui(ui, wallet, cb),
 			SettingsPage::Privacy => return self.privacy_ui(ui),
+			SettingsPage::Username => return self.username_ui(ui, wallet, cb),
+			SettingsPage::AdvancedPrivacy => return self.advanced_privacy_ui(ui),
 			SettingsPage::Advanced => return self.advanced_ui(ui, wallet, cb),
 			SettingsPage::Identities => return self.identities_ui(ui, wallet, cb),
 			SettingsPage::TrustedSites => return self.trusted_sites_ui(ui, wallet, cb),
@@ -3380,17 +3429,24 @@ impl GoblinWalletView {
 				// face of the wallet.
 				w::kicker(ui, &t!("goblin.settings.identity"));
 				ui.add_space(8.0);
-				if self.claim.is_none() {
-					self.claim = Some(ClaimState::default());
-				}
-				self.claim_ui(ui, wallet, cb);
-				ui.add_space(8.0);
 				// Hoisted above the identity card: the Nostr Relays row now lives
 				// inside that card (relays are a nostr concern, like the keys), but
 				// its open handler runs further down — so the flag is declared here.
 				let mut open_relays = false;
+				// Username has its own home (claim/release + name authority); the
+				// row shows the current name (or "Not set") and opens that page.
+				let mut open_username = false;
 				w::card(ui, |ui| {
 					if !npub.is_empty() {
+						let username = wallet
+							.nostr_service()
+							.and_then(|s| s.identity.read().nip05.clone())
+							.map(|n| n.split('@').next().unwrap_or("").to_string());
+						let uname_val = username
+							.unwrap_or_else(|| t!("goblin.settings.username_none").to_string());
+						if settings_row_nav(ui, &t!("goblin.settings.username"), &uname_val) {
+							open_username = true;
+						}
 						if settings_row_btn(ui, &t!("goblin.settings.copy_npub"), COPY) {
 							cb.copy_string_to_buffer(npub.clone());
 							cb.vibrate_copy();
@@ -3432,26 +3488,22 @@ impl GoblinWalletView {
 						) {
 							open_relays = true;
 						}
-						// Federation: which name authority (server) registers and
-						// verifies names. Shows the current host on the right.
-						let authority = wallet
-							.nostr_service()
-							.map(|s| s.config.read().home_domain())
-							.unwrap_or_default();
-						if settings_row_nav(ui, &t!("goblin.settings.name_authority"), &authority)
-							&& self.name_authority.is_none()
-						{
-							let cur = wallet
-								.nostr_service()
-								.map(|s| s.config.read().nip05_server())
-								.unwrap_or_default();
-							self.name_authority = Some(NameAuthorityState {
-								input: cur,
-								error: None,
-							});
-						}
 					}
 				});
+				if open_username {
+					self.claim = Some(ClaimState::default());
+					// Seed the free-type authority field with the current server so
+					// the Username page opens showing where names resolve today.
+					let cur = wallet
+						.nostr_service()
+						.map(|s| s.config.read().nip05_server())
+						.unwrap_or_default();
+					self.name_authority = Some(NameAuthorityState {
+						input: cur,
+						error: None,
+					});
+					self.settings_page = SettingsPage::Username;
+				}
 				// Transient confirmation that the copy landed — pairs with the
 				// haptic tick so the tap feels acknowledged.
 				if let Some(at) = self.copy_flash {
@@ -3483,10 +3535,6 @@ impl GoblinWalletView {
 				if self.backup.is_some() {
 					ui.add_space(8.0);
 					self.backup_ui(ui, wallet, cb);
-				}
-				if self.name_authority.is_some() {
-					ui.add_space(8.0);
-					self.name_authority_ui(ui, wallet, cb);
 				}
 				if self.rotate.is_some() {
 					ui.add_space(8.0);
@@ -3570,6 +3618,7 @@ impl GoblinWalletView {
 				ui.add_space(16.0);
 				let mut open_pairing = false;
 				let mut open_privacy = false;
+				let mut open_adv_privacy = false;
 				settings_group(ui, &t!("goblin.settings.privacy"), |ui| {
 					// Messages, names, price and avatars ride the mixnet; the grin
 					// node connects directly. Normal dim value ink: the salmon
@@ -3599,15 +3648,11 @@ impl GoblinWalletView {
 					) {
 						open_pairing = true;
 					}
-					// Hide received amounts in payment notifications/alerts. Same
-					// switch widget as the incoming-requests toggle below.
-					if let Some(v) = settings_row_toggle(
-						ui,
-						&t!("goblin.settings.hide_amounts"),
-						&t!("goblin.settings.hide_amounts_sub"),
-						crate::AppConfig::hide_amounts(),
-					) {
-						crate::AppConfig::set_hide_amounts(v);
+					// Notification hiding (amounts/names/details) and anonymous mode
+					// now live together on their own page. Replaces the lone
+					// hide-amounts toggle that used to sit here.
+					if settings_row_nav(ui, &t!("goblin.settings.advanced_privacy"), "") {
+						open_adv_privacy = true;
 					}
 				});
 				if open_pairing {
@@ -3615,6 +3660,9 @@ impl GoblinWalletView {
 				}
 				if open_privacy {
 					self.settings_page = SettingsPage::Privacy;
+				}
+				if open_adv_privacy {
+					self.settings_page = SettingsPage::AdvancedPrivacy;
 				}
 
 				ui.add_space(16.0);
@@ -3960,6 +4008,249 @@ impl GoblinWalletView {
 						&t!("goblin.privacy.grin_node"),
 						&t!("goblin.privacy.grin_node_blurb"),
 					);
+				});
+				ui.add_space(16.0);
+			});
+	}
+
+	/// Username page — the single home for everything name-related: claim one if
+	/// you have none, release the one you own, and choose the name authority from
+	/// a known list or by free-typing a custom server. Reuses [`claim_ui`] for the
+	/// claim/release card; the authority controls live only here.
+	fn username_ui(&mut self, ui: &mut egui::Ui, wallet: &Wallet, cb: &dyn PlatformCallbacks) {
+		let t = theme::tokens();
+		if self.sub_header(ui, &t!("goblin.username.title")) {
+			self.settings_page = SettingsPage::Main;
+			return;
+		}
+		if self.claim.is_none() {
+			self.claim = Some(ClaimState::default());
+		}
+		if self.name_authority.is_none() {
+			let cur = wallet
+				.nostr_service()
+				.map(|s| s.config.read().nip05_server())
+				.unwrap_or_default();
+			self.name_authority = Some(NameAuthorityState {
+				input: cur,
+				error: None,
+			});
+		}
+		ScrollArea::vertical()
+			.id_salt("goblin_username_scroll")
+			.auto_shrink([false; 2])
+			.scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
+			.show(ui, |ui| {
+				// Claim / release + the owned-name display.
+				self.claim_ui(ui, wallet, cb);
+
+				ui.add_space(18.0);
+				w::kicker(ui, &t!("goblin.username.authority"));
+				ui.add_space(8.0);
+				ui.label(
+					RichText::new(t!("goblin.username.authority_blurb"))
+						.font(FontId::new(13.0, fonts::regular()))
+						.color(t.text_dim),
+				);
+				ui.add_space(10.0);
+				let cur_server = wallet
+					.nostr_service()
+					.map(|s| s.config.read().nip05_server())
+					.unwrap_or_default();
+				let norm = |u: &str| u.trim().trim_end_matches('/').to_lowercase();
+				// Known authorities: a tap sets the server. Free-type handles the rest.
+				let mut chosen: Option<String> = None;
+				w::card(ui, |ui| {
+					for (label, url) in KNOWN_AUTHORITIES {
+						let active = norm(&cur_server) == norm(url);
+						let row = ui.horizontal(|ui| {
+							ui.vertical(|ui| {
+								ui.label(
+									RichText::new(*label)
+										.font(FontId::new(15.0, fonts::medium()))
+										.color(t.surface_text),
+								);
+								ui.label(
+									RichText::new(url.replace("https://", ""))
+										.font(FontId::new(12.5, fonts::regular()))
+										.color(t.surface_text_dim),
+								);
+							});
+							ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+								if active {
+									ui.label(
+										RichText::new(crate::gui::icons::CHECK)
+											.font(FontId::new(16.0, fonts::regular()))
+											.color(t.pos),
+									);
+								}
+							});
+						});
+						ui.add_space(10.0);
+						if !active && row.response.interact(Sense::click()).clicked() {
+							chosen = Some((*url).to_string());
+						}
+					}
+				});
+				if let Some(url) = chosen {
+					if let Some(s) = wallet.nostr_service() {
+						s.config.write().set_nip05_server(Some(url));
+						crate::nostr::nip05::set_home_domain(&s.config.read().home_domain());
+					}
+					if let Some(na) = self.name_authority.as_mut() {
+						na.input = wallet
+							.nostr_service()
+							.map(|s| s.config.read().nip05_server())
+							.unwrap_or_default();
+						na.error = None;
+					}
+				}
+
+				ui.add_space(14.0);
+				// Free-typed custom authority + Reset/Save.
+				let (save, reset, input) = {
+					let na = self.name_authority.as_mut().unwrap();
+					ui.label(
+						RichText::new(t!("goblin.username.custom"))
+							.font(FontId::new(13.0, fonts::medium()))
+							.color(t.text_dim),
+					);
+					ui.add_space(6.0);
+					w::field_well(ui, |ui| {
+						TextEdit::new(egui::Id::from("username_authority_input"))
+							.focus(false)
+							.hint_text("https://goblin.st")
+							.text_color(t.surface_text)
+							.body()
+							.ui(ui, &mut na.input, cb);
+					});
+					if let Some(err) = &na.error {
+						ui.add_space(6.0);
+						ui.label(
+							RichText::new(err)
+								.font(FontId::new(12.5, fonts::regular()))
+								.color(t.neg),
+						);
+					}
+					ui.add_space(10.0);
+					let mut save = false;
+					let mut reset = false;
+					ui.horizontal(|ui| {
+						let half = (ui.available_width() - 10.0) / 2.0;
+						ui.scope_builder(
+							egui::UiBuilder::new().max_rect(egui::Rect::from_min_size(
+								ui.cursor().min,
+								Vec2::new(half, 44.0),
+							)),
+							|ui| {
+								if w::big_action_on_card(ui, &t!("goblin.settings.reset")).clicked()
+								{
+									reset = true;
+								}
+							},
+						);
+						ui.add_space(10.0);
+						ui.scope_builder(
+							egui::UiBuilder::new().max_rect(egui::Rect::from_min_size(
+								ui.cursor().min,
+								Vec2::new(half, 44.0),
+							)),
+							|ui| {
+								if w::big_action(ui, &t!("goblin.settings.save"), false).clicked() {
+									save = true;
+								}
+							},
+						);
+					});
+					(save, reset, na.input.trim().to_string())
+				};
+				if reset {
+					if let Some(s) = wallet.nostr_service() {
+						s.config.write().set_nip05_server(None);
+						crate::nostr::nip05::set_home_domain(&s.config.read().home_domain());
+					}
+					if let Some(na) = self.name_authority.as_mut() {
+						na.input = wallet
+							.nostr_service()
+							.map(|s| s.config.read().nip05_server())
+							.unwrap_or_default();
+						na.error = None;
+					}
+				}
+				if save {
+					if !input.starts_with("https://") && !input.starts_with("http://") {
+						if let Some(na) = self.name_authority.as_mut() {
+							na.error =
+								Some(t!("goblin.settings.name_authority_invalid").to_string());
+						}
+					} else if let Some(s) = wallet.nostr_service() {
+						s.config.write().set_nip05_server(Some(input));
+						crate::nostr::nip05::set_home_domain(&s.config.read().home_domain());
+						if let Some(na) = self.name_authority.as_mut() {
+							na.error = None;
+						}
+					}
+				}
+				ui.add_space(16.0);
+			});
+	}
+
+	/// Advanced Privacy page — notification hiding (amounts / names / all
+	/// details) and the anonymous-mode toggle that dots the home balance and the
+	/// activity list. All presentation-only; nothing here touches the money path.
+	fn advanced_privacy_ui(&mut self, ui: &mut egui::Ui) {
+		let t = theme::tokens();
+		if self.sub_header(ui, &t!("goblin.settings.advanced_privacy")) {
+			self.settings_page = SettingsPage::Main;
+			return;
+		}
+		ScrollArea::vertical()
+			.id_salt("goblin_adv_privacy_scroll")
+			.auto_shrink([false; 2])
+			.scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
+			.show(ui, |ui| {
+				ui.label(
+					RichText::new(t!("goblin.advprivacy.intro"))
+						.font(FontId::new(14.0, fonts::regular()))
+						.color(t.text_dim),
+				);
+				ui.add_space(16.0);
+				settings_group(ui, &t!("goblin.advprivacy.notifications"), |ui| {
+					if let Some(v) = settings_row_toggle(
+						ui,
+						&t!("goblin.settings.hide_amounts"),
+						&t!("goblin.settings.hide_amounts_sub"),
+						crate::AppConfig::hide_amounts(),
+					) {
+						crate::AppConfig::set_hide_amounts(v);
+					}
+					if let Some(v) = settings_row_toggle(
+						ui,
+						&t!("goblin.advprivacy.hide_names"),
+						&t!("goblin.advprivacy.hide_names_sub"),
+						crate::AppConfig::notif_hide_names(),
+					) {
+						crate::AppConfig::set_notif_hide_names(v);
+					}
+					if let Some(v) = settings_row_toggle(
+						ui,
+						&t!("goblin.advprivacy.hide_details"),
+						&t!("goblin.advprivacy.hide_details_sub"),
+						crate::AppConfig::notif_hide_details(),
+					) {
+						crate::AppConfig::set_notif_hide_details(v);
+					}
+				});
+				ui.add_space(16.0);
+				settings_group(ui, &t!("goblin.advprivacy.anon"), |ui| {
+					if let Some(v) = settings_row_toggle(
+						ui,
+						&t!("goblin.advprivacy.anon_toggle"),
+						&t!("goblin.advprivacy.anon_sub"),
+						crate::AppConfig::anonymous_mode(),
+					) {
+						crate::AppConfig::set_anonymous_mode(v);
+					}
 				});
 				ui.add_space(16.0);
 			});
@@ -5072,109 +5363,6 @@ impl GoblinWalletView {
 		});
 		if close {
 			self.rotate = None;
-		}
-	}
-
-	/// Inline nsec-import flow: replaces the identity with an imported key.
-	/// Inline "change name authority" editor: set the NIP-05 server that registers
-	/// and verifies names. Lets a user on one instance pay names on another.
-	fn name_authority_ui(
-		&mut self,
-		ui: &mut egui::Ui,
-		wallet: &Wallet,
-		cb: &dyn PlatformCallbacks,
-	) {
-		let t = theme::tokens();
-		let na = self.name_authority.as_mut().unwrap();
-		let mut close = false;
-		w::card(ui, |ui| {
-			ui.set_min_width(ui.available_width());
-			ui.label(
-				RichText::new(t!("goblin.settings.name_authority_title"))
-					.font(FontId::new(15.0, fonts::semibold()))
-					.color(t.surface_text),
-			);
-			ui.add_space(6.0);
-			ui.label(
-				RichText::new(t!("goblin.settings.name_authority_blurb"))
-					.font(FontId::new(13.0, fonts::regular()))
-					.color(t.surface_text_dim),
-			);
-			ui.add_space(10.0);
-			w::field_well(ui, |ui| {
-				TextEdit::new(egui::Id::from("name_authority_input"))
-					.focus(false)
-					.hint_text("https://goblin.st")
-					.text_color(t.surface_text)
-					.body()
-					.ui(ui, &mut na.input, cb);
-			});
-			if let Some(err) = &na.error {
-				ui.add_space(6.0);
-				ui.label(
-					RichText::new(err)
-						.font(FontId::new(12.5, fonts::regular()))
-						.color(t.neg),
-				);
-			}
-			ui.add_space(10.0);
-			ui.horizontal(|ui| {
-				let third = (ui.available_width() - 20.0) / 3.0;
-				ui.scope_builder(
-					egui::UiBuilder::new().max_rect(egui::Rect::from_min_size(
-						ui.cursor().min,
-						Vec2::new(third, 44.0),
-					)),
-					|ui| {
-						if w::big_action_on_card(ui, &t!("goblin.settings.cancel")).clicked() {
-							close = true;
-						}
-					},
-				);
-				ui.add_space(10.0);
-				ui.scope_builder(
-					egui::UiBuilder::new().max_rect(egui::Rect::from_min_size(
-						ui.cursor().min,
-						Vec2::new(third, 44.0),
-					)),
-					|ui| {
-						if w::big_action_on_card(ui, &t!("goblin.settings.reset")).clicked() {
-							if let Some(s) = wallet.nostr_service() {
-								s.config.write().set_nip05_server(None);
-								crate::nostr::nip05::set_home_domain(
-									&s.config.read().home_domain(),
-								);
-							}
-							close = true;
-						}
-					},
-				);
-				ui.add_space(10.0);
-				ui.scope_builder(
-					egui::UiBuilder::new().max_rect(egui::Rect::from_min_size(
-						ui.cursor().min,
-						Vec2::new(third, 44.0),
-					)),
-					|ui| {
-						if w::big_action(ui, &t!("goblin.settings.save"), false).clicked() {
-							let url = na.input.trim().to_string();
-							if !url.starts_with("https://") && !url.starts_with("http://") {
-								na.error =
-									Some(t!("goblin.settings.name_authority_invalid").to_string());
-							} else if let Some(s) = wallet.nostr_service() {
-								s.config.write().set_nip05_server(Some(url));
-								crate::nostr::nip05::set_home_domain(
-									&s.config.read().home_domain(),
-								);
-								close = true;
-							}
-						}
-					},
-				);
-			});
-		});
-		if close {
-			self.name_authority = None;
 		}
 	}
 
@@ -8327,6 +8515,37 @@ fn fiat_line(data: &Option<WalletData>) -> Option<w::FiatLine> {
 		RateState::Loading => w::FiatLine::Loading,
 		RateState::Unavailable => w::FiatLine::Unavailable,
 	})
+}
+
+/// The anonymous-mode balance: a centered row of dots standing in for the
+/// number, tappable to reveal. Returns true on the frame it is tapped. No fiat
+/// line is drawn (and no rate fetch is triggered) while censored.
+fn censored_balance_hero(ui: &mut egui::Ui) -> bool {
+	let t = theme::tokens();
+	let mut clicked = false;
+	ui.vertical_centered(|ui| {
+		w::kicker(ui, "Balance");
+		ui.add_space(6.0);
+		let resp = ui.add(
+			egui::Label::new(
+				RichText::new("•  •  •  •")
+					.font(FontId::new(56.0, fonts::bold()))
+					.color(t.text),
+			)
+			.sense(Sense::click()),
+		);
+		let resp = resp
+			.on_hover_cursor(egui::CursorIcon::PointingHand)
+			.on_hover_text(t!("goblin.settings.tap_reveal"));
+		ui.add_space(4.0);
+		ui.label(
+			RichText::new(t!("goblin.settings.tap_reveal"))
+				.font(FontId::new(12.5, fonts::medium()))
+				.color(t.text_dim),
+		);
+		clicked = resp.clicked();
+	});
+	clicked
 }
 
 /// Format a value already in the pairing's unit (dollars, BTC, …) with the
