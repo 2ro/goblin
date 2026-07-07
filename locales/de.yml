@@ -834,8 +834,6 @@ goblin:
       title: "Richte dein Wallet ein"
       create_new: "Neu erstellen"
       restore_from_seed: "Aus Seed wiederherstellen"
-      import_identity: "Identität importieren"
-      import_identity_hint: "Nach diesem Schritt bringst du deinen vorhandenen Schlüssel mit (eine .backup-Datei oder nsec)."
       name_hint: "Wallet-Name"
       password_hint: "Passwort"
       repeat_password_hint: "Passwort wiederholen"
@@ -880,9 +878,6 @@ goblin:
       claimed_blurb: "Freunde können dich jetzt per Namen bezahlen. Alles bereit — öffne dein Wallet."
       open_wallet: "Mein Wallet öffnen"
       skip_for_now: "Vorerst überspringen"
-      import_existing: "Schon eine Goblin-Identität? Importieren"
-      import_title: "Identität importieren"
-      import_blurb: "Füge deinen nsec ein oder wähle eine .backup-Datei, um deinen vorhandenen Schlüssel und Benutzernamen zu behalten statt diesen neuen."
     errors:
       cant_open: "Wallet konnte nicht geöffnet werden: %{err}"
       cant_create: "Wallet konnte nicht erstellt werden: %{err}"

@@ -834,8 +834,6 @@ goblin:
       title: "Configurez votre portefeuille"
       create_new: "Créer un nouveau"
       restore_from_seed: "Restaurer depuis la phrase"
-      import_identity: "Importer une identité"
-      import_identity_hint: "Vous importerez votre clé existante (un fichier .backup ou un nsec) après cette étape."
       name_hint: "Nom du portefeuille"
       password_hint: "Mot de passe"
       repeat_password_hint: "Répéter le mot de passe"
@@ -880,9 +878,6 @@ goblin:
       claimed_blurb: "Vos amis peuvent désormais vous payer par votre nom. Tout est prêt — ouvrez votre portefeuille."
       open_wallet: "Ouvrir mon portefeuille"
       skip_for_now: "Passer pour l'instant"
-      import_existing: "Vous avez déjà une identité Goblin ? Importez-la"
-      import_title: "Importer votre identité"
-      import_blurb: "Collez votre nsec ou choisissez un fichier .backup pour conserver votre clé et votre nom existants au lieu de ce nouveau."
     errors:
       cant_open: "Impossible d'ouvrir le portefeuille : %{err}"
       cant_create: "Impossible de créer le portefeuille : %{err}"
