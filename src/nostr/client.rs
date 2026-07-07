@@ -19,10 +19,11 @@ use grin_core::core::amount_to_hr_string;
 use log::{error, info, warn};
 use nostr_sdk::{
 	Client, Event, EventBuilder, Filter, FromBech32, Keys, Kind, Metadata, PublicKey,
-	RelayPoolNotification, RelayStatus, SubscriptionId, Tag, TagKind, Timestamp, ToBech32,
+	RelayPoolNotification, RelayStatus, RelayUrl, SubscriptionId, Tag, TagKind, Timestamp,
+	ToBech32,
 };
 use parking_lot::{Mutex, RwLock};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -438,7 +439,6 @@ impl NostrService {
 	/// routing hints, so a sender can reach us without any registry or
 	/// indexer lookup. Falls back to the bare npub when encoding fails.
 	pub fn nprofile(&self) -> String {
-		use nostr_sdk::RelayUrl;
 		use nostr_sdk::nips::nip19::Nip19Profile;
 		let relays: Vec<RelayUrl> = self
 			.relays()
@@ -2270,19 +2270,71 @@ async fn serve_money_answers(svc: &Arc<NostrService>, client: &Client) {
 /// hint (spec 5.9) while keeping the wallet's own relays as fallback is what lets
 /// the wallet and a site meet even when they share no default relay.
 fn channel_relays(svc: &Arc<NostrService>) -> Vec<String> {
-	let mut out = svc.relays();
-	for hint in svc
+	let hints: Vec<String> = svc
 		.sessions
 		.read()
 		.iter()
 		.filter(|s| !s.ended)
 		.flat_map(|s| s.relays.clone())
-	{
-		if !out.contains(&hint) {
+		.collect();
+	dedup_relay_union(svc.relays(), hints)
+}
+
+/// Canonical form of a relay URL for identity comparison: trimmed, with a
+/// trailing slash dropped and ASCII-lowercased. `RelayUrl` in nostr-sdk 0.44
+/// does NOT fold `wss://h` and `wss://h/` (it preserves the path verbatim), so
+/// we normalize ourselves. Lets us dedup the wallet's own relays against a
+/// site's `r=` hint AND match a publish's `Output.success` set regardless of a
+/// trailing-slash or host-case difference. Without this a hint of
+/// `wss://relay.floonet.dev/` reads as a different relay than the configured
+/// `wss://relay.floonet.dev`, so the union grows a phantom (cold) entry and a
+/// hint-relay confirm can never match.
+fn canonical_relay(url: &str) -> String {
+	url.trim().trim_end_matches('/').to_ascii_lowercase()
+}
+
+/// Union `base` (the wallet's own relays) with `hints` (the sessions' relay
+/// hints), deduplicated by canonical relay identity, preserving order and the
+/// original (un-normalized) spelling of the first occurrence.
+fn dedup_relay_union(base: Vec<String>, hints: impl IntoIterator<Item = String>) -> Vec<String> {
+	let mut out = base;
+	let mut seen: HashSet<String> = out.iter().map(|r| canonical_relay(r)).collect();
+	for hint in hints {
+		if seen.insert(canonical_relay(&hint)) {
 			out.push(hint);
 		}
 	}
 	out
+}
+
+/// Max `session-open` publish attempts before the loop gives up re-announcing a
+/// session. At the loop's 2s tick this covers a generous window past the GUI's
+/// confirm deadline, then stops so a permanently unreachable hint relay can't
+/// spin the service for the whole session TTL.
+const ANNOUNCE_MAX_ATTEMPTS: u32 = 15;
+
+/// True when a `session-open` publish reached a relay the SITE actually
+/// subscribes on: at least one of the session's relay `hints` (the `r=` app
+/// relay) appears in the publish `success` set. Confirming on ANY wallet relay
+/// is not enough — the site listens only on its own hint, so an accept
+/// elsewhere would let the wallet "succeed" while the site never sees the
+/// session (the return-to-caller-but-never-logs-in failure). A session with no
+/// hint (defensive; grants always carry one) confirms on any accept.
+fn announce_confirmed(success: &HashSet<RelayUrl>, hints: &[String]) -> bool {
+	if hints.is_empty() {
+		return !success.is_empty();
+	}
+	let accepted: HashSet<String> = success
+		.iter()
+		.map(|u| canonical_relay(&u.to_string()))
+		.collect();
+	hints.iter().any(|h| accepted.contains(&canonical_relay(h)))
+}
+
+/// Whether the loop should re-arm to publish this session's `session-open`
+/// again: only when it has NOT confirmed and the attempt cap is not yet spent.
+fn should_reannounce(confirmed: bool, attempts_after: u32) -> bool {
+	!confirmed && attempts_after < ANNOUNCE_MAX_ATTEMPTS
 }
 
 /// The channel subscription/fetch filter over the live sessions' wallet channel
@@ -2330,25 +2382,42 @@ async fn resubscribe_channel(client: &Client, svc: &Arc<NostrService>) {
 async fn announce_new_sessions(svc: &Arc<NostrService>, client: &Client) {
 	let now = unix_time() as u64;
 	let relays = channel_relays(svc);
-	let mut events = Vec::new();
-	{
-		let mut sessions = svc.sessions.write();
-		for s in sessions.iter_mut().filter(|s| !s.announced && !s.ended) {
-			if let Ok(ev) = s.session_open_event(now) {
-				events.push(ev);
-			}
-			s.announced = true;
-		}
+	// One session-open per not-yet-confirmed session under the retry cap. Carry
+	// each session's relay HINTS so we confirm on the relay the site is actually
+	// listening on, not just any wallet relay. We do NOT pre-mark `announced`:
+	// it flips true only once a hint relay confirms, so a failed publish is
+	// retried on the next dirty tick instead of being lost.
+	struct Todo {
+		pk_hex: String,
+		hints: Vec<String>,
+		ev: Event,
 	}
-	for ev in events {
+	let todo: Vec<Todo> = {
+		let sessions = svc.sessions.read();
+		sessions
+			.iter()
+			.filter(|s| !s.announced && !s.ended && s.announce_attempts < ANNOUNCE_MAX_ATTEMPTS)
+			.filter_map(|s| {
+				s.session_open_event(now).ok().map(|ev| Todo {
+					pk_hex: s.wallet_channel_pk.to_hex(),
+					hints: s.relays.clone(),
+					ev,
+				})
+			})
+			.collect()
+	};
+	if todo.is_empty() {
+		return;
+	}
+	let mut rearm = false;
+	for t in todo {
 		// The event's own pubkey IS the wallet channel key (see
-		// `session_open_event`). Record delivery only when at least one relay
-		// actually accepted the event, so the GUI's return-to-caller wait is a
-		// real confirmation, not a queued-and-hoping.
-		let pk_hex = ev.pubkey.to_hex();
+		// `session_open_event`). Confirm delivery only when a relay the SITE
+		// subscribes on (the hint) accepted it, so the GUI's return-to-caller
+		// wait is a real confirmation the site can see, not a queued-and-hoping.
 		let confirmed =
-			match tokio::time::timeout(SEND_TIMEOUT, client.send_event_to(&relays, &ev)).await {
-				Ok(Ok(out)) => !out.success.is_empty(),
+			match tokio::time::timeout(SEND_TIMEOUT, client.send_event_to(&relays, &t.ev)).await {
+				Ok(Ok(out)) => announce_confirmed(&out.success, &t.hints),
 				Ok(Err(e)) => {
 					warn!("nostr: session-open publish failed: {e}");
 					false
@@ -2358,9 +2427,37 @@ async fn announce_new_sessions(svc: &Arc<NostrService>, client: &Client) {
 					false
 				}
 			};
+		// Record the attempt (and confirm, if any) against the live session under
+		// a single write lock.
+		let attempts_after = {
+			let mut sessions = svc.sessions.write();
+			match sessions
+				.iter_mut()
+				.find(|s| s.wallet_channel_pk.to_hex() == t.pk_hex)
+			{
+				Some(s) => {
+					s.announce_attempts = s.announce_attempts.saturating_add(1);
+					if confirmed {
+						s.announced = true;
+					}
+					s.announce_attempts
+				}
+				// Session ended while we published: nothing to retry.
+				None => ANNOUNCE_MAX_ATTEMPTS,
+			}
+		};
 		if confirmed {
-			svc.announced_ok.write().insert(pk_hex);
+			svc.announced_ok.write().insert(t.pk_hex);
+		} else if should_reannounce(confirmed, attempts_after) {
+			rearm = true;
 		}
+	}
+	// A session whose hint relay has not accepted yet stays unconfirmed: re-arm
+	// the dirty flag so the next loop tick re-publishes (a cold Tor circuit to
+	// the site's relay can outlast a single publish). Bounded by
+	// `ANNOUNCE_MAX_ATTEMPTS`.
+	if rearm {
+		svc.sessions_dirty.store(true, Ordering::SeqCst);
 	}
 }
 
@@ -3102,5 +3199,85 @@ mod tests {
 		let mut m = sample_send_meta(NostrSendStatus::Finalized);
 		m.proof_mode = false;
 		assert!(!proof_delivery_due(&m));
+	}
+
+	// --- Session-open announce: normalization, confirm, retry ---------------
+
+	#[test]
+	fn canonical_relay_normalizes_trailing_slash_and_case() {
+		// A trailing slash and host case must not create distinct identities:
+		// nostr-sdk normalizes to a lowercased host with an explicit trailing
+		// slash, and both spellings must land on the same canonical string.
+		let a = canonical_relay("wss://relay.floonet.dev");
+		let b = canonical_relay("wss://relay.floonet.dev/");
+		let c = canonical_relay("wss://RELAY.floonet.dev/");
+		assert_eq!(a, b);
+		assert_eq!(a, c);
+		// Unparseable input falls back to the trimmed original (never panics).
+		assert_eq!(canonical_relay("  not a url  "), "not a url");
+	}
+
+	#[test]
+	fn dedup_union_folds_trailing_slash_hint_into_warm_relay() {
+		// The wallet already holds a warm connection to the no-slash relay; a
+		// site hint that differs only by a trailing slash must NOT be appended as
+		// a phantom second relay (which would be a cold dial and break confirm).
+		let base = vec![
+			"wss://relay.floonet.dev".to_string(),
+			"wss://relay.0xchat.com".to_string(),
+		];
+		let hints = vec!["wss://relay.floonet.dev/".to_string()];
+		let out = dedup_relay_union(base.clone(), hints);
+		assert_eq!(
+			out, base,
+			"trailing-slash hint should dedup into the warm relay"
+		);
+
+		// A genuinely new hint is appended, preserving its original spelling.
+		let out2 = dedup_relay_union(base.clone(), vec!["wss://relay.magick.market".to_string()]);
+		assert_eq!(out2.len(), 3);
+		assert_eq!(out2[2], "wss://relay.magick.market");
+	}
+
+	#[test]
+	fn announce_confirmed_requires_the_site_hint_relay() {
+		let hint = "wss://relay.floonet.dev".to_string();
+		let floonet = RelayUrl::parse("wss://relay.floonet.dev").unwrap();
+		let other = RelayUrl::parse("wss://relay.0xchat.com").unwrap();
+
+		// Accept on the hint relay confirms (even spelled with a trailing slash).
+		let mut ok = HashSet::new();
+		ok.insert(floonet.clone());
+		assert!(announce_confirmed(&ok, &[hint.clone()]));
+		assert!(announce_confirmed(
+			&ok,
+			&["wss://relay.floonet.dev/".to_string()]
+		));
+
+		// Accept ONLY on some other wallet relay does NOT confirm: the site
+		// subscribes only on its hint, so this is the "returns to browser but
+		// never logs in" case we must reject.
+		let mut only_other = HashSet::new();
+		only_other.insert(other);
+		assert!(!announce_confirmed(&only_other, &[hint.clone()]));
+
+		// No relay accepted → not confirmed.
+		assert!(!announce_confirmed(&HashSet::new(), &[hint]));
+
+		// Defensive: a session with no hint confirms on any accept.
+		assert!(announce_confirmed(&ok, &[]));
+		assert!(!announce_confirmed(&HashSet::new(), &[]));
+	}
+
+	#[test]
+	fn should_reannounce_retries_until_confirmed_or_capped() {
+		// Unconfirmed and under the cap → keep retrying.
+		assert!(should_reannounce(false, 1));
+		assert!(should_reannounce(false, ANNOUNCE_MAX_ATTEMPTS - 1));
+		// Confirmed → stop, regardless of attempts.
+		assert!(!should_reannounce(true, 1));
+		// Cap reached → give up so a dead hint relay can't spin the loop forever.
+		assert!(!should_reannounce(false, ANNOUNCE_MAX_ATTEMPTS));
+		assert!(!should_reannounce(false, ANNOUNCE_MAX_ATTEMPTS + 5));
 	}
 }
