@@ -3458,6 +3458,10 @@ impl GoblinWalletView {
 				// Username has its own home (claim/release + name authority); the
 				// row shows the current name (or "Not set") and opens that page.
 				let mut open_username = false;
+				// Trusted Sites (the active Authorize Sessions) lives with the
+				// nostr rows — it is nostr-identity signing, not a wallet setting
+				// — but its open handler runs further down, so the flag is here.
+				let mut open_trusted = false;
 				w::card(ui, |ui| {
 					if !npub.is_empty() {
 						let username = wallet
@@ -3510,6 +3514,20 @@ impl GoblinWalletView {
 						) {
 							open_relays = true;
 						}
+						// Trusted Sites: the active Authorize Sessions, with a
+						// one-tap end; the row value is the live session count.
+						// Nostr-identity signing, so it sits with the keys/relays.
+						let session_count = wallet
+							.nostr_service()
+							.map(|s| s.session_summaries().len())
+							.unwrap_or(0);
+						if settings_row_nav(
+							ui,
+							&t!("goblin.settings.trusted_sites"),
+							&session_count.to_string(),
+						) {
+							open_trusted = true;
+						}
 					}
 				});
 				if open_username {
@@ -3536,7 +3554,7 @@ impl GoblinWalletView {
 								RichText::new(format!(
 									"{} {}",
 									crate::gui::icons::CHECK,
-									t!("goblin.receipt.copied")
+									t!("goblin.receive.copied")
 								))
 								.font(FontId::new(13.0, fonts::medium()))
 								.color(t.pos),
@@ -3570,7 +3588,6 @@ impl GoblinWalletView {
 				ui.add_space(16.0);
 				let mut open_node = false;
 				let mut open_slatepack = false;
-				let mut open_trusted = false;
 				settings_group(ui, &t!("goblin.settings.wallet"), |ui| {
 					if settings_row_nav(ui, &t!("goblin.settings.node"), &node_summary(wallet)) {
 						open_node = true;
@@ -3599,19 +3616,6 @@ impl GoblinWalletView {
 						&t!("goblin.settings.slatepacks_value"),
 					) {
 						open_slatepack = true;
-					}
-					// Trusted Sites: the active Authorize Sessions, with a one-tap
-					// end. Shows the live count as the row value.
-					let session_count = wallet
-						.nostr_service()
-						.map(|s| s.session_summaries().len())
-						.unwrap_or(0);
-					if settings_row_nav(
-						ui,
-						&t!("goblin.settings.trusted_sites"),
-						&session_count.to_string(),
-					) {
-						open_trusted = true;
 					}
 				});
 				if open_slatepack {
