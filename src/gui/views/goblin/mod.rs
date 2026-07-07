@@ -2754,20 +2754,11 @@ impl GoblinWalletView {
 
 	fn activity_ui(&mut self, ui: &mut egui::Ui, wallet: &Wallet, cb: &dyn PlatformCallbacks) {
 		ui.add_space(8.0);
-		ui.horizontal(|ui| {
-			ui.label(
-				RichText::new(t!("goblin.activity.title"))
-					.font(FontId::new(28.0, fonts::bold()))
-					.color(theme::tokens().text),
-			);
-			// The user's own avatar (opens settings): the flat yellow + Grin mark
-			// tile, matching the Home and Pay headers.
-			ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-				if w::avatar_self(ui, 40.0).clicked() {
-					self.tab = Tab::Me;
-				}
-			});
-		});
+		ui.label(
+			RichText::new(t!("goblin.activity.title"))
+				.font(FontId::new(28.0, fonts::bold()))
+				.color(theme::tokens().text),
+		);
 		ui.add_space(12.0);
 
 		// Recent contacts strip (payment-app-style row above the feed).
