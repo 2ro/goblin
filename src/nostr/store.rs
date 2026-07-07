@@ -30,8 +30,10 @@ use crate::nostr::types::*;
 const PROCESSED_TTL_SECS: i64 = 30 * 86_400;
 
 /// Cap on stored news posts (newest kept, older pruned) — the panel only ever
-/// shows the latest, so this is just a small archive bound.
-const NEWS_CAP: usize = 8;
+/// shows the latest, so this is just a small archive bound. Sized for two full
+/// nine-language posts so the oldest-`created_at` variant (English is published
+/// first) is not evicted before its readers see it.
+const NEWS_CAP: usize = 18;
 
 /// Nostr metadata archive for a wallet.
 pub struct NostrStore {
@@ -385,12 +387,16 @@ mod tests {
 	use super::*;
 
 	fn item(d: &str, created_at: i64) -> NewsItem {
+		item_lang(d, created_at, None)
+	}
+
+	fn item_lang(d: &str, created_at: i64, lang: Option<&str>) -> NewsItem {
 		NewsItem {
 			d: d.to_string(),
 			created_at,
 			title: format!("t{created_at}"),
 			summary: String::new(),
-			lang: None,
+			lang: lang.map(str::to_string),
 			published_at: None,
 		}
 	}
@@ -417,5 +423,29 @@ mod tests {
 		assert_eq!(all.len(), 3);
 		assert_eq!(all[0].created_at, 9);
 		assert_eq!(all[2].created_at, 7);
+	}
+
+	#[test]
+	fn nine_language_batch_retains_english_under_news_cap() {
+		// A single post now ships as nine per-`d` language variants. The
+		// publisher emits English FIRST, so the untagged (lang == None) English
+		// event carries the OLDEST `created_at` in the batch. Under the real
+		// `NEWS_CAP` the whole batch must survive so English readers see it.
+		let langs = ["es", "fr", "de", "it", "pt", "ja", "zh", "ko"];
+		let mut all = vec![];
+		// English published first → oldest created_at, no lang tag.
+		all = reconcile_news(all, item_lang("post-en", 100, None), NEWS_CAP);
+		for (i, code) in langs.iter().enumerate() {
+			all = reconcile_news(
+				all,
+				item_lang(&format!("post-{code}"), 101 + i as i64, Some(code)),
+				NEWS_CAP,
+			);
+		}
+		assert_eq!(all.len(), 9);
+		assert!(
+			all.iter().any(|n| n.d == "post-en" && n.lang.is_none()),
+			"untagged English variant must survive the cap"
+		);
 	}
 }

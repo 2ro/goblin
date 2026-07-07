@@ -1387,7 +1387,7 @@ async fn run_service(svc: Arc<NostrService>, wallet: Wallet) {
 		Filter::new()
 			.kind(Kind::LongFormTextNote)
 			.author(pk)
-			.limit(4)
+			.limit(18)
 	});
 
 	if let Ok(events) = client
