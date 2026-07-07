@@ -46,6 +46,12 @@ android {
         release {
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+            // When android/keystore.properties exists the release build signs with
+            // the configured upload key; without it release stays unsigned and the
+            // build falls back to the debug-signed variant (see scripts/android.sh).
+            if (keystorePropertiesFile.exists()) {
+                signingConfig signingConfigs.release
+            }
         }
         if (keystorePropertiesFile.exists()) {
             signedRelease {
