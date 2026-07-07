@@ -1636,6 +1636,32 @@ impl GoblinWalletView {
 		self.avatars.texture_for(ctx, &server, handle)
 	}
 
+	/// The user's OWN avatar as shown top-right on the front surfaces (home,
+	/// pay). Mode-aware: anonymous mode is the ONLY thing that makes it yellow.
+	/// Anon ON → the flat Goblin-yellow censored tile ([`w::avatar_censored`]);
+	/// anon OFF → the exact same picture-or-gradient identicon this identity
+	/// renders everywhere else ([`w::avatar_any`]). Returns the tap Response so
+	/// the caller can route to settings.
+	fn avatar_self(&mut self, ui: &mut egui::Ui, wallet: &Wallet, size: f32) -> egui::Response {
+		if crate::AppConfig::anonymous_mode() {
+			return w::avatar_censored(ui, size);
+		}
+		let (handle, npub_hex) = wallet
+			.nostr_service()
+			.map(|s| {
+				let id = s.identity.read();
+				let h = id
+					.nip05
+					.clone()
+					.map(|n| n.split('@').next().unwrap_or("").to_string())
+					.unwrap_or_else(|| data::short_npub(&hex_of(&id.npub)));
+				(h, hex_of(&id.npub))
+			})
+			.unwrap_or_else(|| (t!("goblin.home.anonymous").to_string(), String::new()));
+		let tex = self.handle_tex(ui.ctx(), wallet, &handle);
+		w::avatar_any(ui, &handle, &npub_hex, size, tex.as_ref())
+	}
+
 	/// Compact node status card: sync state dot, block height, connection.
 	fn node_card_ui(&mut self, ui: &mut egui::Ui, wallet: &Wallet) {
 		let t = theme::tokens();
@@ -1739,9 +1765,10 @@ impl GoblinWalletView {
 								.color(theme::tokens().text),
 						);
 						ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-							// The user's own avatar is always the flat yellow + Grin
-							// mark tile (opens settings), never a picture or gradient.
-							if w::avatar_self(ui, 40.0).clicked() {
+							// The user's own avatar (opens settings). Mode-aware: the
+							// flat yellow + Grin mark tile only in anonymous mode,
+							// otherwise this identity's normal gradient/picture.
+							if self.avatar_self(ui, wallet, 40.0).clicked() {
 								self.tab = Tab::Me;
 							}
 							// Scan-to-pay, left of the avatar. No frame: a bold white QR
@@ -1978,9 +2005,11 @@ impl GoblinWalletView {
 			// Right cluster: scan QR (black, no background) then the profile
 			// picture at the far right; all three controls about the same size.
 			ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-				// The user's own avatar is always the flat yellow + Grin mark tile
-				// (opens settings), never a picture or gradient.
-				if w::avatar_self(ui, 40.0)
+				// The user's own avatar (opens settings). Mode-aware: the flat
+				// yellow + Grin mark tile only in anonymous mode, otherwise this
+				// identity's normal gradient/picture.
+				if self
+					.avatar_self(ui, wallet, 40.0)
 					.on_hover_cursor(egui::CursorIcon::PointingHand)
 					.clicked()
 				{

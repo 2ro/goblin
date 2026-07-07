@@ -108,15 +108,6 @@ pub fn avatar_censored(ui: &mut Ui, size: f32) -> Response {
 	resp
 }
 
-/// The user's OWN avatar as shown top-right on the front surfaces (home, pay,
-/// activity). Always the flat Goblin-yellow tile with the Grin mark — never a
-/// custom picture or per-identity gradient — so "you" is a stable brand mark
-/// regardless of identity or anonymous mode. Same tile as [`avatar_censored`];
-/// taps through to settings.
-pub fn avatar_self(ui: &mut Ui, size: f32) -> Response {
-	avatar_censored(ui, size)
-}
-
 /// Draw a balance/amount: big bold number + smaller ツ mark, tight.
 /// Geist (sans) per the design; mono is reserved for kernel/block ids.
 pub fn amount_text(ui: &mut Ui, value: &str, size: f32) {
