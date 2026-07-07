@@ -2346,7 +2346,29 @@ impl GoblinWalletView {
 								})
 								.unwrap_or(false) && !d.canceled
 								&& !d.confirmed;
-							if cancelable_send {
+							// A manual Cancel is ALWAYS available for a stuck pending. The
+							// nostr-aware path above (after the grace window) also voids
+							// the counterparty's DM; this fallback covers every other
+							// cancellable pending it missed — e.g. a tx orphaned by an
+							// identity switch (its meta lives in another identity's
+							// store) or one left by an older build. Both run the plain
+							// libwallet cancel that unlocks our reserved inputs; nothing
+							// auto-fires on a timer.
+							let fallback_cancel =
+								!cancelable_request && !cancelable_send && d.can_cancel;
+							if cancelable_send || fallback_cancel {
+								// Soft nudge that this pending has been waiting a long
+								// time (a hint; the Cancel button sits right below).
+								if d.stale {
+									ui.add_space(12.0);
+									ui.vertical_centered(|ui| {
+										ui.label(
+											RichText::new(t!("goblin.receipt.stale_note"))
+												.font(FontId::new(13.0, fonts::regular()))
+												.color(t.accent),
+										);
+									});
+								}
 								ui.add_space(16.0);
 								let confirming = self.cancel_confirm == Some(d.tx_id);
 								let label = if confirming {
@@ -2356,12 +2378,18 @@ impl GoblinWalletView {
 								};
 								if w::big_action(ui, &label, true).clicked() {
 									if confirming {
-										if let Some(sid) = &d.slate_id {
-											wallet.task(
-												crate::wallet::types::WalletTask::NostrCancelSend(
-													sid.clone(),
-												),
-											);
+										if cancelable_send {
+											if let Some(sid) = &d.slate_id {
+												wallet.task(
+													crate::wallet::types::WalletTask::NostrCancelSend(
+														sid.clone(),
+													),
+												);
+											}
+										} else {
+											wallet.task(crate::wallet::types::WalletTask::Cancel(
+												d.tx_id,
+											));
 										}
 										self.cancel_confirm = None;
 									} else {

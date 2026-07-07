@@ -95,6 +95,7 @@ wallets:
   tx_finalizing: Islem tamamlaniyor
   tx_posting: Islem kaydetme
   tx_confirmed: Onaylandi
+  tx_stale: Çok uzun süredir bekliyor
   txs: Islemler
   tx: Islem
   messages: Mesajlar
@@ -425,6 +426,7 @@ goblin:
     transaction: "İşlem"
     cancel_request: "İsteği iptal et"
     cancel_send: "Ödemeyi iptal et"
+    stale_note: "Bu ödeme bir süredir bekliyor."
     cancel_send_confirm: "İptal için tekrar dokun — hâlâ alabilir"
     cancel_send_done: "Ödeme iptal edildi — paranız yeniden kullanılabilir"
     cancel_send_too_late: "Bu ödeme zaten geçti ve iptal edilemez"

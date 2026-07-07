@@ -385,6 +385,29 @@ impl WalletTx {
 		}
 		false
 	}
+
+	/// Age (in seconds) after which a still-cancellable pending is flagged
+	/// "stale": a soft, user-facing nudge that the transaction has been waiting a
+	/// long time and can be cancelled. This NEVER triggers any automatic action
+	/// (a slow interactive send may still complete); it only gates a label.
+	pub const STALE_AGE_SECS: i64 = 24 * 60 * 60;
+
+	/// Whether to nudge the user that this pending has been waiting long enough to
+	/// consider cancelling. Soft flag only: it colours a status label and sits
+	/// beside the always-present manual Cancel button.
+	pub fn stale(&self) -> bool {
+		let now = std::time::SystemTime::now()
+			.duration_since(std::time::UNIX_EPOCH)
+			.map(|d| d.as_secs() as i64)
+			.unwrap_or(0);
+		self.stale_at(now)
+	}
+
+	/// Pure staleness check against a supplied wall-clock second (testable).
+	fn stale_at(&self, now_ts: i64) -> bool {
+		self.can_cancel()
+			&& now_ts.saturating_sub(self.data.creation_ts.timestamp()) >= Self::STALE_AGE_SECS
+	}
 }
 
 /// Result of [`crate::wallet::Wallet::manual_process_slatepack`]: either a reply
@@ -480,4 +503,62 @@ pub enum WalletTask {
 	/// race window.
 	/// * slate id (uuid string)
 	NostrCancelSend(String),
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+	use grin_keychain::Identifier;
+
+	/// Build a bare [`WalletTx`] of a given type/confirmation for state tests.
+	fn tx(tx_type: TxLogEntryType, confirmed: bool, action: Option<WalletTxAction>) -> WalletTx {
+		let mut data = TxLogEntry::new(Identifier::zero(), tx_type, 0);
+		data.confirmed = confirmed;
+		WalletTx {
+			data,
+			// Standard1: response received, not yet finalized -> not broadcasting.
+			state: SlateState::Standard1,
+			proof: None,
+			amount: 0,
+			receiver: None,
+			sender: None,
+			height: None,
+			broadcasting_height: None,
+			action,
+			action_error: None,
+		}
+	}
+
+	#[test]
+	fn can_cancel_covers_pending_states() {
+		// A fresh unconfirmed send/receive is cancellable.
+		assert!(tx(TxLogEntryType::TxSent, false, None).can_cancel());
+		assert!(tx(TxLogEntryType::TxReceived, false, None).can_cancel());
+		// Confirmed, already-cancelled, or actively cancelling are not.
+		assert!(!tx(TxLogEntryType::TxSent, true, None).can_cancel());
+		assert!(!tx(TxLogEntryType::TxSentCancelled, false, None).can_cancel());
+		assert!(!tx(TxLogEntryType::TxReceivedCancelled, false, None).can_cancel());
+		assert!(
+			!tx(
+				TxLogEntryType::TxSent,
+				false,
+				Some(WalletTxAction::Cancelling)
+			)
+			.can_cancel()
+		);
+	}
+
+	#[test]
+	fn stale_only_after_threshold_and_only_when_cancellable() {
+		let pending = tx(TxLogEntryType::TxSent, false, None);
+		let created = pending.data.creation_ts.timestamp();
+		// Just under the threshold: not yet stale.
+		assert!(!pending.stale_at(created + WalletTx::STALE_AGE_SECS - 1));
+		// At/after the threshold: stale nudge appears.
+		assert!(pending.stale_at(created + WalletTx::STALE_AGE_SECS));
+		// A confirmed tx is never stale, however old.
+		let confirmed = tx(TxLogEntryType::TxSent, true, None);
+		let c_created = confirmed.data.creation_ts.timestamp();
+		assert!(!confirmed.stale_at(c_created + 10 * WalletTx::STALE_AGE_SECS));
+	}
 }

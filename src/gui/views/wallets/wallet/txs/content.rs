@@ -275,12 +275,15 @@ impl WalletTransactionsContent {
 								self.show_delete_confirmation_modal(tx.data.id);
 							},
 						);
-					} else if !tx.cancelled()
-						&& !tx.cancelling()
-						&& !tx.posting() && wallet.synced_from_node()
-					{
-						let repeat = tx.broadcasting_timed_out(wallet);
-						// Draw button to cancel transaction.
+					} else if !tx.cancelled() && !tx.cancelling() && !tx.posting() {
+						// Repost/repeat needs a live node height; only a synced wallet
+						// can decide a broadcast has timed out.
+						let synced = wallet.synced_from_node();
+						let repeat = synced && tx.broadcasting_timed_out(wallet);
+						// Draw button to cancel transaction. Cancel is a purely local
+						// libwallet operation (it unlocks the reserved inputs), so it
+						// is always offered for a cancellable pending, even when the
+						// node is unreachable or the wallet has not synced yet.
 						if tx.can_cancel() || repeat {
 							let (icon, color) = (PROHIBIT, Some(Colors::red()));
 							View::item_button(ui, btn_rounding, icon, color, || {
@@ -293,7 +296,7 @@ impl WalletTransactionsContent {
 							});
 						}
 						// Draw button to repeat transaction action.
-						if tx.can_repeat_action(wallet) || repeat {
+						if synced && (tx.can_repeat_action(wallet) || repeat) {
 							Self::tx_repeat_button_ui(
 								ui,
 								CornerRadius::default(),
@@ -429,7 +432,7 @@ impl WalletTransactionsContent {
 
 							// Setup transaction status text.
 							let height = data.info.last_confirmed_height;
-							let status_text = if !tx.data.confirmed {
+							let mut status_text = if !tx.data.confirmed {
 								let is_canceled = tx.data.tx_type
 									== TxLogEntryType::TxSentCancelled
 									|| tx.data.tx_type == TxLogEntryType::TxReceivedCancelled;
@@ -574,7 +577,7 @@ impl WalletTransactionsContent {
 							};
 
 							// Setup status text color.
-							let status_color = match tx.data.tx_type {
+							let mut status_color = match tx.data.tx_type {
 								TxLogEntryType::ConfirmedCoinbase => Colors::text(false),
 								TxLogEntryType::TxReceived => {
 									if tx.data.confirmed {
@@ -594,6 +597,13 @@ impl WalletTransactionsContent {
 								TxLogEntryType::TxSentCancelled => Colors::inactive_text(),
 								TxLogEntryType::TxReverted => Colors::inactive_text(),
 							};
+							// Soft "stale" nudge: a long-pending, still-cancellable tx
+							// gets an amber warning label. Purely a hint; the manual
+							// Cancel button sits right beside it and nothing auto-fires.
+							if tx.stale() {
+								status_text = format!("{} {}", WARNING, t!("wallets.tx_stale"));
+								status_color = Colors::gold_dark();
+							}
 							View::ellipsize_text(ui, status_text, 15.0, status_color);
 
 							// Setup transaction time.

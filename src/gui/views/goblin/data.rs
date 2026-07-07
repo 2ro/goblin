@@ -63,6 +63,15 @@ pub struct ReceiptDetail {
 	/// Network fee in atomic units (sends only; unknown for receives).
 	pub fee: Option<u64>,
 	pub slate_id: Option<String>,
+	/// Whether a manual grin cancel is possible for this tx (unconfirmed, not
+	/// broadcasting, not already cancelled). Drives the universal fallback
+	/// Cancel that is always offered for a stuck pending, even when the
+	/// nostr-aware cancel paths do not apply (e.g. a tx orphaned by an identity
+	/// switch, whose meta lives in another identity's store).
+	pub can_cancel: bool,
+	/// Whether this still-cancellable pending has been waiting long enough to
+	/// nudge the user (a soft flag; never triggers an automatic cancel).
+	pub stale: bool,
 }
 
 /// Build the receipt detail for a transaction id.
@@ -144,6 +153,8 @@ pub fn receipt_detail(wallet: &Wallet, tx_id: u32) -> Option<ReceiptDetail> {
 		note,
 		fee,
 		slate_id,
+		can_cancel: tx.can_cancel(),
+		stale: tx.stale(),
 	})
 }
 

@@ -95,6 +95,7 @@ wallets:
   tx_finalizing: 完成
   tx_posting: 过账交易
   tx_confirmed: 已确认
+  tx_stale: 等待时间过长
   txs: 所有交易
   tx: 交易
   messages: 消息
@@ -425,6 +426,7 @@ goblin:
     transaction: "交易"
     cancel_request: "取消请求"
     cancel_send: "取消付款"
+    stale_note: "此付款已等待一段时间。"
     cancel_send_confirm: "再次点按以取消 — 对方可能仍会收到"
     cancel_send_done: "付款已取消 — 你的资金已重新可用"
     cancel_send_too_late: "这笔付款已经完成，无法取消"
