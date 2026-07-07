@@ -217,9 +217,13 @@ public class BackgroundService extends Service {
         }
         Intent i = context.getPackageManager().getLaunchIntentForPackage(context.getPackageName());
         PendingIntent pendingIntent = PendingIntent.getActivity(context, 0, i, PendingIntent.FLAG_IMMUTABLE);
+        // An empty amount is the "hide all details" private alert: the native
+        // side already composed the whole localized line into `name`, so show it
+        // verbatim rather than the "X paid Y ツ" scaffolding.
+        String receivedText = amount.isEmpty() ? name : name + " paid " + amount + " ツ";
         NotificationCompat.Builder builder = new NotificationCompat.Builder(context, PAYMENT_CHANNEL_ID)
                 .setContentTitle("Payment received")
-                .setContentText(name + " paid " + amount + " ツ")
+                .setContentText(receivedText)
                 .setSmallIcon(R.drawable.ic_stat_name)
                 .setPriority(NotificationCompat.PRIORITY_HIGH)
                 .setAutoCancel(true)
@@ -251,9 +255,11 @@ public class BackgroundService extends Service {
         }
         Intent i = context.getPackageManager().getLaunchIntentForPackage(context.getPackageName());
         PendingIntent pendingIntent = PendingIntent.getActivity(context, 0, i, PendingIntent.FLAG_IMMUTABLE);
+        // Empty amount = the "hide all details" private alert (see notifyPaymentReceived).
+        String requestedText = amount.isEmpty() ? name : name + " requested " + amount + " ツ";
         NotificationCompat.Builder builder = new NotificationCompat.Builder(context, REQUEST_CHANNEL_ID)
                 .setContentTitle("Payment requested")
-                .setContentText(name + " requested " + amount + " ツ")
+                .setContentText(requestedText)
                 .setSmallIcon(R.drawable.ic_stat_name)
                 .setPriority(NotificationCompat.PRIORITY_HIGH)
                 .setAutoCancel(true)

@@ -2746,16 +2746,33 @@ async fn handle_wrap(svc: &Arc<NostrService>, wallet: &Wallet, event: Event) {
 					// on desktop): payer's display name (or short npub) and
 					// the human-readable amount.
 					{
-						let name =
-							crate::gui::views::goblin::data::contact_title(&svc.store, &sender_hex);
-						// Honor the "hide amounts" setting: keep the numeric grin
-						// out of the received-payment alert when the user opted in.
-						let amount = if crate::AppConfig::hide_amounts() {
-							"•••".to_string()
+						// Notification privacy (Advanced Privacy → Notifications):
+						// "hide details" trumps the finer toggles with a generic
+						// alert that leaks neither name nor amount (empty amount
+						// collapses the Java template to just the private line).
+						if crate::AppConfig::notif_hide_details() {
+							crate::notify_payment_received(
+								&t!("goblin.settings.notif_private_received"),
+								"",
+							);
 						} else {
-							amount_to_hr_string(slate.amount, true)
-						};
-						crate::notify_payment_received(&name, &amount);
+							let name = if crate::AppConfig::notif_hide_names() {
+								t!("goblin.settings.notif_someone").to_string()
+							} else {
+								crate::gui::views::goblin::data::contact_title(
+									&svc.store,
+									&sender_hex,
+								)
+							};
+							// Honor the "hide amounts" setting: keep the numeric
+							// grin out of the alert when the user opted in.
+							let amount = if crate::AppConfig::hide_amounts() {
+								"•••".to_string()
+							} else {
+								amount_to_hr_string(slate.amount, true)
+							};
+							crate::notify_payment_received(&name, &amount);
+						}
 					}
 					match svc
 						.send_payment_dm(&sender_hex, &reply_text, None, &[])
@@ -2807,9 +2824,25 @@ async fn handle_wrap(svc: &Arc<NostrService>, wallet: &Wallet, event: Event) {
 			// received-payment notification's dedup. Requester's display name
 			// (or short npub) and the human-readable amount, with the ツ mark.
 			if decision == IngestDecision::SurfaceRequest {
-				let name = crate::gui::views::goblin::data::contact_title(&svc.store, &sender_hex);
-				let amount = amount_to_hr_string(slate.amount, true);
-				crate::notify_payment_requested(&name, &amount);
+				// Same notification-privacy ladder as the received-payment alert.
+				if crate::AppConfig::notif_hide_details() {
+					crate::notify_payment_requested(
+						&t!("goblin.settings.notif_private_requested"),
+						"",
+					);
+				} else {
+					let name = if crate::AppConfig::notif_hide_names() {
+						t!("goblin.settings.notif_someone").to_string()
+					} else {
+						crate::gui::views::goblin::data::contact_title(&svc.store, &sender_hex)
+					};
+					let amount = if crate::AppConfig::hide_amounts() {
+						"•••".to_string()
+					} else {
+						amount_to_hr_string(slate.amount, true)
+					};
+					crate::notify_payment_requested(&name, &amount);
+				}
 			}
 		}
 		IngestDecision::FinalizePost => {

@@ -98,6 +98,19 @@ pub struct AppConfig {
 	/// so existing configs (and new wallets) keep showing the amount.
 	hide_amounts: Option<bool>,
 
+	/// Hide the payer/requester name in payment notifications/alerts. Default
+	/// false. Independent of `hide_amounts`; a notification can hide either or
+	/// both.
+	notif_hide_names: Option<bool>,
+	/// Hide every detail in payment notifications/alerts: the alert becomes a
+	/// generic "you got paid / a request arrived" line with no name and no
+	/// amount. Default false. When on, it overrides the two finer toggles.
+	notif_hide_details: Option<bool>,
+	/// Anonymous mode: censor the wallet home balance and the activity list
+	/// (dots until tapped to reveal). Presentation-only, no money-path or
+	/// storage effect. Default false.
+	anonymous_mode: Option<bool>,
+
 	/// Last-known-good Nym ENTRY gateway (base58 identity). Only the gateway
 	/// CHOICE is remembered — the mixnet keys stay ephemeral — so a warm reconnect
 	/// can skip re-picking a (possibly dead) random first hop.
@@ -217,6 +230,9 @@ impl Default for AppConfig {
 			check_updates: Some(true),
 			app_update: None,
 			hide_amounts: None,
+			notif_hide_names: None,
+			notif_hide_details: None,
+			anonymous_mode: None,
 			nym_entry_gateway: None,
 			nym_last_ipr: None,
 		}
@@ -642,6 +658,48 @@ impl AppConfig {
 		w_config.hide_amounts = Some(hide);
 		w_config.save();
 	}
+
+	/// Whether the payer/requester name is hidden in payment notifications.
+	pub fn notif_hide_names() -> bool {
+		Settings::app_config_to_read()
+			.notif_hide_names
+			.unwrap_or(false)
+	}
+
+	/// Set whether the payer/requester name is hidden in payment notifications.
+	pub fn set_notif_hide_names(hide: bool) {
+		let mut w_config = Settings::app_config_to_update();
+		w_config.notif_hide_names = Some(hide);
+		w_config.save();
+	}
+
+	/// Whether payment notifications are reduced to a generic private alert.
+	pub fn notif_hide_details() -> bool {
+		Settings::app_config_to_read()
+			.notif_hide_details
+			.unwrap_or(false)
+	}
+
+	/// Set whether payment notifications are reduced to a generic private alert.
+	pub fn set_notif_hide_details(hide: bool) {
+		let mut w_config = Settings::app_config_to_update();
+		w_config.notif_hide_details = Some(hide);
+		w_config.save();
+	}
+
+	/// Whether anonymous mode censors the home balance and activity list.
+	pub fn anonymous_mode() -> bool {
+		Settings::app_config_to_read()
+			.anonymous_mode
+			.unwrap_or(false)
+	}
+
+	/// Set whether anonymous mode censors the home balance and activity list.
+	pub fn set_anonymous_mode(on: bool) {
+		let mut w_config = Settings::app_config_to_update();
+		w_config.anonymous_mode = Some(on);
+		w_config.save();
+	}
 }
 
 #[cfg(test)]
@@ -661,5 +719,31 @@ mod tests {
 			parsed.is_ok(),
 			"old config with removed price-cache fields should still load"
 		);
+	}
+
+	/// A pre-redesign config carries `hide_amounts` but none of the new privacy
+	/// fields. It must load unchanged (serde fills the absent Options with None),
+	/// so the notification hide-amounts choice is preserved and the new controls
+	/// default off: no user surprise on upgrade.
+	#[test]
+	fn old_config_without_new_privacy_fields_migrates_sensibly() {
+		let mut cfg = AppConfig::default();
+		cfg.hide_amounts = Some(true);
+		let mut toml = toml::to_string(&cfg).expect("serialize");
+		// Emulate a pre-redesign file that never knew the new keys.
+		toml = toml
+			.lines()
+			.filter(|l| {
+				!l.starts_with("notif_hide_names")
+					&& !l.starts_with("notif_hide_details")
+					&& !l.starts_with("anonymous_mode")
+			})
+			.collect::<Vec<_>>()
+			.join("\n");
+		let parsed = toml::from_str::<AppConfig>(&toml).expect("legacy config should load");
+		assert_eq!(parsed.hide_amounts, Some(true), "existing choice preserved");
+		assert_eq!(parsed.notif_hide_names, None, "new control defaults off");
+		assert_eq!(parsed.notif_hide_details, None, "new control defaults off");
+		assert_eq!(parsed.anonymous_mode, None, "anonymous mode defaults off");
 	}
 }
