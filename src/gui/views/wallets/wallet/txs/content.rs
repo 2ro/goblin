@@ -572,7 +572,7 @@ impl WalletTransactionsContent {
 											)
 										}
 									}
-									_ => format!("{} {}", X_CIRCLE, t!("wallets.canceled")),
+									_ => format!("{} {}", X_CIRCLE, t!("wallets.tx_canceled")),
 								}
 							};
 

@@ -95,7 +95,7 @@ wallets:
   tx_finalizing: Finalisation
   tx_posting: Publication
   tx_confirmed: Confirmé
-  tx_stale: En attente trop longtemps
+  tx_stale: En attente trop longue
   txs: Transactions
   tx: Transaction
   messages: Messages
