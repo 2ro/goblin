@@ -95,6 +95,7 @@ wallets:
   tx_finalizing: Завершение
   tx_posting: Публикация
   tx_confirmed: Подтверждено
+  tx_stale: Слишком долго в ожидании
   txs: Транзакции
   tx: Транзакция
   messages: Сообщения
@@ -425,6 +426,7 @@ goblin:
     transaction: "Транзакция"
     cancel_request: "Отменить запрос"
     cancel_send: "Отменить платёж"
+    stale_note: "Этот платёж уже некоторое время в ожидании."
     cancel_send_confirm: "Нажмите ещё раз для отмены — он ещё может его получить"
     cancel_send_done: "Платёж отменён — ваши средства снова доступны"
     cancel_send_too_late: "Этот платёж уже прошёл и не может быть отменён"

@@ -95,6 +95,7 @@ wallets:
   tx_finalizing: Finalizing
   tx_posting: Posting
   tx_confirmed: Confirmed
+  tx_stale: Pending too long
   txs: Transactions
   tx: Transaction
   messages: Messages
@@ -425,6 +426,7 @@ goblin:
     transaction: "Transaction"
     cancel_request: "Cancel request"
     cancel_send: "Cancel payment"
+    stale_note: "This payment has been pending a while."
     cancel_send_confirm: "Tap again to cancel — they may still receive it"
     cancel_send_done: "Payment cancelled — your funds are available again"
     cancel_send_too_late: "This payment already went through and can't be cancelled"

@@ -337,9 +337,15 @@ impl WalletTransactionContent {
 				}
 				return;
 			}
-			if wallet.synced_from_node() && !tx.cancelled() && !tx.cancelling() && !tx.posting() {
-				let repeat = tx.broadcasting_timed_out(&wallet);
-				// Draw button to cancel transaction.
+			if !tx.cancelled() && !tx.cancelling() && !tx.posting() {
+				// Repost/repeat needs a live node height; only a synced wallet can
+				// decide a broadcast has timed out.
+				let synced = wallet.synced_from_node();
+				let repeat = synced && tx.broadcasting_timed_out(wallet);
+				// Draw button to cancel transaction. Cancel is a purely local
+				// libwallet operation (it unlocks the reserved inputs), so it is
+				// always offered for a cancellable pending, even when the node is
+				// unreachable or the wallet has not synced yet.
 				if tx.can_cancel() || repeat {
 					let r = View::item_rounding(0, 2, true);
 					View::item_button(ui, r, PROHIBIT, Some(Colors::red()), || {
@@ -348,7 +354,7 @@ impl WalletTransactionContent {
 					});
 				}
 				// Draw button to repeat transaction action.
-				if tx.can_repeat_action(wallet) || repeat {
+				if synced && (tx.can_repeat_action(wallet) || repeat) {
 					let r = if tx.can_finalize() || tx.can_cancel() {
 						CornerRadius::default()
 					} else {

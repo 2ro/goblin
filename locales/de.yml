@@ -95,6 +95,7 @@ wallets:
   tx_finalizing: Finalisierung
   tx_posting: Buchungsvorgang
   tx_confirmed: Bestätigt
+  tx_stale: Zu lange ausstehend
   txs: Transaktionen
   tx: Transaktion
   messages: Nachrichten
@@ -425,6 +426,7 @@ goblin:
     transaction: "Transaktion"
     cancel_request: "Anfrage abbrechen"
     cancel_send: "Zahlung abbrechen"
+    stale_note: "Diese Zahlung ist seit einer Weile ausstehend."
     cancel_send_confirm: "Zum Abbrechen erneut tippen — sie könnten sie noch erhalten"
     cancel_send_done: "Zahlung abgebrochen — dein Guthaben ist wieder verfügbar"
     cancel_send_too_late: "Diese Zahlung ist bereits durchgegangen und kann nicht abgebrochen werden"
