@@ -75,10 +75,6 @@ pub struct GoblinWalletView {
 	wallet_id: Option<String>,
 	/// Inline username-claim state for the Me tab.
 	claim: Option<ClaimState>,
-	/// Inline key-rotation state for the Me tab.
-	rotate: Option<RotateState>,
-	/// Inline nsec-import state for the Me tab.
-	import_nsec: Option<ImportState>,
 	/// Inline "back up identity to a file" flow state.
 	backup: Option<BackupState>,
 	/// Identity switcher (one wallet, many nostr identities) page state.
@@ -300,8 +296,6 @@ impl Default for GoblinWalletView {
 			request_error: None,
 			wallet_id: None,
 			claim: None,
-			rotate: None,
-			import_nsec: None,
 			backup: None,
 			identity_switch: IdentitySwitchState::default(),
 			name_authority: None,
@@ -336,60 +330,6 @@ impl Default for GoblinWalletView {
 			money: None,
 			money_hold: w::HoldToSend::default(),
 			balance_revealed: false,
-		}
-	}
-}
-
-/// Inline key-rotation flow state (two warnings + typed confirmation).
-struct RotateState {
-	/// 1 = warning, 2 = confirm (RESET + password), 3 = working,
-	/// 4 = done (new npub), 5 = error (message).
-	stage: u8,
-	reset_input: String,
-	password: String,
-	new_npub: String,
-	error: String,
-	result: std::sync::Arc<std::sync::Mutex<Option<Result<String, String>>>>,
-}
-
-impl Default for RotateState {
-	fn default() -> Self {
-		Self {
-			stage: 1,
-			reset_input: String::new(),
-			password: String::new(),
-			new_npub: String::new(),
-			error: String::new(),
-			result: std::sync::Arc::new(std::sync::Mutex::new(None)),
-		}
-	}
-}
-
-/// Inline nsec-import flow state (restore path for the random-key model).
-struct ImportState {
-	/// 1 = form, 3 = working, 4 = done, 5 = error.
-	stage: u8,
-	nsec: String,
-	password: String,
-	backup_password: String,
-	new_npub: String,
-	error: String,
-	/// A native file pick is in flight (Android returns the path asynchronously).
-	picking: bool,
-	result: std::sync::Arc<std::sync::Mutex<Option<Result<String, String>>>>,
-}
-
-impl Default for ImportState {
-	fn default() -> Self {
-		Self {
-			stage: 1,
-			nsec: String::new(),
-			password: String::new(),
-			backup_password: String::new(),
-			new_npub: String::new(),
-			error: String::new(),
-			picking: false,
-			result: std::sync::Arc::new(std::sync::Mutex::new(None)),
 		}
 	}
 }
@@ -816,8 +756,6 @@ impl GoblinWalletView {
 			self.receipt = None;
 			self.profile = None;
 			self.claim = None;
-			self.rotate = None;
-			self.import_nsec = None;
 			self.approve_review = None;
 			self.approve_hold = w::HoldToSend::default();
 			self.approve_fee_for = None;
@@ -3666,22 +3604,6 @@ impl GoblinWalletView {
 						{
 							self.backup = Some(BackupState::default());
 						}
-						if settings_row_danger(
-							ui,
-							&t!("goblin.settings.rotate_key"),
-							crate::gui::icons::ARROWS_CLOCKWISE,
-						) && self.rotate.is_none()
-						{
-							self.rotate = Some(RotateState::default());
-						}
-						if settings_row_btn(
-							ui,
-							&t!("goblin.settings.import_identity"),
-							crate::gui::icons::KEY,
-						) && self.import_nsec.is_none()
-						{
-							self.import_nsec = Some(ImportState::default());
-						}
 						// Nostr relays the wallet publishes/reads gift wraps on.
 						// Sits with the identity rows because relays are a nostr
 						// concern; opens the relay editor (handled below).
@@ -3753,14 +3675,6 @@ impl GoblinWalletView {
 				if self.backup.is_some() {
 					ui.add_space(8.0);
 					self.backup_ui(ui, wallet, cb);
-				}
-				if self.rotate.is_some() {
-					ui.add_space(8.0);
-					self.rotate_ui(ui, wallet, cb);
-				}
-				if self.import_nsec.is_some() {
-					ui.add_space(8.0);
-					self.import_nsec_ui(ui, wallet, cb);
 				}
 
 				ui.add_space(16.0);
@@ -4254,6 +4168,22 @@ impl GoblinWalletView {
 						.font(FontId::new(13.0, fonts::regular()))
 						.color(t.text_dim),
 				);
+				ui.add_space(6.0);
+				// "Learn more" opens the name-authority docs chapter in the
+				// browser (same open_url idiom used elsewhere in Settings).
+				let learn = ui
+					.add(
+						egui::Label::new(
+							RichText::new(t!("goblin.username.learn_more"))
+								.font(FontId::new(13.0, fonts::semibold()))
+								.color(t.accent),
+						)
+						.sense(Sense::click()),
+					)
+					.on_hover_cursor(egui::CursorIcon::PointingHand);
+				if learn.clicked() {
+					open_url(ui, "https://docs.goblin.st/features/name-authority.html");
+				}
 				ui.add_space(10.0);
 				let cur_server = wallet
 					.nostr_service()
@@ -5344,234 +5274,6 @@ impl GoblinWalletView {
 			});
 	}
 
-	/// Inline key-rotation flow: warning → typed RESET + password → result.
-	fn rotate_ui(&mut self, ui: &mut egui::Ui, wallet: &Wallet, cb: &dyn PlatformCallbacks) {
-		let t = theme::tokens();
-		let rotate = self.rotate.as_mut().unwrap();
-		// Poll the worker result.
-		if rotate.stage == 3 {
-			if let Some(res) = rotate.result.lock().unwrap().take() {
-				match res {
-					Ok(npub) => {
-						rotate.new_npub = npub;
-						rotate.stage = 4;
-					}
-					Err(e) => {
-						rotate.error = e;
-						rotate.stage = 5;
-					}
-				}
-			}
-		}
-		let mut close = false;
-		w::card(ui, |ui| {
-			ui.set_min_width(ui.available_width());
-			match rotate.stage {
-				1 => {
-					ui.label(
-						RichText::new(t!("goblin.settings.rotate_key"))
-							.font(FontId::new(15.0, fonts::semibold()))
-							.color(t.neg),
-					);
-					ui.add_space(6.0);
-					for line in [
-						t!("goblin.settings.rotate_line1"),
-						t!("goblin.settings.rotate_line2"),
-						t!("goblin.settings.rotate_line3"),
-						t!("goblin.settings.rotate_line4"),
-						t!("goblin.settings.rotate_line5"),
-					] {
-						ui.label(
-							RichText::new(line)
-								.font(FontId::new(13.0, fonts::regular()))
-								.color(t.surface_text_dim),
-						);
-						ui.add_space(4.0);
-					}
-					ui.add_space(8.0);
-					ui.horizontal(|ui| {
-						let half = (ui.available_width() - 10.0) / 2.0;
-						ui.scope_builder(
-							egui::UiBuilder::new().max_rect(egui::Rect::from_min_size(
-								ui.cursor().min,
-								Vec2::new(half, 44.0),
-							)),
-							|ui| {
-								if w::big_action_on_card(ui, &t!("goblin.settings.cancel"))
-									.clicked()
-								{
-									close = true;
-								}
-							},
-						);
-						ui.add_space(10.0);
-						ui.scope_builder(
-							egui::UiBuilder::new().max_rect(egui::Rect::from_min_size(
-								ui.cursor().min,
-								Vec2::new(half, 44.0),
-							)),
-							|ui| {
-								if w::big_action(ui, &t!("goblin.settings.continue"), false)
-									.clicked()
-								{
-									rotate.stage = 2;
-								}
-							},
-						);
-					});
-				}
-				2 => {
-					ui.label(
-						RichText::new(t!("goblin.settings.final_confirmation"))
-							.font(FontId::new(15.0, fonts::semibold()))
-							.color(t.neg),
-					);
-					ui.add_space(6.0);
-					ui.label(
-						RichText::new(t!("goblin.settings.rotate_confirm_blurb"))
-							.font(FontId::new(13.0, fonts::regular()))
-							.color(t.surface_text_dim),
-					);
-					ui.add_space(10.0);
-					w::field_well(ui, |ui| {
-						TextEdit::new(egui::Id::from("rotate_reset"))
-							.focus(false)
-							.hint_text(t!("goblin.settings.type_reset"))
-							.text_color(t.surface_text)
-							.body()
-							.ui(ui, &mut rotate.reset_input, cb);
-					});
-					ui.add_space(8.0);
-					w::field_well(ui, |ui| {
-						TextEdit::new(egui::Id::from("rotate_pass"))
-							.focus(false)
-							.hint_text(t!("goblin.settings.wallet_password"))
-							.password()
-							.text_color(t.surface_text)
-							.body()
-							.ui(ui, &mut rotate.password, cb);
-					});
-					ui.add_space(10.0);
-					let armed = rotate.reset_input.trim() == "RESET" && !rotate.password.is_empty();
-					ui.horizontal(|ui| {
-						let half = (ui.available_width() - 10.0) / 2.0;
-						ui.scope_builder(
-							egui::UiBuilder::new().max_rect(egui::Rect::from_min_size(
-								ui.cursor().min,
-								Vec2::new(half, 44.0),
-							)),
-							|ui| {
-								if w::big_action_on_card(ui, &t!("goblin.settings.cancel"))
-									.clicked()
-								{
-									close = true;
-								}
-							},
-						);
-						ui.add_space(10.0);
-						ui.scope_builder(
-							egui::UiBuilder::new().max_rect(egui::Rect::from_min_size(
-								ui.cursor().min,
-								Vec2::new(half, 44.0),
-							)),
-							|ui| {
-								ui.add_enabled_ui(armed, |ui| {
-									if w::big_action(
-										ui,
-										&t!("goblin.settings.rotate_key_btn"),
-										false,
-									)
-									.clicked()
-									{
-										rotate.stage = 3;
-										let slot = rotate.result.clone();
-										let password = std::mem::take(&mut rotate.password);
-										rotate.reset_input.clear();
-										let wallet = wallet.clone();
-										std::thread::spawn(move || {
-											let res = wallet.rotate_nostr_identity(password);
-											*slot.lock().unwrap() = Some(res);
-										});
-									}
-								});
-							},
-						);
-					});
-				}
-				3 => {
-					ui.horizontal(|ui| {
-						View::small_loading_spinner(ui);
-						ui.add_space(8.0);
-						ui.label(
-							RichText::new(t!("goblin.settings.rotating_key"))
-								.font(FontId::new(13.0, fonts::regular()))
-								.color(t.surface_text_dim),
-						);
-					});
-					ui.ctx().request_repaint();
-				}
-				4 => {
-					ui.label(
-						RichText::new(t!("goblin.settings.key_rotated"))
-							.font(FontId::new(15.0, fonts::semibold()))
-							.color(t.pos),
-					);
-					ui.add_space(4.0);
-					let npub = &rotate.new_npub;
-					let short = if npub.len() > 18 {
-						format!("{}…{}", &npub[..12], &npub[npub.len() - 6..])
-					} else {
-						npub.clone()
-					};
-					ui.label(
-						RichText::new(t!("goblin.settings.new_npub", npub => short))
-							.font(FontId::new(13.0, fonts::mono()))
-							.color(t.surface_text_dim),
-					);
-					ui.add_space(6.0);
-					ui.label(
-						RichText::new(t!("goblin.settings.backup_new_key"))
-							.font(FontId::new(13.0, fonts::semibold()))
-							.color(t.neg),
-					);
-					ui.add_space(10.0);
-					if w::big_action_on_card(ui, &t!("goblin.settings.copy_new_nsec")).clicked() {
-						if let Some(nsec) = wallet.nostr_service().and_then(|s| s.nsec()) {
-							// Secret: auto-clears from the clipboard after a delay
-							// (compare-then-clear) so it does not linger there.
-							cb.copy_secret_to_buffer(nsec);
-							cb.vibrate_copy();
-						}
-					}
-					ui.add_space(8.0);
-					if w::big_action(ui, &t!("goblin.settings.done"), false).clicked() {
-						close = true;
-					}
-				}
-				_ => {
-					ui.label(
-						RichText::new(t!("goblin.settings.rotation_failed"))
-							.font(FontId::new(15.0, fonts::semibold()))
-							.color(t.neg),
-					);
-					ui.add_space(4.0);
-					ui.label(
-						RichText::new(&rotate.error)
-							.font(FontId::new(13.0, fonts::regular()))
-							.color(t.surface_text_dim),
-					);
-					ui.add_space(10.0);
-					if w::big_action_on_card(ui, &t!("goblin.settings.close")).clicked() {
-						close = true;
-					}
-				}
-			}
-		});
-		if close {
-			self.rotate = None;
-		}
-	}
-
 	/// Inline "back up identity to a file" flow: ask for the wallet password,
 	/// seal the identity, and write a GOBLIN-*.backup file via the native picker.
 	fn backup_ui(&mut self, ui: &mut egui::Ui, wallet: &Wallet, cb: &dyn PlatformCallbacks) {
@@ -5680,222 +5382,6 @@ impl GoblinWalletView {
 		});
 		if close {
 			self.backup = None;
-		}
-	}
-
-	fn import_nsec_ui(&mut self, ui: &mut egui::Ui, wallet: &Wallet, cb: &dyn PlatformCallbacks) {
-		let t = theme::tokens();
-		let import = self.import_nsec.as_mut().unwrap();
-		if import.stage == 3 {
-			if let Some(res) = import.result.lock().unwrap().take() {
-				match res {
-					Ok(npub) => {
-						import.new_npub = npub;
-						import.stage = 4;
-					}
-					Err(e) => {
-						import.error = e;
-						import.stage = 5;
-					}
-				}
-			}
-		}
-		let mut close = false;
-		w::card(ui, |ui| {
-			ui.set_min_width(ui.available_width());
-			match import.stage {
-				1 => {
-					ui.label(
-						RichText::new(t!("goblin.settings.import_identity_title"))
-							.font(FontId::new(15.0, fonts::semibold()))
-							.color(t.surface_text),
-					);
-					ui.add_space(6.0);
-					ui.label(
-						RichText::new(t!("goblin.settings.import_blurb"))
-							.font(FontId::new(13.0, fonts::regular()))
-							.color(t.surface_text_dim),
-					);
-					ui.add_space(10.0);
-					// Native ".backup file" picker. Desktop returns the path now;
-					// Android returns it asynchronously (poll picked_file()).
-					if import.picking {
-						if let Some(path) = cb.picked_file() {
-							import.picking = false;
-							if !path.is_empty() {
-								match std::fs::read_to_string(&path) {
-									Ok(contents) => import.nsec = contents.trim().to_string(),
-									Err(_) => {
-										import.error =
-											t!("goblin.settings.backup_read_failed").to_string();
-									}
-								}
-							}
-						} else {
-							ui.ctx().request_repaint();
-						}
-					}
-					if w::big_action_on_card(ui, &t!("goblin.settings.choose_backup_file"))
-						.clicked()
-					{
-						import.error.clear();
-						match cb.pick_file() {
-							Some(path) if !path.is_empty() => {
-								match std::fs::read_to_string(&path) {
-									Ok(contents) => import.nsec = contents.trim().to_string(),
-									Err(_) => {
-										import.error =
-											t!("goblin.settings.backup_read_failed").to_string();
-									}
-								}
-							}
-							// Empty string = Android async pick in flight.
-							Some(_) => import.picking = true,
-							None => {}
-						}
-					}
-					if !import.error.is_empty() && import.stage == 1 {
-						ui.add_space(6.0);
-						ui.label(
-							RichText::new(&import.error)
-								.font(FontId::new(12.5, fonts::regular()))
-								.color(t.neg),
-						);
-					}
-					ui.add_space(8.0);
-					w::field_well(ui, |ui| {
-						TextEdit::new(egui::Id::from("import_nsec"))
-							.focus(false)
-							.hint_text(t!("goblin.settings.import_nsec_hint"))
-							.password()
-							.text_color(t.surface_text)
-							.body()
-							.ui(ui, &mut import.nsec, cb);
-					});
-					ui.add_space(8.0);
-					w::field_well(ui, |ui| {
-						TextEdit::new(egui::Id::from("import_pass"))
-							.focus(false)
-							.hint_text(t!("goblin.settings.wallet_password"))
-							.password()
-							.text_color(t.surface_text)
-							.body()
-							.ui(ui, &mut import.password, cb);
-					});
-					ui.add_space(8.0);
-					w::field_well(ui, |ui| {
-						TextEdit::new(egui::Id::from("import_backup_pass"))
-							.focus(false)
-							.hint_text(t!("goblin.settings.backup_password_hint"))
-							.password()
-							.text_color(t.surface_text)
-							.body()
-							.ui(ui, &mut import.backup_password, cb);
-					});
-					ui.add_space(10.0);
-					let pasted = import.nsec.trim();
-					let armed = (pasted.starts_with("nsec1") || pasted.starts_with('{'))
-						&& !import.password.is_empty();
-					ui.horizontal(|ui| {
-						let half = (ui.available_width() - 10.0) / 2.0;
-						ui.scope_builder(
-							egui::UiBuilder::new().max_rect(egui::Rect::from_min_size(
-								ui.cursor().min,
-								Vec2::new(half, 44.0),
-							)),
-							|ui| {
-								if w::big_action_on_card(ui, &t!("goblin.settings.cancel"))
-									.clicked()
-								{
-									close = true;
-								}
-							},
-						);
-						ui.add_space(10.0);
-						ui.scope_builder(
-							egui::UiBuilder::new().max_rect(egui::Rect::from_min_size(
-								ui.cursor().min,
-								Vec2::new(half, 44.0),
-							)),
-							|ui| {
-								ui.add_enabled_ui(armed, |ui| {
-									if w::big_action(ui, &t!("goblin.settings.import_btn"), false)
-										.clicked()
-									{
-										import.stage = 3;
-										let slot = import.result.clone();
-										let nsec = std::mem::take(&mut import.nsec);
-										let password = std::mem::take(&mut import.password);
-										let bpw = std::mem::take(&mut import.backup_password);
-										let bpw = if bpw.is_empty() { None } else { Some(bpw) };
-										let wallet = wallet.clone();
-										std::thread::spawn(move || {
-											let res =
-												wallet.import_nostr_identity(nsec, password, bpw);
-											*slot.lock().unwrap() = Some(res);
-										});
-									}
-								});
-							},
-						);
-					});
-				}
-				3 => {
-					ui.horizontal(|ui| {
-						View::small_loading_spinner(ui);
-						ui.add_space(8.0);
-						ui.label(
-							RichText::new(t!("goblin.settings.importing"))
-								.font(FontId::new(13.0, fonts::regular()))
-								.color(t.surface_text_dim),
-						);
-					});
-					ui.ctx().request_repaint();
-				}
-				4 => {
-					ui.label(
-						RichText::new(t!("goblin.settings.identity_replaced"))
-							.font(FontId::new(15.0, fonts::semibold()))
-							.color(t.pos),
-					);
-					ui.add_space(4.0);
-					let npub = &import.new_npub;
-					let short = if npub.len() > 18 {
-						format!("{}…{}", &npub[..12], &npub[npub.len() - 6..])
-					} else {
-						npub.clone()
-					};
-					ui.label(
-						RichText::new(t!("goblin.settings.now_using", npub => short))
-							.font(FontId::new(13.0, fonts::mono()))
-							.color(t.surface_text_dim),
-					);
-					ui.add_space(10.0);
-					if w::big_action(ui, &t!("goblin.settings.done"), false).clicked() {
-						close = true;
-					}
-				}
-				_ => {
-					ui.label(
-						RichText::new(t!("goblin.settings.import_failed"))
-							.font(FontId::new(15.0, fonts::semibold()))
-							.color(t.neg),
-					);
-					ui.add_space(4.0);
-					ui.label(
-						RichText::new(&import.error)
-							.font(FontId::new(13.0, fonts::regular()))
-							.color(t.surface_text_dim),
-					);
-					ui.add_space(10.0);
-					if w::big_action_on_card(ui, &t!("goblin.settings.close")).clicked() {
-						close = true;
-					}
-				}
-			}
-		});
-		if close {
-			self.import_nsec = None;
 		}
 	}
 

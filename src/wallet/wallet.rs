@@ -604,74 +604,6 @@ impl Wallet {
 			.map_err(|e| format!("nsec encode failed: {e}"))
 	}
 
-	pub fn rotate_nostr_identity(&self, password: String) -> Result<String, String> {
-		let svc = self
-			.nostr_service()
-			.ok_or_else(|| "nostr is not running".to_string())?;
-		// Snapshot the old identity and prove the password by unlocking it
-		// (NIP-49 decryption fails on a wrong password).
-		let old = svc.identity.read().clone();
-		let old_keys = old
-			.unlock(&password)
-			.map_err(|_| "Wrong password".to_string())?;
-
-		// Generate the replacement identity.
-		let (mut new_identity, _new_keys) = NostrIdentity::create_random(&password)
-			.map_err(|e| format!("key generation failed: {e}"))?;
-
-		// Release the username first (the server also deletes its avatar);
-		// abort the rotation if that fails so the user never ends up with a
-		// burned key still welded to a public name. After rotation the name
-		// is up for grabs — by the new key or anyone else.
-		if let Some(nip05) = old.nip05.clone() {
-			let name = nip05.split('@').next().unwrap_or_default().to_string();
-			let server = { svc.config.read().nip05_server() };
-			let rt = tokio::runtime::Builder::new_current_thread()
-				.enable_all()
-				.build()
-				.map_err(|e| e.to_string())?;
-			rt.block_on(async { crate::nostr::nip05::unregister(&server, &name, &old_keys).await })
-				.map_err(|e| format!("Couldn't release @{name}: {e} — rotation cancelled"))?;
-		}
-		new_identity.prev_npubs = {
-			let mut v = old.prev_npubs.clone();
-			v.push(old.npub.clone());
-			v
-		};
-
-		// Persist, then swap the running service for one bound to the new key.
-		let config = self.get_config();
-		let nostr_dir = config.get_nostr_path();
-		new_identity
-			.save(&nostr_dir)
-			.map_err(|e| format!("identity save failed: {e}"))?;
-		svc.stop();
-		for _ in 0..100 {
-			if !svc.is_running() {
-				break;
-			}
-			thread::sleep(Duration::from_millis(100));
-		}
-		let wallet_dir = PathBuf::from(config.get_data_path());
-		let nostr_config = NostrConfig::load(wallet_dir);
-		let store = NostrStore::new(config.get_nostr_db_path());
-		let new_npub = new_identity.npub.clone();
-		// Rebuild the service holding ALL held identities (the primary entry now
-		// resolves to the new identity), with the new one active.
-		let (recv, _) = self
-			.unlock_all_identities(&nostr_dir, &password)
-			.ok_or_else(|| "identity unlock failed".to_string())?;
-		let active_hex = new_identity.pubkey_hex().unwrap_or_default();
-		let new_svc = NostrService::new(recv, &active_hex, nostr_config, store, nostr_dir);
-		{
-			let mut w_nostr = self.nostr.write();
-			*w_nostr = Some(new_svc.clone());
-		}
-		new_svc.start(self.clone());
-		info!("nostr: identity rotated to {}", new_npub);
-		Ok(new_npub)
-	}
-
 	/// Replace the nostr identity with an imported key — either a bare nsec
 	/// or an exported identity-backup JSON (which restores the username and
 	/// rotation history too). The current identity is overwritten; its npub
@@ -791,9 +723,9 @@ impl Wallet {
 	// identities and present a different one at will. Exactly one is ACTIVE: it
 	// drives the single live gift-wrap subscription and all display, and every
 	// identity redeems into the SAME shared grin balance. Only the active nsec is
-	// ever decrypted into memory; the rest rest as ncryptsec on disk. Switching is
-	// mechanically identical to `rotate_nostr_identity` (stop the service, rebuild
-	// it on the target key, restart), plus a per-identity catch-up so payments that
+	// ever decrypted into memory; the rest rest as ncryptsec on disk. Switching
+	// stops the service and rebuilds it on the target key, then restarts, plus a
+	// per-identity catch-up so payments that
 	// arrived while an identity was dormant are redeemed on switch-in.
 
 	/// The held identities for the identity switcher (no secrets). Empty if nostr
