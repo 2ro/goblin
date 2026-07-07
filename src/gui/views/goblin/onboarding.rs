@@ -58,6 +58,11 @@ pub struct OnboardingContent {
 	ext_url: String,
 	/// Wallet setup inputs.
 	restore: bool,
+	/// The user chose "Import identity" on the wallet step: after the wallet is
+	/// created the identity step opens the import panel straight away (bringing
+	/// over an existing key from a `.backup` or nsec), instead of the fresh
+	/// random key. Composes with either seed choice above it.
+	want_import: bool,
 	name: String,
 	pass: String,
 	pass2: String,
@@ -108,6 +113,7 @@ impl Default for OnboardingContent {
 			integrated: false,
 			ext_url: "https://grincoin.org".to_string(),
 			restore: false,
+			want_import: false,
 			name: "Main wallet".to_string(),
 			pass: String::new(),
 			pass2: String::new(),
@@ -414,6 +420,37 @@ impl OnboardingContent {
 				ui.add_space(10.0);
 			}
 		});
+		ui.add_space(10.0);
+
+		// First-class "Import identity" option, standing alongside Create/Restore:
+		// bring an existing key over (from a .backup file or a bare nsec). It
+		// composes with either seed choice above — the import panel itself opens
+		// on the identity step, once the wallet exists.
+		ui.scope_builder(
+			egui::UiBuilder::new().max_rect(egui::Rect::from_min_size(
+				ui.cursor().min,
+				Vec2::new(ui.available_width(), 44.0),
+			)),
+			|ui| {
+				if w::chip(
+					ui,
+					&t!("goblin.onboarding.wallet.import_identity"),
+					self.want_import,
+				)
+				.clicked()
+				{
+					self.want_import = !self.want_import;
+				}
+			},
+		);
+		if self.want_import {
+			ui.add_space(6.0);
+			ui.label(
+				RichText::new(t!("goblin.onboarding.wallet.import_identity_hint"))
+					.font(FontId::new(12.5, fonts::regular()))
+					.color(t.text_mute),
+			);
+		}
 		ui.add_space(14.0);
 
 		w::field_well(ui, |ui| {
@@ -864,6 +901,13 @@ impl OnboardingContent {
 			.nostr_service()
 			.map(|s| s.identity.read().nip05.is_some())
 			.unwrap_or(false);
+		// Came in via the wallet step's "Import identity" button: open the import
+		// panel straight away (offers both a .backup file and a bare nsec), rather
+		// than the fresh-key claim card.
+		if self.want_import && self.import.is_none() {
+			self.import = Some(OnbImport::default());
+			self.want_import = false;
+		}
 		if self.import.is_some() {
 			// Returning user is swapping the random key for their existing identity.
 			self.import_ui(ui, &wallet, cb);
@@ -946,19 +990,11 @@ impl OnboardingContent {
 				}
 			});
 			ui.add_space(10.0);
-			// Returning user? Let them restore their existing identity (nsec or a
-			// .backup file) instead of claiming a fresh name on the random key.
-			let import_resp = ui
-				.add(
-					egui::Label::new(
-						RichText::new(t!("goblin.onboarding.identity.import_existing"))
-							.font(FontId::new(13.0, fonts::semibold()))
-							.color(t.accent),
-					)
-					.sense(Sense::click()),
-				)
-				.on_hover_cursor(egui::CursorIcon::PointingHand);
-			if import_resp.clicked() {
+			// Returning user? A centered, first-class "Import identity" button
+			// (was a left-aligned text link) restores their existing identity
+			// from a .backup file or a bare nsec instead of the fresh random key.
+			// The .backup-or-nsec choice lives behind it, in import_ui.
+			if w::big_action(ui, &t!("goblin.onboarding.wallet.import_identity"), true).clicked() {
 				self.import = Some(OnbImport::default());
 			}
 			ui.add_space(16.0);

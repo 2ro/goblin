@@ -829,6 +829,8 @@ goblin:
       title: "设置你的钱包"
       create_new: "新建"
       restore_from_seed: "从助记词恢复"
+      import_identity: "导入身份"
+      import_identity_hint: "此步骤之后，你将导入现有密钥（.backup 文件或 nsec）。"
       name_hint: "钱包名称"
       password_hint: "密码"
       repeat_password_hint: "重复密码"

@@ -829,6 +829,8 @@ goblin:
       title: "Set up your wallet"
       create_new: "Create new"
       restore_from_seed: "Restore from seed"
+      import_identity: "Import identity"
+      import_identity_hint: "You'll bring in your existing key (a .backup file or nsec) after this step."
       name_hint: "Wallet name"
       password_hint: "Password"
       repeat_password_hint: "Repeat password"

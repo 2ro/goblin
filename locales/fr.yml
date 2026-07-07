@@ -829,6 +829,8 @@ goblin:
       title: "Configurez votre portefeuille"
       create_new: "Créer un nouveau"
       restore_from_seed: "Restaurer depuis la phrase"
+      import_identity: "Importer une identité"
+      import_identity_hint: "Vous importerez votre clé existante (un fichier .backup ou un nsec) après cette étape."
       name_hint: "Nom du portefeuille"
       password_hint: "Mot de passe"
       repeat_password_hint: "Répéter le mot de passe"

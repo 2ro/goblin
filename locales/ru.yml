@@ -829,6 +829,8 @@ goblin:
       title: "Настройте кошелёк"
       create_new: "Создать новый"
       restore_from_seed: "Восстановить из seed"
+      import_identity: "Импорт личности"
+      import_identity_hint: "После этого шага вы добавите свой существующий ключ (файл .backup или nsec)."
       name_hint: "Имя кошелька"
       password_hint: "Пароль"
       repeat_password_hint: "Повторите пароль"

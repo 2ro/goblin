@@ -829,6 +829,8 @@ goblin:
       title: "Cüzdanını kur"
       create_new: "Yeni oluştur"
       restore_from_seed: "Tohumdan geri yükle"
+      import_identity: "Kimliği içe aktar"
+      import_identity_hint: "Bu adımdan sonra mevcut anahtarını (bir .backup dosyası veya nsec) getireceksin."
       name_hint: "Cüzdan adı"
       password_hint: "Parola"
       repeat_password_hint: "Parolayı tekrarla"
