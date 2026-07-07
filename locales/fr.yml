@@ -606,7 +606,8 @@ goblin:
   username:
     title: "Nom d'utilisateur"
     authority: "Autorité de noms"
-    authority_blurb: "Là où votre nom d'utilisateur est enregistré et vérifié. Choisissez-en une connue ou pointez Goblin vers une autre instance pour utiliser les noms qui y sont hébergés."
+    authority_blurb: "Laissez la valeur par défaut ou pointez vers une autre instance pour utiliser les noms qui y sont hébergés."
+    learn_more: "En savoir plus"
     custom: "Autorité personnalisée"
   advprivacy:
     intro: "Contrôlez ce que révèlent vos notifications, et masquez votre solde et votre historique sur cet appareil."

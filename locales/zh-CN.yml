@@ -606,7 +606,8 @@ goblin:
   username:
     title: "用户名"
     authority: "名称机构"
-    authority_blurb: "你的用户名注册和验证的地方。选择一个已知机构，或将 Goblin 指向其他实例以使用其托管的名称。"
+    authority_blurb: "保持默认，或指向其他实例以使用其托管的名称。"
+    learn_more: "了解更多"
     custom: "自定义机构"
   advprivacy:
     intro: "控制通知会透露的内容，并在此设备上隐藏你的余额和历史记录。"

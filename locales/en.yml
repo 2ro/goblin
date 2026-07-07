@@ -606,7 +606,8 @@ goblin:
   username:
     title: "Username"
     authority: "Name authority"
-    authority_blurb: "Where your username is registered and verified. Pick a known one or point Goblin at another instance to use names hosted there."
+    authority_blurb: "Leave as default, or point to another instance to use names hosted there."
+    learn_more: "Learn more"
     custom: "Custom authority"
   advprivacy:
     intro: "Control what your notifications reveal, and hide your balance and history on this device."

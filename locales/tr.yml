@@ -606,7 +606,8 @@ goblin:
   username:
     title: "Kullanıcı adı"
     authority: "İsim otoritesi"
-    authority_blurb: "Kullanıcı adının kaydedildiği ve doğrulandığı yer. Bilinen birini seç ya da orada barındırılan isimleri kullanmak için Goblin'i başka bir sunucuya yönlendir."
+    authority_blurb: "Varsayılan bırak ya da orada barındırılan isimleri kullanmak için başka bir sunucuya yönlendir."
+    learn_more: "Daha fazla bilgi"
     custom: "Özel otorite"
   advprivacy:
     intro: "Bildirimlerinin neyi açığa çıkardığını denetle ve bu cihazda bakiyeni ve geçmişini gizle."

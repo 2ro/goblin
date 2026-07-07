@@ -4233,6 +4233,22 @@ impl GoblinWalletView {
 						.font(FontId::new(13.0, fonts::regular()))
 						.color(t.text_dim),
 				);
+				ui.add_space(6.0);
+				// "Learn more" opens the name-authority docs chapter in the
+				// browser (same open_url idiom used elsewhere in Settings).
+				let learn = ui
+					.add(
+						egui::Label::new(
+							RichText::new(t!("goblin.username.learn_more"))
+								.font(FontId::new(13.0, fonts::semibold()))
+								.color(t.accent),
+						)
+						.sense(Sense::click()),
+					)
+					.on_hover_cursor(egui::CursorIcon::PointingHand);
+				if learn.clicked() {
+					open_url(ui, "https://docs.goblin.st/features/name-authority.html");
+				}
 				ui.add_space(10.0);
 				let cur_server = wallet
 					.nostr_service()

@@ -606,7 +606,8 @@ goblin:
   username:
     title: "사용자 이름"
     authority: "이름 기관"
-    authority_blurb: "사용자 이름이 등록되고 검증되는 곳입니다. 알려진 기관을 선택하거나, Goblin이 다른 인스턴스를 가리키게 해서 그곳에서 호스팅하는 이름을 사용하세요."
+    authority_blurb: "기본값으로 두거나, 다른 인스턴스를 가리켜 그곳에서 호스팅하는 이름을 사용하세요."
+    learn_more: "자세히 보기"
     custom: "사용자 지정 기관"
   advprivacy:
     intro: "알림이 무엇을 드러내는지 제어하고, 이 기기에서 잔액과 기록을 숨기세요."

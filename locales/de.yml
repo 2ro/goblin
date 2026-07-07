@@ -606,7 +606,8 @@ goblin:
   username:
     title: "Benutzername"
     authority: "Namensautorität"
-    authority_blurb: "Wo dein Benutzername registriert und überprüft wird. Wähle eine bekannte aus oder richte Goblin auf eine andere Instanz, um dort gehostete Namen zu nutzen."
+    authority_blurb: "Als Standard belassen oder auf eine andere Instanz verweisen, um dort gehostete Namen zu nutzen."
+    learn_more: "Mehr erfahren"
     custom: "Eigene Autorität"
   advprivacy:
     intro: "Steuere, was deine Benachrichtigungen preisgeben, und verbirg dein Guthaben und deinen Verlauf auf diesem Gerät."
