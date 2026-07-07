@@ -1989,10 +1989,18 @@ impl GoblinWalletView {
 		if peers.is_empty() {
 			return;
 		}
-		let texs: Vec<Option<egui::TextureHandle>> = peers
-			.iter()
-			.map(|(name, _)| self.handle_tex(ui.ctx(), wallet, name))
-			.collect();
+		// Anonymous mode censors the Recent strip exactly like the rest of the
+		// surface: the uniform yellow tile for every avatar and dotted names, so a
+		// recent recipient is no more identifiable here than in the activity feed.
+		let anon = crate::AppConfig::anonymous_mode();
+		let texs: Vec<Option<egui::TextureHandle>> = if anon {
+			peers.iter().map(|_| None).collect()
+		} else {
+			peers
+				.iter()
+				.map(|(name, _)| self.handle_tex(ui.ctx(), wallet, name))
+				.collect()
+		};
 		w::kicker(ui, &t!("goblin.home.recent"));
 		ui.add_space(12.0);
 		ScrollArea::horizontal()
@@ -2007,17 +2015,27 @@ impl GoblinWalletView {
 							Vec2::new(72.0, 78.0),
 							Layout::top_down(Align::Center),
 							|ui| {
-								let resp = w::avatar_any(ui, name, npub, 48.0, tex.as_ref());
-								ui.add_space(6.0);
-								let chars: Vec<char> = name.chars().collect();
-								let short: String = if chars.len() > 8 {
-									format!("{}…", chars[..8].iter().collect::<String>())
+								let resp = if anon {
+									w::avatar_censored(ui, 48.0)
 								} else {
-									name.to_string()
+									w::avatar_any(ui, name, npub, 48.0, tex.as_ref())
+								};
+								ui.add_space(6.0);
+								let short: String = if anon {
+									CENSOR_NAME_DOTS.to_string()
+								} else {
+									let chars: Vec<char> = name.chars().collect();
+									if chars.len() > 8 {
+										format!("{}…", chars[..8].iter().collect::<String>())
+									} else {
+										name.to_string()
+									}
 								};
 								ui.label(
 									RichText::new(short).font(FontId::new(12.0, fonts::medium())),
 								);
+								// Tapping still opens the profile (tap-to-reveal); the strip
+								// itself stays censored.
 								if resp.clicked() {
 									self.profile = Some(npub.clone());
 								}
@@ -2726,6 +2744,7 @@ impl GoblinWalletView {
 										item.canceled,
 										item.system,
 										htex.as_ref(),
+										false,
 									)
 									.clicked()
 									{
@@ -2944,9 +2963,10 @@ impl GoblinWalletView {
 		} else {
 			"− "
 		};
-		// Anonymous mode dots the name and amount (and drops the avatar/memo so
-		// nothing leaks); the row still taps through to the full detail, which is
-		// the "reveal" the spec calls for.
+		// Anonymous mode dots the name and amount and replaces the avatar with the
+		// uniform censored tile (drawn inside `activity_row` from the `anon` flag)
+		// and drops the memo, so nothing leaks; the row still taps through to the
+		// full detail, which is the "reveal" the spec calls for.
 		let anon = crate::AppConfig::anonymous_mode();
 		let amount = if anon {
 			// Fixed dot count, never digit-matched, so a censored row can't leak
@@ -2962,7 +2982,7 @@ impl GoblinWalletView {
 			self.handle_tex(ui.ctx(), wallet, &item.title)
 		};
 		let (title, note_ref, id_ref): (&str, &str, &str) = if anon {
-			("••••••", "", "")
+			(CENSOR_NAME_DOTS, "", "")
 		} else {
 			(&item.title, &note, item.npub.as_deref().unwrap_or(""))
 		};
@@ -2977,6 +2997,7 @@ impl GoblinWalletView {
 			item.canceled,
 			item.system,
 			tex.as_ref(),
+			anon,
 		);
 		// Per-identity cue (owner-approved): only when the wallet holds MORE THAN
 		// ONE identity, and never on system (mining) rows. A small corner badge on
@@ -8748,6 +8769,11 @@ fn fiat_line(data: &Option<WalletData>) -> Option<w::FiatLine> {
 /// digit count) so anonymous mode can't leak the balance magnitude.
 const CENSOR_DOT_COUNT: usize = 5;
 
+/// The fixed dot string a censored name renders as (activity rows and the Recent
+/// strip). A constant width, never derived from the real name, so its length
+/// can't hint at who the counterparty is.
+const CENSOR_NAME_DOTS: &str = "••••••";
+
 /// The anonymous-mode censor for a money value: always [`CENSOR_DOT_COUNT`]
 /// dots, deliberately ignoring the real amount so its magnitude never leaks.
 /// `spaced` widens the dots for the balance hero; activity amounts pass false.
@@ -8865,7 +8891,10 @@ fn fit_news_title_pt(ui: &egui::Ui, text: &str, avail: f32) -> f32 {
 
 #[cfg(test)]
 mod anon_censor_tests {
-	use super::{CENSOR_DOT_COUNT, SettingsPage, Tab, censored_amount_dots, settings_page_after};
+	use super::{
+		CENSOR_DOT_COUNT, CENSOR_NAME_DOTS, SettingsPage, Tab, censored_amount_dots,
+		settings_page_after,
+	};
 
 	/// The censored money display must be a fixed number of dots that never
 	/// reflects the real amount — otherwise anonymous mode leaks the magnitude
@@ -8884,6 +8913,21 @@ mod anon_censor_tests {
 				"censor must always show exactly {CENSOR_DOT_COUNT} dots"
 			);
 		}
+	}
+
+	/// The censored name is a fixed run of dots, never empty and containing no
+	/// alphanumerics, so a dotted name on the activity feed or the Recent strip
+	/// can't leak any characters of who the counterparty is.
+	#[test]
+	fn censored_name_is_fixed_dots_only() {
+		assert!(
+			!CENSOR_NAME_DOTS.is_empty(),
+			"censored name must not be blank"
+		);
+		assert!(
+			CENSOR_NAME_DOTS.chars().all(|c| c == '•'),
+			"censored name must be dots only, no leaked characters"
+		);
 	}
 
 	/// Leaving the Settings tab resets the sub-page to the root, so re-entering
