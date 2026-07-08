@@ -2009,19 +2009,10 @@ impl GoblinWalletView {
 					.tint(t.text)
 					.fit_to_exact_size(Vec2::splat(40.0)),
 			);
-			// Right cluster: scan QR (black, no background) then the profile
-			// picture at the far right; all three controls about the same size.
+			// Right cluster: scan-QR glyph (black, no background). The
+			// tap-to-Settings profile avatar that used to sit at the far right
+			// was removed per owner request; Settings stays on the nav bar.
 			ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-				// The user's own avatar (opens settings). Mode-aware: the flat
-				// yellow + Grin mark tile only in anonymous mode, otherwise this
-				// identity's normal gradient/picture.
-				if self
-					.avatar_self(ui, wallet, 40.0)
-					.on_hover_cursor(egui::CursorIcon::PointingHand)
-					.clicked()
-				{
-					self.tab = Tab::Me;
-				}
 				ui.add_space(12.0);
 				let (rect, resp) = ui.allocate_exact_size(Vec2::splat(44.0), Sense::click());
 				ui.painter().text(
