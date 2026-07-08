@@ -21,7 +21,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 /// The locales shipped alongside English.
-const OTHER_LOCALES: &[&str] = &["de", "fr", "ru", "tr", "zh-CN", "es", "ko", "ja"];
+const OTHER_LOCALES: &[&str] = &["de", "fr", "ru", "tr", "zh-CN", "zh-TW", "es", "ko", "ja"];
 
 /// Flatten a YAML mapping into dotted leaf keys → string value.
 fn flatten(value: &serde_yaml::Value, prefix: &str, out: &mut BTreeMap<String, String>) {
