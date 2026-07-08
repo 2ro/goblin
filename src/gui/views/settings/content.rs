@@ -108,5 +108,9 @@ impl SettingsContent {
 			}
 		});
 		ui.add_space(8.0);
+
+		// Clear the Android navigation/gesture bar so the last button is not
+		// clipped or overlaid by the gesture pill. Zero on desktop.
+		ui.add_space(View::get_bottom_inset());
 	}
 }
