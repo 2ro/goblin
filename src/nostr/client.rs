@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Per-wallet nostr service: relay connections over the Nym mixnet,
+//! Per-wallet nostr service: relay connections over Tor,
 //! identity event publishing, the guarded ingest loop and the DM send path.
 
 use grin_core::core::amount_to_hr_string;
@@ -95,10 +95,10 @@ const RESEND_WINDOW_SECS: i64 = 7 * 86_400;
 /// a released or reassigned name stops being shown. Doubles as the freshness
 /// gate in `resolve_contact_identity`. Tuned for release/name-change detection
 /// freshness, not liveness — a name rarely changes, so 6h is ample and keeps the
-/// mixnet re-verify traffic off the interactive path.
+/// Tor re-verify traffic off the interactive path.
 const NAME_REVERIFY_INTERVAL_SECS: i64 = 6 * 3600;
 /// Cap on contacts re-verified per sweep, so a large contact list rolls through
-/// instead of bursting dozens of simultaneous mixnet lookups at once.
+/// instead of bursting dozens of simultaneous Tor lookups at once.
 const NAME_REVERIFY_MAX_PER_TICK: usize = 8;
 
 /// One held identity live in memory: its decrypted keys (for unwrapping incoming
@@ -137,7 +137,7 @@ pub struct NostrService {
 	client: RwLock<Option<Client>>,
 	/// Handle to the service's tokio runtime. One-shot fetches (e.g. profile
 	/// lookups) from worker threads MUST run here, not on a throwaway runtime:
-	/// the relay connections (incl. the custom Nym mixnet transport) are driven
+	/// the relay connections (all driven over Tor) are driven
 	/// by this runtime, and a foreign runtime can't reach them.
 	rt_handle: RwLock<Option<tokio::runtime::Handle>>,
 	/// Service thread started flag.
@@ -473,8 +473,8 @@ impl NostrService {
 		let client = self.client.read().clone()?;
 		let pk = PublicKey::from_hex(hex).ok()?;
 		let hints: Vec<String> = hints.to_vec();
-		// Run on the SERVICE runtime — the relay connections (and the custom Nym
-		// mixnet transport) live there. A throwaway current-thread runtime can't
+		// Run on the SERVICE runtime — the relay connections (all driven over Tor)
+		// live there. A throwaway current-thread runtime can't
 		// drive them, which is why bare-npub profile lookups silently returned
 		// nothing even though the relay serves the kind-0 fine.
 		let handle = self.rt_handle.read().clone()?;
@@ -1284,7 +1284,7 @@ async fn run_service(svc: Arc<NostrService>, wallet: Wallet) {
 		svc.npub(),
 		relays
 	);
-	// (No DNS prewarm here: unlike the old mixnet path, arti resolves relay and
+	// (No DNS prewarm here: arti resolves relay and
 	// HTTP hostnames internally as part of the circuit dial — there is no
 	// separate in-tunnel DoT round trip to warm. The node host was never on this
 	// path and still isn't — it never rides the private transport.)
@@ -1304,7 +1304,7 @@ async fn run_service(svc: Arc<NostrService>, wallet: Wallet) {
 		*w_client = Some(client.clone());
 	}
 
-	// Log when the first relay reaches Connected over the mixnet, measured from
+	// Log when the first relay reaches Connected over Tor, measured from
 	// the connect() call. Non-blocking; exits on first success.
 	{
 		let client_probe = client.clone();
@@ -1331,10 +1331,10 @@ async fn run_service(svc: Arc<NostrService>, wallet: Wallet) {
 					// over, a relay DROP wouldn't flip the flag back for up to ~30s
 					// (until the post-catch-up re-check re-syncs it to reality) — the
 					// same-order staleness as the old pessimistic gap, just optimistic
-					// instead. The transport watchdog (nymproc) still tracks real exit
+					// instead. The relay-gated readiness signal still tracks real relay
 					// health independently of this UI flag.
 					svc_probe.connected.store(true, Ordering::Relaxed);
-					// FAST relay-live report: closes nymproc's relay-readiness
+					// FAST relay-live report: closes the relay-readiness
 					// window as soon as the exit is proven to carry relay traffic,
 					// independent of the up-to-30s catch-up fetch below (a slow
 					// catch-up must not get a good exit wrongly condemned).
@@ -1446,9 +1446,9 @@ async fn run_service(svc: Arc<NostrService>, wallet: Wallet) {
 	// a relay is typically already up.
 	let connected = relays_connected(&client).await;
 	svc.connected.store(connected, Ordering::Relaxed);
-	// Feed the relay-gated readiness signal so "Connected over Nym" reflects an
+	// Feed the relay-gated readiness signal so "Connected over Tor" reflects an
 	// actual connected+subscribed relay on THIS tunnel generation, not merely a
-	// warm tunnel — and so nymproc's relay-readiness window closes successfully.
+	// warm tunnel — and so the relay-readiness window closes successfully.
 	if connected {
 		crate::tor::report_relay_live(dial_gen);
 	}
@@ -1457,8 +1457,8 @@ async fn run_service(svc: Arc<NostrService>, wallet: Wallet) {
 	// Poll connection state on a SHORT, INDEPENDENT interval. This used to live in
 	// the `select!` behind a `sleep(30s)` that restarted on every notification, so
 	// the flag could lag the real relay state by 30s+ (or, under steady event
-	// flow, never update) — that's the "stuck on Connecting…" the mixnet gets
-	// blamed for, even though a relay handshake over Nym takes ~2s. An `interval`
+	// flow, never update) — that's the "stuck on Connecting…" Tor gets
+	// blamed for, even though a relay handshake over Tor takes ~2s. An `interval`
 	// fires on its own schedule regardless of notifications; the heavier heartbeat
 	// work (persisting last-seen, TTL pruning) stays on a ~30s cadence.
 	let mut status_tick = tokio::time::interval(Duration::from_secs(2));
@@ -1513,7 +1513,7 @@ async fn run_service(svc: Arc<NostrService>, wallet: Wallet) {
 				let connected = relays_connected(&client).await;
 				svc.connected.store(connected, Ordering::Relaxed);
 				// Relay-gated readiness + exit-health feedback for THIS generation:
-				// a live relay closes/keeps-open nymproc's readiness window; all
+				// a live relay closes/keeps-open the readiness window; all
 				// relays down for too long condemns the exit and reselects.
 				if connected {
 					crate::tor::report_relay_live(dial_gen);
@@ -1531,8 +1531,8 @@ async fn run_service(svc: Arc<NostrService>, wallet: Wallet) {
 				}
 				// Re-validate cached @usernames so a released/reassigned name
 				// stops showing. Only the stalest few per sweep (capped) to bound
-				// mixnet lookups; each worker re-checks against the identity server.
-				// Skipped while the app is backgrounded — no point spending mixnet
+				// Tor lookups; each worker re-checks against the identity server.
+				// Skipped while the app is backgrounded — no point spending Tor
 				// round-trips when nobody's looking. We DON'T advance last_name_sweep
 				// in that case, so the very next foreground tick runs the sweep
 				// immediately to catch up on resume.
@@ -1597,7 +1597,7 @@ async fn connect_relays(client: &Client, urls: &[String]) {
 		let url = url.clone();
 		async move {
 			let _ = client.add_relay(&url).await;
-			// Short cap: a reachable relay connects in ~2-4s over the mixnet; we
+			// Short cap: a reachable relay connects in ~2-4s over Tor; we
 			// don't want one dead relay in the list to stall the whole send. Once
 			// connected it stays connected, so only the first send pays this.
 			let _ = client.try_connect_relay(&url, Duration::from_secs(6)).await;
@@ -1763,7 +1763,7 @@ async fn publish_identity(svc: &Arc<NostrService>, client: &Client) {
 	}
 
 	// Discovery fan-out off the caller's path: each indexer is gated by the
-	// lazy NIP-11 probe (over Nym) before use.
+	// lazy NIP-11 probe (over Tor) before use.
 	let client = client.clone();
 	tokio::spawn(async move {
 		let targets: Vec<String> = crate::nostr::pool::usable_discovery_relays()

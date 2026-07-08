@@ -110,14 +110,6 @@ pub struct AppConfig {
 	/// (dots until tapped to reveal). Presentation-only, no money-path or
 	/// storage effect. Default false.
 	anonymous_mode: Option<bool>,
-
-	/// Last-known-good Nym ENTRY gateway (base58 identity). Only the gateway
-	/// CHOICE is remembered — the mixnet keys stay ephemeral — so a warm reconnect
-	/// can skip re-picking a (possibly dead) random first hop.
-	nym_entry_gateway: Option<String>,
-	/// Last-known-good Nym IPR exit recipient (the `<id>.<enc>@<gw>` string), so a
-	/// warm reconnect can try the exit that worked last time before auto-selecting.
-	nym_last_ipr: Option<String>,
 }
 
 /// What the amount preview is paired to: nothing, a fiat currency, or bitcoin.
@@ -226,15 +218,13 @@ impl Default for AppConfig {
 			// On by default, like upstream Grim: checks Goblin's own GitHub
 			// releases direct over HTTPS (see http/release.rs). This is the same
 			// non-sensitive-metadata-over-clearnet posture Grim uses for its
-			// update check — payments, relays and identity still stay mixnet-only.
+			// update check — payments, relays and identity still egress over Tor.
 			check_updates: Some(true),
 			app_update: None,
 			hide_amounts: None,
 			notif_hide_names: None,
 			notif_hide_details: None,
 			anonymous_mode: None,
-			nym_entry_gateway: None,
-			nym_last_ipr: None,
 		}
 	}
 }
@@ -515,32 +505,6 @@ impl AppConfig {
 	pub fn set_last_wallet_id(id: Option<i64>) {
 		let mut w_config = Settings::app_config_to_update();
 		w_config.last_wallet_id = id;
-		w_config.save();
-	}
-
-	/// Get the last-known-good Nym ENTRY gateway (base58 identity), if any.
-	pub fn nym_entry_gateway() -> Option<String> {
-		let r_config = Settings::app_config_to_read();
-		r_config.nym_entry_gateway.clone()
-	}
-
-	/// Save (or clear) the last-known-good Nym ENTRY gateway.
-	pub fn set_nym_entry_gateway(gw: Option<String>) {
-		let mut w_config = Settings::app_config_to_update();
-		w_config.nym_entry_gateway = gw;
-		w_config.save();
-	}
-
-	/// Get the last-known-good Nym IPR exit recipient string, if any.
-	pub fn nym_last_ipr() -> Option<String> {
-		let r_config = Settings::app_config_to_read();
-		r_config.nym_last_ipr.clone()
-	}
-
-	/// Save (or clear) the last-known-good Nym IPR exit recipient string.
-	pub fn set_nym_last_ipr(ipr: Option<String>) {
-		let mut w_config = Settings::app_config_to_update();
-		w_config.nym_last_ipr = ipr;
 		w_config.save();
 	}
 

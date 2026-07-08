@@ -21,9 +21,8 @@
 //! could pin a per-relay `.onion` for a direct onion-circuit money path; that was
 //! dropped in build134 — onion services flapped — in favour of Tor-exit only.)
 //!
-//! This replaces the Nym-mixnet transport (`crate::nym`, left dormant): Tor is
-//! free, unmetered, has no token or grant to expire, and GRIM has already proven
-//! the whole embedded path on desktop and Android.
+//! Tor is free, unmetered, has no token or grant to expire, and GRIM has already
+//! proven the whole embedded path on desktop and Android.
 //!
 //! The Grin blockchain node is NOT routed here — it stays on the clear internet
 //! exactly as before; it never sees who pays whom.

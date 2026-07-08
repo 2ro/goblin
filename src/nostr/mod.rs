@@ -14,7 +14,7 @@
 
 //! Nostr payment-messaging subsystem: contacts are nostr users, slatepacks
 //! travel as NIP-17 private DMs (NIP-44 encrypted, NIP-59 gift-wrapped) over
-//! relays reached through the in-process Nym mixnet client.
+//! relays reached through the embedded Tor client.
 
 mod types;
 pub use types::*;

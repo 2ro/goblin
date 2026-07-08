@@ -124,7 +124,7 @@ pub struct Wallet {
 	syncing: Arc<AtomicBool>,
 	/// On-demand node polling (Android battery): pause the heavy node sync at
 	/// sync thread while the app is backgrounded and nothing is in flight.
-	/// The relay+Nym nostr service keeps running regardless of this flag.
+	/// The relay+Tor nostr service keeps running regardless of this flag.
 	node_polling_paused: Arc<AtomicBool>,
 	/// Resume-signal counter closing the receipt-vs-pause race: bumped by
 	/// [`Wallet::resume_node_polling`]; the sync thread only pauses when no
@@ -439,7 +439,7 @@ impl Wallet {
 					// iteration (wallet.rs, top of the loop); if the thread races
 					// ahead of this, that first iteration finds no service, skips
 					// it, and the service doesn't start until the NEXT cycle — a
-					// full SYNC_DELAY (60s) later. That 60s gap (not the mixnet,
+					// full SYNC_DELAY (60s) later. That 60s gap (not Tor,
 					// which connects a relay in ~2s) is the "stuck on Connecting…
 					// for a minute" symptom. Synchronous + on this thread, so the
 					// service is guaranteed present when start_sync runs.
@@ -2676,7 +2676,7 @@ fn start_sync(wallet: Wallet) -> Thread {
 			// Start the nostr payment-messaging service the moment the wallet is
 			// open — BEFORE (and independent of) the grin node sync. Previously
 			// this lived deep in the sync body behind `!sync_error` and the node
-			// checks, so the Nym/relay connection could wait up to a full
+			// checks, so the Tor/relay connection could wait up to a full
 			// SYNC_DELAY (60s) — or never start while the node errored — leaving
 			// the profile stuck on "Connecting…". Idempotent.
 			if let Some(service) = wallet.nostr_service() {
@@ -2733,7 +2733,7 @@ fn start_sync(wallet: Wallet) -> Thread {
 
 				// On-demand node polling (Android battery): while the app is
 				// backgrounded and no transaction is waiting on the node, skip
-				// the heavy node sync. The relay+Nym nostr service started
+				// the heavy node sync. The relay+Tor nostr service started
 				// above keeps running and listening for gift wraps regardless;
 				// a slatepack receipt resumes polling instantly (see
 				// `resume_node_polling`). Foreground always polls.

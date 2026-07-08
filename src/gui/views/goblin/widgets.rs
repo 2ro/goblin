@@ -801,7 +801,7 @@ pub fn info_row(ui: &mut Ui, label: &str, value: &str) {
 				.color(t.text_dim),
 		);
 		ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-			// Truncate so a long value (e.g. "Encrypted nostr DM over Nym") never
+			// Truncate so a long value (e.g. "Encrypted nostr DM over Tor") never
 			// runs past the edge or collides with the label on a narrow screen.
 			ui.add(
 				egui::Label::new(

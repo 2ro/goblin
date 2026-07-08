@@ -1596,14 +1596,14 @@ impl GoblinWalletView {
 												.color(t.surface_text),
 										);
 										ui.label(
-											// Relay-gated: "Connected over Nym" only once a
+											// Relay-gated: "Connected over Tor" only once a
 											// relay is live on the current tunnel generation.
 											RichText::new(if crate::tor::transport_ready() {
-												t!("goblin.home.connected_nym")
+												t!("goblin.home.connected_tor")
 											} else if crate::tor::is_ready() {
-												t!("goblin.home.nym_ready")
+												t!("goblin.home.tor_ready")
 											} else {
-												t!("goblin.home.connecting_nym")
+												t!("goblin.home.connecting_tor")
 											})
 											.font(FontId::new(11.0, fonts::regular()))
 											.color(t.surface_text_mute),
@@ -3454,23 +3454,23 @@ impl GoblinWalletView {
 						}
 					});
 					// Transport status in place of the redundant second npub line.
-					// "Connected over Nym" is RELAY-GATED (transport_ready): the
+					// "Connected over Tor" is RELAY-GATED (transport_ready): the
 					// tunnel being warm is not enough — a relay must actually carry
 					// our traffic on the current exit. Otherwise show the tunnel is
 					// up but relays are still connecting/reconnecting.
-					let mixnet = if crate::tor::transport_ready() {
-						t!("goblin.home.connected_nym")
+					let transport = if crate::tor::transport_ready() {
+						t!("goblin.home.connected_tor")
 					} else if crate::tor::is_ready() {
-						t!("goblin.home.nym_ready")
+						t!("goblin.home.tor_ready")
 					} else {
-						t!("goblin.home.connecting_nym")
+						t!("goblin.home.connecting_tor")
 					};
 					ui.label(
-						RichText::new(mixnet)
+						RichText::new(transport)
 							.font(FontId::new(13.0, fonts::regular()))
 							.color(t.surface_text_dim),
 					);
-					// nostr relay status — the slower step (a relay reached over Nym).
+					// nostr relay status — the slower step (a relay reached over Tor).
 					let nostr = if connected {
 						t!("goblin.settings.connected_nostr")
 					} else {
@@ -3710,13 +3710,13 @@ impl GoblinWalletView {
 				let mut open_privacy = false;
 				let mut open_adv_privacy = false;
 				settings_group(ui, &t!("goblin.settings.privacy"), |ui| {
-					// Messages, names, price and avatars ride the mixnet; the grin
+					// Messages, names, price and avatars ride Tor; the grin
 					// node connects directly. Normal dim value ink: the salmon
 					// privacy color doubled as the destructive-action color on
 					// this page, making a plain navigable row read as a warning.
 					if settings_row_nav(
 						ui,
-						&t!("goblin.settings.mixnet_routing"),
+						&t!("goblin.settings.tor_routing"),
 						&t!("goblin.settings.messages_lookups"),
 					) {
 						open_privacy = true;
@@ -4021,7 +4021,7 @@ impl GoblinWalletView {
 			});
 	}
 
-	/// Network-privacy breakdown: what rides the Nym mixnet versus what connects
+	/// Network-privacy breakdown: what rides Tor versus what connects
 	/// directly. Honest by design — no claim that node traffic is mixed, and no
 	/// toggle to route it (chain sync is heavy and not tied to your identity).
 	fn privacy_ui(&mut self, ui: &mut egui::Ui) {
@@ -4041,7 +4041,7 @@ impl GoblinWalletView {
 						.color(t.text_dim),
 				);
 				ui.add_space(16.0);
-				let mixnet = [
+				let transport = [
 					(
 						t!("goblin.privacy.payments"),
 						t!("goblin.privacy.payments_blurb"),
@@ -4055,8 +4055,8 @@ impl GoblinWalletView {
 						t!("goblin.privacy.price_avatars_blurb"),
 					),
 				];
-				settings_group(ui, &t!("goblin.privacy.over_mixnet"), |ui| {
-					for (title, blurb) in &mixnet {
+				settings_group(ui, &t!("goblin.privacy.over_tor"), |ui| {
+					for (title, blurb) in &transport {
 						privacy_line(ui, t.neg, title, blurb);
 					}
 				});
@@ -8021,7 +8021,7 @@ fn settings_row(ui: &mut egui::Ui, label: &str, value: &str) {
 }
 
 /// Like [`settings_row`] but the value is drawn in an explicit ink — used to flag
-/// the always-on mixnet routing in the privacy color.
+/// the always-on Tor routing in the privacy color.
 fn settings_row_ink(ui: &mut egui::Ui, label: &str, value: &str, value_ink: Color32) {
 	let t = theme::tokens();
 	ui.horizontal(|ui| {

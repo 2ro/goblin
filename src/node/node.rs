@@ -724,7 +724,7 @@ pub extern "C" fn Java_mw_gri_android_BackgroundService_getSyncStatusText(
 	// The keep-alive notification must reflect the real connection: on the
 	// external-node default the integrated node is deliberately off, so "Node
 	// is down" is wrong — the service's actual background job is the
-	// Nostr-over-Nym payment listen.
+	// Nostr-over-Tor payment listen.
 	let status_text = if Node::is_running() || Node::is_starting() {
 		Node::get_sync_status_text()
 	} else {

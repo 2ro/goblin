@@ -995,12 +995,12 @@ impl OnboardingContent {
 						);
 					}
 					ui.label(
-						// Relay-gated readiness: "connected over Nym" only once a
+						// Relay-gated readiness: "connected over Tor" only once a
 						// relay is actually live, not merely when the tunnel is warm.
 						RichText::new(if crate::tor::transport_ready() {
-							t!("goblin.onboarding.identity.connected_nym")
+							t!("goblin.onboarding.identity.connected_tor")
 						} else {
-							t!("goblin.onboarding.identity.connecting_nym")
+							t!("goblin.onboarding.identity.connecting_tor")
 						})
 						.font(FontId::new(12.0, fonts::regular()))
 						.color(t.surface_text_mute),

@@ -78,7 +78,7 @@ public class BackgroundService extends Service {
                     if (Build.VERSION.SDK_INT > 25) {
                         startStopIntent.putExtra(EXTRA_NOTIFICATION_ID, NOTIFICATION_ID);
                     }
-                    // Goblin's background job is the light Nostr-over-Nym payment
+                    // Goblin's background job is the light Nostr-over-Tor payment
                     // listen (the "Listening for payments" status); the heavy
                     // integrated node is never STARTED from this notification --
                     // Goblin defaults to an external node, so the GRIM "Enable"

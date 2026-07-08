@@ -38,12 +38,6 @@ mod http;
 pub mod logger;
 mod node;
 pub mod nostr;
-/// The old Nym-mixnet transport, DORMANT since the Tor swap. Retained on disk but
-/// only compiled with `--features nym` (its nym-sdk deps link a different
-/// libsqlite3-sys than arti and cannot coexist with Tor in one binary). Deletion
-/// is a later phase.
-#[cfg(feature = "nym")]
-pub mod nym;
 mod settings;
 pub mod tor;
 mod wallet;
@@ -117,11 +111,10 @@ where
 
 /// Entry point to start ui with [`eframe`].
 pub fn start(options: NativeOptions, app_creator: eframe::AppCreator) -> eframe::Result<()> {
-	// Pin rustls to the ring provider process-wide. Linking nym-sdk brings
-	// aws-lc-rs into the graph alongside our ring; with two providers present
-	// rustls 0.23 won't auto-select a default, and tokio-tungstenite/reqwest
-	// would panic on the first TLS handshake. nym uses its own explicit provider,
-	// so this only steers our relay/HTTP TLS. Idempotent (Err if already set).
+	// Pin rustls to the ring provider process-wide so our relay/HTTP TLS
+	// (tokio-tungstenite, tokio-rustls) selects a crypto provider deterministically
+	// rather than relying on rustls 0.23's auto-detection. Idempotent (Err if
+	// already set).
 	let _ = rustls::crypto::ring::default_provider().install_default();
 	// Pre-warm the embedded Tor client FIRST, before i18n/node setup, so the Tor
 	// bootstrap (the long pole on cold start) overlaps everything else and
@@ -537,7 +530,7 @@ pub fn mark_frame() {
 /// True when the GUI drew a frame within the last few seconds — i.e. the app is
 /// foreground and visible. While backgrounded (no frames), returns false, so
 /// periodic background work (the @name re-verify sweep) can pause and catch up
-/// on resume instead of burning mixnet round-trips while nobody's looking.
+/// on resume instead of burning Tor round-trips while nobody's looking.
 pub fn app_foreground() -> bool {
 	let last = LAST_FRAME_AT.load(std::sync::atomic::Ordering::Relaxed);
 	last != 0 && now_unix_secs() - last <= FOREGROUND_STALE_SECS

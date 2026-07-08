@@ -21,8 +21,9 @@
 //!
 //! Two technical choices are inherited VERBATIM from GRIM because it already paid
 //! for them: **arti 0.43** across the arti family, and the **native-tls Tor
-//! runtime** ([`TokioNativeTlsRuntime`]) — deliberately NOT rustls, to sidestep
-//! the rustls/ring crypto-provider conflict Goblin fought during the Nym era.
+//! runtime** ([`TokioNativeTlsRuntime`]) — deliberately NOT rustls, so arti's TLS
+//! stays on native-tls and never touches the rustls/ring provider our relay and
+//! HTTP TLS install.
 //!
 //! The arti client runs on its OWN dedicated tokio runtime (created once, kept
 //! alive for the process). `TorClient::connect()` returns a [`DataStream`] that
@@ -79,7 +80,7 @@ impl Tor {
 	}
 }
 
-// --- Readiness signals (re-pointed from `nym::nymproc`, same semantics) -------
+// --- Readiness signals ---------------------------------------------------------
 
 /// Set once arti has bootstrapped (mirrors `TUNNEL_GEN != 0`); cheap to poll.
 static READY: AtomicBool = AtomicBool::new(false);
@@ -87,7 +88,7 @@ static READY: AtomicBool = AtomicBool::new(false);
 /// Monotonic "transport generation". With Tor there is no exit-reselect churn —
 /// arti rebuilds circuits transparently under the `DataStream` — so this simply
 /// becomes 1 once bootstrapped and stays there. The relay-gated readiness logic
-/// (copied from nym) still works: a relay-liveness report tagged with an older
+/// still works this way: a relay-liveness report tagged with an older
 /// generation can never mark a newer transport ready.
 static TUNNEL_GEN: AtomicU64 = AtomicU64::new(0);
 
@@ -96,9 +97,8 @@ static TUNNEL_GEN: AtomicU64 = AtomicU64::new(0);
 /// can compare it to `TUNNEL_GEN` in one shot.
 static RELAY_LIVE_GEN: AtomicU64 = AtomicU64::new(0);
 
-/// Whether a nostr consumer currently wants relays over Tor. Kept for API parity
-/// with the nym transport (the UI/service bracket it); Tor needs no exit-health
-/// governance, so it is otherwise inert.
+/// Whether a nostr consumer currently wants relays over Tor. The UI/service
+/// bracket it; Tor needs no exit-health governance, so it is otherwise inert.
 static RELAY_CONSUMER: AtomicBool = AtomicBool::new(false);
 
 /// Pre-warm the embedded Tor client in the background so relays / NIP-05 / price
@@ -152,16 +152,15 @@ pub fn report_relay_down(generation: u64) {
 	let _ = RELAY_LIVE_GEN.compare_exchange(generation, 0, Ordering::AcqRel, Ordering::Acquire);
 }
 
-/// Bracket a nostr consumer's lifetime (API parity with the nym transport). Inert
-/// for Tor — arti manages its own circuit health — but kept so the service's
-/// existing calls compile unchanged.
+/// Bracket a nostr consumer's lifetime. Inert for Tor — arti manages its own
+/// circuit health — but kept so the service's existing calls compile unchanged.
 pub fn set_relay_consumer(active: bool) {
 	RELAY_CONSUMER.store(active, Ordering::Release);
 }
 
-/// External condemnation request (API parity with the nym transport). Under Tor
-/// there is no exit to abandon — arti rebuilds circuits itself — so this is a
-/// logged no-op rather than triggering a reselect.
+/// External condemnation request (kept for API parity with earlier transports).
+/// Under Tor there is no exit to abandon — arti rebuilds circuits itself — so this
+/// is a logged no-op rather than triggering a reselect.
 pub fn condemn_exit(generation: u64) {
 	if generation != 0 {
 		warn!("tor: condemn_exit(gen {generation}) is a no-op (arti rebuilds circuits itself)");
@@ -275,8 +274,8 @@ fn bootstrap_once() {
 		"tor: bootstrapped and ready in {}ms (gen 1)",
 		started.elapsed().as_millis()
 	);
-	// Eager price fetch the moment Tor is ready (mirrors what the old mixnet
-	// bootstrap did): prefetch the pairing's rate so the amount preview has a live
-	// value by first use. One-shot — bootstrap_once only reaches here once.
+	// Eager price fetch the moment Tor is ready: prefetch the pairing's rate so the
+	// amount preview has a live value by first use. One-shot — bootstrap_once only
+	// reaches here once.
 	std::thread::spawn(crate::http::price::eager_refresh);
 }

@@ -13,9 +13,9 @@
 // limitations under the License.
 
 //! Relay candidate pool: a maintained list of vetted public relays fetched
-//! from the project gist over the Nym mixnet, cached on disk, with a pinned
+//! from the project gist over Tor, cached on disk, with a pinned
 //! copy compiled in for first-run/offline. Pool relays are gated LAZILY: a
-//! NIP-11 probe (also over Nym) runs only right before a relay is actually
+//! NIP-11 probe (also over Tor) runs only right before a relay is actually
 //! used — no background sweeps.
 
 use lazy_static::lazy_static;
@@ -45,7 +45,7 @@ const CACHE_MAX_AGE_SECS: u64 = 7 * 86_400;
 /// NIP-11 probe results are reused for this long (24 h, in memory).
 const PROBE_TTL_SECS: i64 = 24 * 3600;
 
-/// Per-probe cap: a dead relay must not stall the caller for the full mixnet
+/// Per-probe cap: a dead relay must not stall the caller for the full Tor
 /// HTTP timeout — a failed probe just skips the relay this time.
 const PROBE_TIMEOUT: Duration = Duration::from_secs(12);
 
@@ -82,16 +82,11 @@ pub struct PoolRelay {
 	/// Last-vetted date; presence marks the entry as vetted.
 	#[serde(default)]
 	pub vetted: Option<String>,
-	/// This relay operator's CO-LOCATED Nym exit address, when they run one (the
-	/// bundled floonet-rs / floonet-strfry `exit = true` feature). It is a Nym
-	/// `Recipient` (`<client>.<enc>@<gateway>`) for a SCOPED MixnetStream proxy
-	/// that forwards ONLY to this relay — so the wallet can reach the relay over
-	/// the mixnet WITHOUT public DNS and WITHOUT depending on a public IPR exit
-	/// (the anchor; see [`crate::nym::nymproc`]). Absent → this relay is reached
-	/// the old way (public-IPR smolmix + in-tunnel DoT). Carried in the pinned
-	/// pool so the money-path default relay's exit bootstraps OFFLINE, before any
-	/// network — breaking the chicken-and-egg of learning it over the very path
-	/// it is meant to replace.
+	/// Reserved pool-schema slot for a per-relay co-located exit address the
+	/// operator may advertise. The current Tor build does NOT consume it — every
+	/// relay is reached over a Tor exit to its clearnet host — but the field is
+	/// kept so a pool document that carries one still parses and the lookup
+	/// helpers below stay available. Absent for every relay in the pinned pool.
 	#[serde(default)]
 	pub exit: Option<String>,
 }
@@ -141,10 +136,9 @@ impl RelayPool {
 			.collect()
 	}
 
-	/// The operator's co-located Nym exit address for `url`, if the pool
-	/// advertises one (url compared modulo a trailing slash). `None` → reach the
-	/// relay over the public-IPR path as before. This is how the wallet learns
-	/// the anchor exit for its money-path relay (see [`PoolRelay::exit`]).
+	/// The operator's co-located exit address for `url`, if the pool advertises
+	/// one (url compared modulo a trailing slash). `None` → no advertised exit.
+	/// See [`PoolRelay::exit`] (unused by the current Tor build).
 	pub fn exit_for(&self, url: &str) -> Option<String> {
 		let want = url.trim_end_matches('/');
 		self.relays
@@ -154,10 +148,9 @@ impl RelayPool {
 			.filter(|e| !e.trim().is_empty())
 	}
 
-	/// Like [`Self::exit_for`], but keyed on the HOSTNAME — the HTTP dial site
-	/// ([`crate::nym::request_once`]) knows only `host`, never the relay's ws
-	/// URL. HTTPS to a host whose relay advertises a co-located exit (its
-	/// NIP-11 probe, in practice) rides that exit too.
+	/// Like [`Self::exit_for`], but keyed on the HOSTNAME rather than the ws URL,
+	/// for callers that know only `host`. Returns the advertised exit for a host
+	/// whose relay carries one, if any.
 	pub fn exit_for_host(&self, host: &str) -> Option<String> {
 		self.relays
 			.iter()
@@ -171,10 +164,8 @@ impl RelayPool {
 			.filter(|e| !e.trim().is_empty())
 	}
 
-	/// Whether ANY relay in the pool advertises a co-located exit. The cold-start
-	/// sequencer ([`crate::nym::nymproc`]) reads this to decide whether to give
-	/// the scoped-exit client its bandwidth-grant head start before building the
-	/// public-IPR tunnel — no exit anywhere → no wait, unchanged behavior.
+	/// Whether ANY relay in the pool advertises a co-located exit. Unused by the
+	/// current Tor build; retained for pool documents that still carry the field.
 	pub fn has_exit(&self) -> bool {
 		self.relays
 			.iter()
@@ -196,9 +187,9 @@ pub fn load() -> RelayPool {
 		.unwrap_or_else(|| RelayPool::parse(PINNED_POOL).expect("pinned pool parses"))
 }
 
-/// Refresh the disk cache from the gist — over the Nym mixnet, like all other
+/// Refresh the disk cache from the gist — over Tor, like all other
 /// HTTP — when it is absent or older than 7 days. At most one attempt per app
-/// run; call only once the Nym tunnel is up.
+/// run; call only once Tor is up.
 pub async fn refresh_if_stale() {
 	static TRIED: AtomicBool = AtomicBool::new(false);
 	if TRIED.swap(true, Ordering::SeqCst) {
@@ -265,7 +256,7 @@ fn nip11_pass(doc: &serde_json::Value, min_len: u64) -> bool {
 			.unwrap_or(true)
 }
 
-/// Lazy per-use probe: fetch the relay's NIP-11 document (HTTP over Nym,
+/// Lazy per-use probe: fetch the relay's NIP-11 document (HTTP over Tor,
 /// `Accept: application/nostr+json`) and apply the gate. Results are cached
 /// for 24 h; an unreachable or unparseable document fails, which just skips
 /// the relay this time.
@@ -301,7 +292,7 @@ pub async fn probe(url: &str) -> bool {
 /// The pool's "discovery" relays that pass the lazy NIP-11 gate right now.
 pub async fn usable_discovery_relays() -> Vec<String> {
 	// Probe every candidate CONCURRENTLY (each is a NIP-11 HTTP round trip over
-	// the mixnet — sequentially this cost ~N × a full round trip). The PROBES
+	// Tor — sequentially this cost ~N × a full round trip). The PROBES
 	// cache is RwLock-safe under concurrent access. Zip the pass/fail results back
 	// to the urls and keep the passing ones in the original pool order.
 	let urls = load().discovery_relays();
@@ -375,10 +366,10 @@ mod tests {
 
 	#[test]
 	fn exit_field_is_optional_and_looked_up_by_url() {
-		// The pinned pool no longer carries any co-located Nym exit — every relay
-		// is reached over the Tor exit now — so has_exit() is false for it. The
+		// The pinned pool carries no co-located exit — every relay
+		// is reached over a Tor exit to its clearnet host — so has_exit() is false. The
 		// exit_for / exit_for_host LOOKUP logic below still works for a pool that
-		// DOES advertise one, and the (dormant) src/nym transport still reads it.
+		// DOES advertise one.
 		let pinned = RelayPool::parse(PINNED_POOL).unwrap();
 		assert!(!pinned.has_exit());
 		assert!(pinned.exit_for("wss://relay.floonet.dev").is_none());
