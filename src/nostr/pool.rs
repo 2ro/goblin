@@ -82,13 +82,6 @@ pub struct PoolRelay {
 	/// Last-vetted date; presence marks the entry as vetted.
 	#[serde(default)]
 	pub vetted: Option<String>,
-	/// Reserved pool-schema slot for a per-relay co-located exit address the
-	/// operator may advertise. The current Tor build does NOT consume it — every
-	/// relay is reached over a Tor exit to its clearnet host — but the field is
-	/// kept so a pool document that carries one still parses and the lookup
-	/// helpers below stay available. Absent for every relay in the pinned pool.
-	#[serde(default)]
-	pub exit: Option<String>,
 }
 
 impl PoolRelay {
@@ -134,42 +127,6 @@ impl RelayPool {
 			.filter(|r| r.has_role("discovery"))
 			.map(|r| r.url.clone())
 			.collect()
-	}
-
-	/// The operator's co-located exit address for `url`, if the pool advertises
-	/// one (url compared modulo a trailing slash). `None` → no advertised exit.
-	/// See [`PoolRelay::exit`] (unused by the current Tor build).
-	pub fn exit_for(&self, url: &str) -> Option<String> {
-		let want = url.trim_end_matches('/');
-		self.relays
-			.iter()
-			.find(|r| r.url.trim_end_matches('/') == want)
-			.and_then(|r| r.exit.clone())
-			.filter(|e| !e.trim().is_empty())
-	}
-
-	/// Like [`Self::exit_for`], but keyed on the HOSTNAME rather than the ws URL,
-	/// for callers that know only `host`. Returns the advertised exit for a host
-	/// whose relay carries one, if any.
-	pub fn exit_for_host(&self, host: &str) -> Option<String> {
-		self.relays
-			.iter()
-			.find(|r| {
-				url::Url::parse(&r.url)
-					.ok()
-					.and_then(|u| u.host_str().map(|h| h.eq_ignore_ascii_case(host)))
-					.unwrap_or(false)
-			})
-			.and_then(|r| r.exit.clone())
-			.filter(|e| !e.trim().is_empty())
-	}
-
-	/// Whether ANY relay in the pool advertises a co-located exit. Unused by the
-	/// current Tor build; retained for pool documents that still carry the field.
-	pub fn has_exit(&self) -> bool {
-		self.relays
-			.iter()
-			.any(|r| r.exit.as_deref().is_some_and(|e| !e.trim().is_empty()))
 	}
 }
 
@@ -365,50 +322,6 @@ mod tests {
 	}
 
 	#[test]
-	fn exit_field_is_optional_and_looked_up_by_url() {
-		// The pinned pool carries no co-located exit — every relay
-		// is reached over a Tor exit to its clearnet host — so has_exit() is false. The
-		// exit_for / exit_for_host LOOKUP logic below still works for a pool that
-		// DOES advertise one.
-		let pinned = RelayPool::parse(PINNED_POOL).unwrap();
-		assert!(!pinned.has_exit());
-		assert!(pinned.exit_for("wss://relay.floonet.dev").is_none());
-
-		// A pool that DOES advertise an exit for one relay.
-		let pool = RelayPool::parse(
-			r#"{"version":1,"updated":"x","min_message_length":131072,"relays":[
-			  {"url":"wss://relay.goblin.st/","roles":["dm"],"exit":"aaa.bbb@ccc"},
-			  {"url":"wss://nos.lol","roles":["dm"]},
-			  {"url":"wss://blank.example","roles":["dm"],"exit":"  "}
-			]}"#,
-		)
-		.unwrap();
-		// Trailing-slash-insensitive lookup.
-		assert_eq!(
-			pool.exit_for("wss://relay.goblin.st"),
-			Some("aaa.bbb@ccc".to_string())
-		);
-		// No exit field → None; blank exit → None (treated as unset).
-		assert!(pool.exit_for("wss://nos.lol").is_none());
-		assert!(pool.exit_for("wss://blank.example").is_none());
-		// Unknown url → None.
-		assert!(pool.exit_for("wss://unknown.example").is_none());
-
-		// Host-keyed lookup (the HTTP dial site): same answers by hostname.
-		assert_eq!(
-			pool.exit_for_host("relay.goblin.st"),
-			Some("aaa.bbb@ccc".to_string())
-		);
-		assert_eq!(
-			pool.exit_for_host("RELAY.GOBLIN.ST"),
-			Some("aaa.bbb@ccc".to_string())
-		);
-		assert!(pool.exit_for_host("nos.lol").is_none());
-		assert!(pool.exit_for_host("blank.example").is_none());
-		assert!(pool.exit_for_host("unknown.example").is_none());
-	}
-
-	#[test]
 	fn pool_validation_rejects_bad_documents() {
 		assert!(RelayPool::parse("not json").is_none());
 		assert!(RelayPool::parse("{}").is_none());
@@ -425,11 +338,12 @@ mod tests {
 			RelayPool::parse(r#"{"version":1,"updated":"x","min_message_length":1,"relays":[]}"#)
 				.is_none()
 		);
-		// Unknown fields (like the gist's "notes") are tolerated; a missing
+		// Unknown fields (the gist's "notes", or a stray per-relay "exit" left
+		// over from the retired co-located-exit schema) are tolerated; a missing
 		// "vetted" parses as unvetted.
 		let pool = RelayPool::parse(
 			r#"{"version":1,"updated":"x","notes":"n","min_message_length":131072,
-			"relays":[{"url":"wss://a","roles":["dm"]}]}"#,
+			"relays":[{"url":"wss://a","roles":["dm"],"exit":"aaa.bbb@ccc"}]}"#,
 		)
 		.unwrap();
 		assert!(pool.relays[0].vetted.is_none());
@@ -475,7 +389,6 @@ mod tests {
 			url: url.to_string(),
 			roles: vec!["dm".to_string()],
 			vetted: vetted.then(|| "2026-07-01".to_string()),
-			exit: None,
 		};
 		vec![
 			mk("wss://a.example", false),
@@ -500,7 +413,6 @@ mod tests {
 			url: "wss://relay.goblin.st".to_string(),
 			roles: vec!["dm".to_string()],
 			vetted: Some("2026-07-01".to_string()),
-			exit: None,
 		});
 		let order = weighted_order("wss://relay.goblin.st", &with_goblin, |_| 0);
 		assert_eq!(order.len(), 4);
