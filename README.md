@@ -81,3 +81,5 @@ Apache License v2.0.
 🤖 Built with AI pair-programming assistance (Claude)
 
 The underlying cross-platform GRIN wallet engine is the upstream **Grim** project.
+
+Simplified Chinese translation corrections by jasperli2026 (https://github.com/jasperli2026).
