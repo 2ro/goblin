@@ -54,6 +54,14 @@ pub struct NostrConfig {
 	/// advertised in our kind-0 profile so requesters see it before sending.
 	allow_incoming_requests: Option<bool>,
 
+	/// Whether this wallet routes its nostr relay traffic and every sensitive
+	/// HTTP call (NIP-05, price, relay pool) over Tor. Tri-state on purpose:
+	/// `Some(true)` = Tor on, `Some(false)` = clearnet, `None` (unset) resolves
+	/// to ON. `None` is what every pre-existing `nostr.toml` deserializes to, so
+	/// upgrading wallets keep Tor with no migration; new wallets write an explicit
+	/// value at onboarding (a later slice).
+	tor_enabled: Option<bool>,
+
 	/// Path of the config file, not serialized.
 	#[serde(skip)]
 	path: Option<PathBuf>,
@@ -162,5 +170,62 @@ impl NostrConfig {
 	pub fn set_allow_incoming_requests(&mut self, allow: bool) {
 		self.allow_incoming_requests = Some(allow);
 		self.save();
+	}
+
+	/// Resolved Tor routing for this wallet: `None` (unset, i.e. every legacy
+	/// `nostr.toml`) resolves to ON so upgraders keep Tor with no migration.
+	/// New wallets write an explicit value at onboarding (a later slice).
+	pub fn tor_enabled(&self) -> bool {
+		self.tor_enabled.unwrap_or(true)
+	}
+
+	/// Whether the wallet has an EXPLICIT Tor choice on disk (vs the `None`
+	/// upgrade default). Onboarding uses this to know it must still write one.
+	pub fn tor_enabled_is_set(&self) -> bool {
+		self.tor_enabled.is_some()
+	}
+
+	/// Persist an explicit Tor routing choice. Toggling this at runtime must be
+	/// followed by `NostrService::restart()` so the relay pool is rebuilt on the
+	/// newly-selected transport (see `src/nostr/client.rs::run_service`).
+	pub fn set_tor_enabled(&mut self, enabled: bool) {
+		self.tor_enabled = Some(enabled);
+		self.save();
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[test]
+	fn tor_enabled_tri_state_resolves_and_is_back_compat() {
+		// A brand-new/default config has no explicit choice and resolves to ON,
+		// so nothing about the default flips a wallet off Tor.
+		let cfg = NostrConfig::default();
+		assert!(!cfg.tor_enabled_is_set());
+		assert!(cfg.tor_enabled(), "unset must resolve to Tor ON");
+
+		// The load-bearing upgrade guarantee: an OLD nostr.toml written before
+		// this field existed deserializes with tor_enabled = None -> ON. Include
+		// an unrelated field so we exercise a realistic legacy file.
+		let legacy: NostrConfig =
+			toml::from_str("accept_from = \"Everyone\"\n").expect("legacy nostr.toml parses");
+		assert!(!legacy.tor_enabled_is_set());
+		assert!(legacy.tor_enabled(), "legacy file must keep Tor ON");
+
+		// Explicit values round-trip both ways (save() is a no-op with no path).
+		let mut cfg = NostrConfig::default();
+		cfg.set_tor_enabled(false);
+		assert!(cfg.tor_enabled_is_set());
+		assert!(!cfg.tor_enabled());
+		cfg.set_tor_enabled(true);
+		assert!(cfg.tor_enabled());
+
+		// An explicit false on disk parses back as clearnet.
+		let off: NostrConfig =
+			toml::from_str("tor_enabled = false\n").expect("explicit-off nostr.toml parses");
+		assert!(off.tor_enabled_is_set());
+		assert!(!off.tor_enabled());
 	}
 }

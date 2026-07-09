@@ -36,7 +36,7 @@ use crate::nostr::relays::MAX_DM_RELAYS;
 use crate::nostr::types::*;
 use crate::nostr::wrapv3;
 use crate::nostr::{NostrConfig, NostrIdentity, NostrStore};
-use crate::tor::TorWebSocketTransport;
+use crate::tor::{ClearnetWebSocketTransport, TorWebSocketTransport};
 use crate::wallet::Wallet;
 use crate::wallet::types::WalletTask;
 
@@ -185,6 +185,23 @@ pub struct NostrService {
 	/// would freeze in the paused service (the Build 153 QR-trust bug).
 	/// Transient and tiny (one entry per grant this run).
 	announced_ok: RwLock<std::collections::HashSet<String>>,
+}
+
+/// Transport-aware connection state for the UI status lines. Tor and clearnet
+/// are distinct so a Tor-off wallet never reads as "connecting over Tor". See
+/// [`NostrService::transport_status`].
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum TransportStatus {
+	/// Tor wallet: embedded Tor still bootstrapping / dialing.
+	ConnectingTor,
+	/// Tor wallet: tunnel up, but no relay live on the current generation yet.
+	TorReady,
+	/// Tor wallet: a relay is connected+subscribed over Tor.
+	ConnectedTor,
+	/// Clearnet wallet: dialing relays directly, none connected yet.
+	ConnectingDirect,
+	/// Clearnet wallet: a relay is connected directly ("Connected (direct)").
+	ConnectedDirect,
 }
 
 /// Phase of the most recent outgoing send, polled by the send UI.
@@ -598,6 +615,32 @@ impl NostrService {
 	/// Whether at least one relay is connected.
 	pub fn is_connected(&self) -> bool {
 		self.connected.load(Ordering::Relaxed)
+	}
+
+	/// Whether this wallet routes over Tor (resolved; `None`/legacy = ON).
+	pub fn tor_routing(&self) -> bool {
+		self.config.read().tor_enabled()
+	}
+
+	/// Transport-aware connection status for the UI status lines, so a Tor-off
+	/// wallet reads "Connected (direct)" instead of forever "connecting over Tor"
+	/// (the Tor-only [`crate::tor::transport_ready`] never flips on clearnet).
+	/// The three status-line call sites are rewired to this in a later slice; the
+	/// state is exposed cleanly here now.
+	pub fn transport_status(&self) -> TransportStatus {
+		if self.tor_routing() {
+			if crate::tor::transport_ready() {
+				TransportStatus::ConnectedTor
+			} else if crate::tor::is_ready() {
+				TransportStatus::TorReady
+			} else {
+				TransportStatus::ConnectingTor
+			}
+		} else if self.connected.load(Ordering::Relaxed) {
+			TransportStatus::ConnectedDirect
+		} else {
+			TransportStatus::ConnectingDirect
+		}
 	}
 
 	/// Whether the service loop is running.
@@ -1251,24 +1294,38 @@ async fn run_service(svc: Arc<NostrService>, wallet: Wallet) {
 	// Mirror the configured name authority so resolution + display follow it.
 	crate::nostr::nip05::set_home_domain(&svc.config.read().home_domain());
 
-	let client = Client::builder()
-		.signer(svc.keys.read().clone())
-		.websocket_transport(TorWebSocketTransport)
-		.build();
-	// Wait for the embedded Tor client before any network work (relay dials, pool
-	// refresh, NIP-11 probes). `warm_up()` starts it at launch, but a fast
-	// wallet-open can beat the cold Tor bootstrap — and dialing before it's up
+	// Resolve THIS wallet's transport choice and mirror it into the process-global
+	// so free-function HTTP callers (NIP-05, price, pool) take the matching path.
+	// `None` (every legacy nostr.toml) resolves to Tor ON — upgraders keep Tor.
+	let over_tor = svc.config.read().tor_enabled();
+	crate::tor::set_route_over_tor(over_tor);
+
+	// One relay pool serves the whole wallet; its transport is fixed when the
+	// Client is built. Pick Tor vs clearnet from the wallet setting. A settings
+	// toggle calls restart(), which re-enters here and rebuilds on the new choice.
+	let mut builder = Client::builder().signer(svc.keys.read().clone());
+	builder = if over_tor {
+		builder.websocket_transport(TorWebSocketTransport)
+	} else {
+		builder.websocket_transport(ClearnetWebSocketTransport)
+	};
+	let client = builder.build();
+	// Tor wallets: wait for the embedded Tor client before any network work (relay
+	// dials, pool refresh, NIP-11 probes). `warm_up()` starts it at launch, but a
+	// fast wallet-open can beat the cold Tor bootstrap — and dialing before it's up
 	// drops every relay into nostr-sdk's backing-off reconnect, leaving the wallet
 	// on "Connecting…" long after Tor is actually ready. Once it's bootstrapped
-	// this returns immediately.
-	for i in 0..240u32 {
-		if crate::tor::is_ready() {
-			if i > 0 {
-				info!("nostr: Tor ready after ~{}ms, dialing relays", i * 500);
+	// this returns immediately. Clearnet wallets skip the wait entirely.
+	if over_tor {
+		for i in 0..240u32 {
+			if crate::tor::is_ready() {
+				if i > 0 {
+					info!("nostr: Tor ready after ~{}ms, dialing relays", i * 500);
+				}
+				break;
 			}
-			break;
+			tokio::time::sleep(Duration::from_millis(500)).await;
 		}
-		tokio::time::sleep(Duration::from_millis(500)).await;
 	}
 	// We are now a relay consumer (API parity with the old transport; inert under
 	// Tor, which manages its own circuit health). Disarmed when the loop exits.

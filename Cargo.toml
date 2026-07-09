@@ -100,6 +100,10 @@ bytes = "1.11.0"
 hyper-socks2 = "0.9.1"
 hyper-proxy2 = "0.1.0"
 hyper-tls = "0.6.0"
+# Raw SOCKS5 stream for the clearnet relay websocket, so a Tor-off wallet can
+# still be fronted by the user's own SOCKS5 proxy/VPN (AppConfig.socks_proxy_url).
+# Version already present transitively (async-socks5 tree) — no new download.
+tokio-socks = "0.5"
 async-std = "1.13.2"
 uuid = { version = "0.8.2", features = ["v4"] }
 num-bigint = "0.4.6"

@@ -34,10 +34,11 @@ pub use engine::{
 	Client, client, condemn_exit, connect, is_ready, report_relay_down, report_relay_live,
 	set_relay_consumer, transport_ready, tunnel_generation, wait_ready, warm_up,
 };
-pub use transport::TorWebSocketTransport;
+pub use transport::{ClearnetWebSocketTransport, TorWebSocketTransport};
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use bytes::Bytes;
@@ -63,8 +64,33 @@ const MAX_REDIRECTS: usize = 5;
 /// classifiable as Goblin at the destination. Callers may still override it by
 /// passing their own `User-Agent` in the headers list; the endpoints Goblin talks
 /// to (GitHub API, CoinGecko, name authorities) all accept a generic UA.
-const DEFAULT_USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) \
+pub(crate) const DEFAULT_USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) \
 	 Chrome/131.0.0.0 Safari/537.36";
+
+/// Process-global transport choice for the OPEN wallet: `true` = route nostr
+/// relays and every sensitive HTTP call over Tor (the historical default),
+/// `false` = go direct (clearnet, optionally via the user's AppConfig proxy).
+///
+/// Tor is process-global and one relay pool serves the whole wallet, so this
+/// single flag is the honest home for the choice. `run_service` mirrors the
+/// open wallet's resolved `NostrConfig::tor_enabled()` into it before any
+/// network work (like `nip05::set_home_domain`), so free-function HTTP callers
+/// on worker threads read the right transport without threading a wallet handle
+/// through every call site. A Tor-off wallet never hard-fails on "Tor not
+/// bootstrapped" — it simply takes the clearnet branch.
+static ROUTE_OVER_TOR: AtomicBool = AtomicBool::new(true);
+
+/// Mirror the open wallet's resolved Tor routing choice. Called by
+/// `run_service` on start/restart; a settings toggle takes effect after the
+/// `NostrService::restart()` that rebuilds the pool on the new transport.
+pub fn set_route_over_tor(enabled: bool) {
+	ROUTE_OVER_TOR.store(enabled, Ordering::Release);
+}
+
+/// Whether the open wallet currently routes over Tor (see [`set_route_over_tor`]).
+pub fn route_over_tor() -> bool {
+	ROUTE_OVER_TOR.load(Ordering::Acquire)
+}
 
 // --- Tor data directories -----------------------------------------------------
 
@@ -103,6 +129,11 @@ pub async fn http_request_bytes(
 	body: Option<Vec<u8>>,
 	headers: Vec<(String, String)>,
 ) -> Option<(u16, Vec<u8>)> {
+	// Tor-off wallet: go direct (clearnet, honoring the user's AppConfig proxy).
+	// Never wait on / hard-fail against the Tor bootstrap in this mode.
+	if !route_over_tor() {
+		return crate::http::clearnet_request_bytes(method, url, body, headers).await;
+	}
 	if !wait_ready(TUNNEL_WAIT).await {
 		warn!("tor http: client not bootstrapped, dropping request");
 		return None;

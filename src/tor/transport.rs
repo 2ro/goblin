@@ -117,6 +117,105 @@ impl WebSocketTransport for TorWebSocketTransport {
 	}
 }
 
+/// Nostr websocket transport over the clear internet, the direct counterpart to
+/// [`TorWebSocketTransport`] for a Tor-off wallet. Dials the relay host directly
+/// (or through the user's own SOCKS5 proxy, if one is configured in
+/// [`crate::AppConfig`], so a VPN/proxy user can still front their traffic), then
+/// runs the usual hostname-validated TLS + websocket. The wallet's IP IS visible
+/// to the relay in this mode — that is the deliberate speed/onboarding tradeoff of
+/// turning Tor off, and the onboarding copy recommends at least a VPN.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ClearnetWebSocketTransport;
+
+impl WebSocketTransport for ClearnetWebSocketTransport {
+	fn support_ping(&self) -> bool {
+		true
+	}
+
+	fn connect<'a>(
+		&'a self,
+		url: &'a Url,
+		_mode: &'a ConnectionMode,
+		timeout: Duration,
+	) -> BoxedFuture<'a, Result<(WebSocketSink, WebSocketStream), TransportError>> {
+		Box::pin(async move {
+			let host = url
+				.host_str()
+				.ok_or_else(|| terr("relay url has no host"))?
+				.to_string();
+			let port = url.port().unwrap_or(match url.scheme() {
+				"ws" => 80,
+				_ => 443,
+			});
+			let t = Instant::now();
+			// Route through the user's SOCKS5 proxy when they've enabled one;
+			// otherwise dial the relay directly. Either way the same
+			// hostname-validated TLS + websocket runs on top (SNI = relay host).
+			let via_socks = crate::AppConfig::use_proxy()
+				&& crate::AppConfig::use_socks_proxy()
+				&& crate::AppConfig::socks_proxy_url().is_some();
+			let result = if via_socks {
+				let proxy = crate::AppConfig::socks_proxy_url().unwrap();
+				let proxy = proxy
+					.trim()
+					.trim_start_matches("socks5h://")
+					.trim_start_matches("socks5://")
+					.to_string();
+				let stream = tokio::time::timeout(
+					timeout,
+					tokio_socks::tcp::Socks5Stream::connect(proxy.as_str(), (host.as_str(), port)),
+				)
+				.await
+				.map_err(|_| terr("socks proxy connect timeout"))?
+				.map_err(|e| terr(format!("socks proxy connect failed: {e}")))?;
+				ws_handshake(url, stream, timeout).await
+			} else {
+				let stream = tokio::time::timeout(
+					timeout,
+					tokio::net::TcpStream::connect((host.as_str(), port)),
+				)
+				.await
+				.map_err(|_| terr("tcp connect timeout"))?
+				.map_err(|e| terr(format!("tcp connect failed: {e}")))?;
+				ws_handshake(url, stream, timeout).await
+			};
+			if result.is_ok() {
+				log::info!(
+					"[timing] clearnet: relay {host} CONNECTED — tls+ws {}ms",
+					t.elapsed().as_millis()
+				);
+			}
+			result
+		})
+	}
+}
+
+/// Run the hostname-validated TLS + websocket handshake over an already-dialed
+/// stream and split it into the pool's sink/stream halves. Shared by the direct
+/// and SOCKS5 clearnet dial paths (the Tor path has its own inline handshake).
+async fn ws_handshake<S>(
+	url: &Url,
+	stream: S,
+	timeout: Duration,
+) -> Result<(WebSocketSink, WebSocketStream), TransportError>
+where
+	S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Send + Unpin + 'static,
+{
+	let (ws, _response) = tokio::time::timeout(
+		timeout,
+		tokio_tungstenite::client_async_tls_with_config(
+			url.as_str(),
+			stream,
+			Some(ws_config()),
+			None,
+		),
+	)
+	.await
+	.map_err(|_| terr("websocket handshake timeout"))?
+	.map_err(|e| terr(format!("websocket handshake failed: {e}")))?;
+	Ok(split_ws(ws))
+}
+
 /// Split a websocket into the pool's boxed sink/stream halves, so everything above
 /// the byte transport is identical regardless of which Tor circuit carried it.
 fn split_ws<S>(ws: tokio_tungstenite::WebSocketStream<S>) -> (WebSocketSink, WebSocketStream)

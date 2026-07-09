@@ -4215,6 +4215,7 @@ dependencies = [
  "tokio 0.2.25",
  "tokio 1.49.0",
  "tokio-rustls 0.26.4",
+ "tokio-socks 0.5.3",
  "tokio-tungstenite",
  "tokio-util 0.2.0",
  "toml 0.9.11+spec-1.1.0",
