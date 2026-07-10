@@ -444,11 +444,12 @@ impl NostrService {
 	/// set for the new transport at the next `run_service` without touching the
 	/// persisted clearnet subset.
 	pub fn relays(&self) -> Vec<String> {
+		let over_tor = self.tor_routing();
 		crate::nostr::relays::effective_relays(
-			self.tor_routing(),
-			self.config.read().relays_override(),
+			over_tor,
+			self.config.read().relays_override(over_tor),
 			self.identity.read().dm_relays.clone(),
-			self.config.read().relays(),
+			self.config.read().default_relays(),
 		)
 	}
 }

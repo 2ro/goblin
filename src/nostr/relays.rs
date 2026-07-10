@@ -24,8 +24,13 @@
 /// the Floonet onion flapped, so its payments stopped flowing. `relay.0xchat.com`
 /// and `offchain.pub` are Tor-friendly (and are also probe-vetted pool `dm`
 /// candidates), giving a real fallback that survives an onion drop.
+/// The shared Floonet rendezvous relay. Pinned FIRST in every resolved relay
+/// list and never removable by the user, so any two Goblin wallets always share
+/// a guaranteed rendezvous regardless of transport or per-wallet edits.
+pub const FLOONET_RELAY: &str = "wss://relay.floonet.dev";
+
 pub const DEFAULT_RELAYS: &[&str] = &[
-	"wss://relay.floonet.dev",
+	FLOONET_RELAY,
 	"wss://relay.0xchat.com",
 	"wss://offchain.pub",
 ];
@@ -39,11 +44,7 @@ pub const DEFAULT_RELAYS: &[&str] = &[
 /// always share a guaranteed rendezvous. All three are reached over a Tor exit to
 /// their clearnet host (no onion). The clearnet regime instead draws a per-identity
 /// random healthy subset from the pool (see [`effective_relays`]).
-pub const TOR_RELAYS: &[&str] = &[
-	"wss://relay.floonet.dev",
-	"wss://relay.nostr.net",
-	"wss://offchain.pub",
-];
+pub const TOR_RELAYS: &[&str] = &[FLOONET_RELAY, "wss://relay.nostr.net", "wss://offchain.pub"];
 
 /// Default NIP-05 identity server.
 pub const DEFAULT_NIP05_SERVER: &str = "https://goblin.st";
@@ -75,7 +76,7 @@ pub fn effective_relays(
 	clearnet_defaults: Vec<String>,
 ) -> Vec<String> {
 	if let Some(over) = override_set {
-		return over;
+		return pin_floonet(over);
 	}
 	if over_tor {
 		return TOR_RELAYS.iter().map(|s| s.to_string()).collect();
@@ -84,6 +85,19 @@ pub fn effective_relays(
 		return clearnet_sticky;
 	}
 	clearnet_defaults
+}
+
+/// Ensure [`FLOONET_RELAY`] is present and pinned FIRST, preserving the order of
+/// the remaining entries and dropping any duplicate floonet occurrences. Applied
+/// to every user relay override so the shared rendezvous can never be edited out.
+pub fn pin_floonet(relays: Vec<String>) -> Vec<String> {
+	let mut out = vec![FLOONET_RELAY.to_string()];
+	for r in relays {
+		if r != FLOONET_RELAY && !out.contains(&r) {
+			out.push(r);
+		}
+	}
+	out
 }
 
 /// Normalize a user-entered relay url (adds wss:// when missing).
@@ -171,12 +185,38 @@ mod tests {
 	}
 
 	#[test]
-	fn a_user_override_wins_in_both_regimes() {
+	fn a_user_override_wins_in_both_regimes_with_floonet_pinned() {
 		let ov = vec!["wss://only.example".to_string()];
-		assert_eq!(effective_relays(true, Some(ov.clone()), vec![], vec![]), ov);
+		let expected = vec![FLOONET.to_string(), "wss://only.example".to_string()];
+		// The override wins over both the Tor set and the clearnet subset, and
+		// floonet is pinned first in each regime even when the user omitted it.
+		assert_eq!(
+			effective_relays(true, Some(ov.clone()), vec![], vec![]),
+			expected
+		);
 		assert_eq!(
 			effective_relays(false, Some(ov.clone()), vec![], vec![]),
-			ov
+			expected
 		);
+	}
+
+	#[test]
+	fn pin_floonet_prepends_and_dedups() {
+		// Missing floonet gets prepended.
+		assert_eq!(
+			pin_floonet(vec!["wss://a.example".to_string()]),
+			vec![FLOONET.to_string(), "wss://a.example".to_string()]
+		);
+		// A floonet already in the middle is moved to the front (deduped).
+		assert_eq!(
+			pin_floonet(vec![
+				"wss://a.example".to_string(),
+				FLOONET.to_string(),
+				"wss://a.example".to_string(),
+			]),
+			vec![FLOONET.to_string(), "wss://a.example".to_string()]
+		);
+		// Floonet can never be edited out entirely.
+		assert_eq!(pin_floonet(vec![]), vec![FLOONET.to_string()]);
 	}
 }

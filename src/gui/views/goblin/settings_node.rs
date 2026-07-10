@@ -242,6 +242,9 @@ impl GoblinWalletView {
 					let mut remove: Option<usize> = None;
 					let many = self.relay_edit.len() > 1;
 					for (i, relay) in self.relay_edit.iter().enumerate() {
+						// The shared Floonet rendezvous is pinned and cannot be
+						// removed, so it never shows an X.
+						let removable = many && relay != crate::nostr::relays::FLOONET_RELAY;
 						ui.horizontal(|ui| {
 							ui.label(
 								RichText::new(relay)
@@ -249,7 +252,7 @@ impl GoblinWalletView {
 									.color(t.surface_text),
 							);
 							ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-								if many {
+								if removable {
 									let x = ui.label(
 										RichText::new(crate::gui::icons::X)
 											.font(FontId::new(15.0, fonts::regular()))
@@ -289,11 +292,13 @@ impl GoblinWalletView {
 				ui.add_space(10.0);
 				if w::big_action(ui, &t!("goblin.relays.save_reconnect"), false).clicked() {
 					if let Some(s) = wallet.nostr_service() {
-						{
-							let mut c = s.config.write();
-							c.set_relays(self.relay_edit.clone());
-							c.save();
-						}
+						// Remember the edited list for the ACTIVE transport only
+						// (Tor vs clearnet), keyed so each network keeps its own
+						// set. Floonet is pinned on resolve regardless.
+						let over_tor = s.tor_routing();
+						s.config
+							.write()
+							.set_relays_for(over_tor, self.relay_edit.clone());
 						s.restart(wallet.clone());
 					}
 					self.settings_page = SettingsPage::Main;

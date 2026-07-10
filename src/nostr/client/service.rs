@@ -571,7 +571,9 @@ async fn ensure_advertised_set(svc: &Arc<NostrService>) {
 	if svc.tor_routing() {
 		return;
 	}
-	if svc.config.read().relays_override().is_some() || !svc.identity.read().dm_relays.is_empty() {
+	if svc.config.read().relays_override(false).is_some()
+		|| !svc.identity.read().dm_relays.is_empty()
+	{
 		return;
 	}
 	let goblin = DEFAULT_RELAYS[0];
