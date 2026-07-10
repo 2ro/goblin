@@ -188,7 +188,11 @@ impl GoblinWalletView {
 			format!("{}{}{}", sign, w::amount_str(item.amount), w::TSU)
 		};
 		let (note, time) = Self::activity_note_time(item);
-		let tex = if anon {
+		// No npub association (a non-nostr tx, or metadata cleared by a payment
+		// history wipe) => never resolve a real avatar for this row; render the
+		// anonymous yellow-goblin tile so the picture can't leak who it was with.
+		let anon_avatar = data::tx_row_anonymous(item.npub.as_deref(), item.system);
+		let tex = if anon || item.npub.is_none() {
 			None
 		} else {
 			self.handle_tex(ui.ctx(), wallet, &item.title)
@@ -210,6 +214,7 @@ impl GoblinWalletView {
 			item.system,
 			tex.as_ref(),
 			anon,
+			anon_avatar,
 		);
 		// Per-identity cue (owner-approved): only when the wallet holds MORE THAN
 		// ONE identity, and never on system (mining) rows. A small corner badge on

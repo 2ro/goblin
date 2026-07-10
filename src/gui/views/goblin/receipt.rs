@@ -22,8 +22,11 @@ impl GoblinWalletView {
 	pub(super) fn receipt_ui(&mut self, ui: &mut egui::Ui, wallet: &Wallet, tx_id: u32) -> bool {
 		let t = theme::tokens();
 		let d = data::receipt_detail(wallet, tx_id);
+		// Only resolve a real avatar when the tx has an npub association; a wiped
+		// or non-nostr tx (no npub) must never resolve a profile picture.
 		let tex = d
 			.as_ref()
+			.filter(|d| d.npub.is_some())
 			.and_then(|d| self.handle_tex(ui.ctx(), wallet, &d.title));
 		let mut close = false;
 		let mut open_profile: Option<String> = None;
@@ -60,13 +63,20 @@ impl GoblinWalletView {
 						.show(ui, |ui| {
 							ui.add_space(8.0);
 							ui.vertical_centered(|ui| {
-								let resp = w::avatar_any(
-									ui,
-									&d.title,
-									d.npub.as_deref().unwrap_or(""),
-									64.0,
-									tex.as_ref(),
-								);
+								let resp = if d.npub.is_some() {
+									w::avatar_any(
+										ui,
+										&d.title,
+										d.npub.as_deref().unwrap_or(""),
+										64.0,
+										tex.as_ref(),
+									)
+								} else {
+									// No npub association (wiped or non-nostr tx):
+									// the anonymous yellow-goblin tile, never a real
+									// profile picture.
+									w::avatar_censored(ui, 64.0)
+								};
 								ui.add_space(10.0);
 								ui.label(
 									RichText::new(&d.title)

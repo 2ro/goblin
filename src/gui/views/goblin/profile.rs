@@ -124,6 +124,7 @@ impl GoblinWalletView {
 										item.system,
 										htex.as_ref(),
 										false,
+										data::tx_row_anonymous(item.npub.as_deref(), item.system),
 									)
 									.clicked()
 									{

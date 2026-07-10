@@ -636,6 +636,7 @@ impl SendFlow {
 							false,
 							tex.as_ref(),
 							false,
+							false,
 						)
 						.clicked()
 						{
@@ -699,6 +700,7 @@ impl SendFlow {
 						false,
 						false,
 						tex.as_ref(),
+						false,
 						false,
 					)
 					.clicked()
