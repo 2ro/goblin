@@ -13,11 +13,8 @@
 // limitations under the License.
 
 use crate::gui::views::View;
-use crate::http::HttpClient;
-use bytes::Bytes;
 use chrono::NaiveDateTime;
 use egui::os::OperatingSystem;
-use http_body_util::{BodyExt, Empty};
 use serde_derive::Deserialize;
 
 #[derive(Deserialize)]
@@ -138,24 +135,17 @@ impl ReleaseInfo {
 const REQUEST_URL: &'static str = "https://api.github.com/repos/2ro/goblin/releases/latest";
 
 pub async fn retrieve_release() -> Result<ReleaseInfo, String> {
-	let req = hyper::Request::builder()
-		.method(hyper::Method::GET)
-		.uri(REQUEST_URL)
-		// GitHub's API rejects requests without a User-Agent.
-		.header("User-Agent", "goblin-wallet")
-		.header("Accept", "application/vnd.github+json")
-		.body(Empty::<Bytes>::new())
-		.unwrap();
-	if let Ok(resp) = HttpClient::send(req).await {
-		let status = resp.status().as_u16();
-		if status == 200 {
-			if let Ok(body) = resp.into_body().collect().await {
-				let body_bytes = body.to_bytes();
-				if let Ok(update_info) = serde_json::from_slice::<ReleaseInfo>(&body_bytes) {
-					return Ok(update_info);
-				}
-			}
-		}
-	}
-	Err("Error checking update".to_string())
+	// Route the update check through the Tor helper so it honors route_over_tor()
+	// (Tor when the toggle is on, clearnet when off) instead of the clearnet-only
+	// HttpClient::send. The helper sets a browser-like default User-Agent, so we
+	// send no identifying UA of our own; we keep only GitHub's required Accept
+	// header (GitHub also requires a UA, which the helper's default satisfies).
+	let headers = vec![(
+		"Accept".to_string(),
+		"application/vnd.github+json".to_string(),
+	)];
+	let body = crate::tor::http_request("GET", REQUEST_URL.to_string(), None, headers)
+		.await
+		.ok_or_else(|| "Error checking update".to_string())?;
+	serde_json::from_str::<ReleaseInfo>(&body).map_err(|_| "Error checking update".to_string())
 }
