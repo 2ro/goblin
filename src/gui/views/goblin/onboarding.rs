@@ -235,13 +235,15 @@ impl OnboardingContent {
 				self.error = None;
 				self.step = back;
 			}
-			ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-				ui.label(
-					RichText::new(kicker)
-						.font(fonts::kicker())
-						.color(t.text_mute),
-				);
-			});
+			if !kicker.is_empty() {
+				ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+					ui.label(
+						RichText::new(kicker)
+							.font(fonts::kicker())
+							.color(t.text_mute),
+					);
+				});
+			}
 		});
 		ui.add_space(18.0);
 		ui.label(
@@ -873,12 +875,10 @@ impl OnboardingContent {
 		} else {
 			Step::ConfirmWords
 		};
-		self.step_header(
-			ui,
-			&t!("goblin.onboarding.privacy.kicker"),
-			&t!("goblin.privacy.title"),
-			back,
-		);
+		// No top-right kicker here — the Network-privacy screen shows just the
+		// back chip + title, matching the settings sub-pages (Advanced Privacy,
+		// Node) so the two entry points read identically.
+		self.step_header(ui, "", &t!("goblin.privacy.title"), back);
 		if let Some(new_val) = super::network_privacy_panels(ui, self.tor_choice) {
 			self.tor_choice = new_val;
 		}

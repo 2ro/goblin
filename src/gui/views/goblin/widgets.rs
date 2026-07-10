@@ -244,15 +244,15 @@ pub fn toggle(ui: &mut Ui, on: bool) -> Response {
 /// the app accent. Returns the response; the caller flips the bound state.
 pub fn toggle_large(ui: &mut Ui, on: bool) -> Response {
 	let t = theme::tokens();
-	let (rect, resp) = ui.allocate_exact_size(Vec2::new(64.0, 36.0), Sense::click());
+	let (rect, resp) = ui.allocate_exact_size(Vec2::new(96.0, 54.0), Sense::click());
 	let track = if on { t.tor_purple } else { t.surface2 };
 	ui.painter()
-		.rect_filled(rect, CornerRadius::same(18), track);
-	let knob_r = 15.0;
+		.rect_filled(rect, CornerRadius::same(27), track);
+	let knob_r = 22.0;
 	let knob_x = if on {
-		rect.right() - knob_r - 3.0
+		rect.right() - knob_r - 5.0
 	} else {
-		rect.left() + knob_r + 3.0
+		rect.left() + knob_r + 5.0
 	};
 	let knob = if on {
 		Color32::WHITE

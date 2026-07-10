@@ -117,6 +117,12 @@ const AVATAR_PAIRS: [(Color32, Color32); 8] = [
 	), // lime / dark moss
 ];
 
+/// The Goblin brand yellow (#FFD60A). Unlike [`ThemeTokens::accent`] (which
+/// inverts to dark on the yellow theme so it reads on a bright bg), this is the
+/// same brand yellow in every theme — used for status dots that must always
+/// carry the brand color, e.g. the always-direct Grin-node dot.
+pub const GOBLIN_YELLOW: Color32 = Color32::from_rgb(0xFF, 0xD6, 0x0A);
+
 pub const LIGHT: ThemeTokens = ThemeTokens {
 	bg: Color32::from_rgb(0xFA, 0xFA, 0xF7),
 	surface: Color32::from_rgb(0xFF, 0xFF, 0xFF),
