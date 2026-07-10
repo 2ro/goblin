@@ -223,6 +223,26 @@ pub struct NewsItem {
 	pub published_at: Option<i64>,
 }
 
+/// The activity metadata a full wallet `.backup` seals alongside the seed and
+/// identities: every tx meta, contact and payment request across all held
+/// identities. A chain rescan on restore rebuilds the transaction rows and
+/// amounts, but not this Goblin layer (counterparty npubs/names, notes, request
+/// records), so it rides inside the sealed backup and is merged back in on
+/// import. Every field is `#[serde(default)]` so a legacy backup that predates a
+/// field, or a future one that adds another, still deserializes.
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+pub struct ArchiveSnapshot {
+	/// Snapshot format version (currently 1).
+	#[serde(default)]
+	pub ver: u8,
+	#[serde(default)]
+	pub tx_meta: Vec<TxNostrMeta>,
+	#[serde(default)]
+	pub contacts: Vec<Contact>,
+	#[serde(default)]
+	pub requests: Vec<PaymentRequest>,
+}
+
 /// Whether the plain "payment sent" receipt (frozen contract 4.3.1) is due at
 /// S1 dispatch for this send. True only for an order-carrying send in proof
 /// mode: a person-to-person send (no `order=` context) publishes no receipt at
