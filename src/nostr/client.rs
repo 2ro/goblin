@@ -18,9 +18,9 @@
 use grin_core::core::amount_to_hr_string;
 use log::{error, info, warn};
 use nostr_sdk::{
-	Client, Event, EventBuilder, Filter, FromBech32, Keys, Kind, Metadata, PublicKey,
-	RelayPoolNotification, RelayStatus, RelayUrl, SubscriptionId, Tag, TagKind, Timestamp,
-	ToBech32,
+	Client, ClientOptions, Event, EventBuilder, Filter, FromBech32, Keys, Kind, Metadata,
+	PublicKey, RelayPoolNotification, RelayStatus, RelayUrl, SubscriptionId, Tag, TagKind,
+	Timestamp, ToBech32,
 };
 use parking_lot::{Mutex, RwLock};
 use std::collections::{HashMap, HashSet};
@@ -1307,7 +1307,41 @@ async fn run_service(svc: Arc<NostrService>, wallet: Wallet) {
 	// One relay pool serves the whole wallet; its transport is fixed when the
 	// Client is built. Pick Tor vs clearnet from the wallet setting. A settings
 	// toggle calls restart(), which re-enters here and rebuilds on the new choice.
-	let mut builder = Client::builder().signer(svc.keys.read().clone());
+	//
+	// Opportunistic NIP-42 auto-auth (invisible, never a requirement):
+	// `automatic_authentication(true)` makes the pool answer a relay's AUTH
+	// challenge automatically — and ONLY when a relay actually challenges. The
+	// flow the SDK runs (nostr-relay-pool 0.44, relay/inner.rs): on a
+	// `RelayMessage::Auth { challenge }` it signs a kind-22242 auth event with the
+	// client signer (the active identity below), sends it, then re-issues the
+	// pending REQ on OK. A relay that never challenges (every public relay today,
+	// including the current floonet relay) is read openly exactly as before — the
+	// wallet never forces auth and never refuses a non-challenging relay, so this
+	// is INERT until the recipient-only-reads strfry fork ships and starts
+	// challenging kind-1059 reads. This is a `true` default in the SDK; we set it
+	// explicitly so a future default flip can't silently break DM reads on the
+	// hardened relay.
+	//
+	// Multi-identity status: ACTIVE-IDENTITY ONLY. The client is built with a
+	// single signer, so auto-auth authenticates the connection as just the active
+	// identity's pubkey. The wallet can hold up to 8 identities (`recv`) and the
+	// hardened fork accepts up to 8 authed pubkeys per connection, but the SDK
+	// signs the challenge with one signer, and a plain switch
+	// (`set_active_by_pubkey`) re-points `svc.keys` WITHOUT rebuilding this client,
+	// so the authed pubkey only changes on a full service restart(). FULL
+	// multi-identity (all held inboxes readable on one shared connection against
+	// the fork) would require the wallet to catch the challenge itself: the pool
+	// surfaces `RelayPoolNotification::Message { relay_url, RelayMessage::Auth {
+	// challenge } }` for every relay, so a future change can, for each held
+	// identity in `recv` other than the active one, build+sign
+	// `EventBuilder::auth(challenge, relay_url)` and send it to that relay — using
+	// the pool's own relay URL so the fork's relay-tag match check passes. Until
+	// then, the wallet's all-pubkeys giftwrap REQ would be `restricted:` by the
+	// fork for the non-active `#p` recipients; on today's non-challenging relays it
+	// is unaffected.
+	let mut builder = Client::builder()
+		.signer(svc.keys.read().clone())
+		.opts(ClientOptions::new().automatic_authentication(true));
 	builder = if over_tor {
 		builder.websocket_transport(TorWebSocketTransport)
 	} else {
@@ -3348,5 +3382,27 @@ mod tests {
 		// Cap reached → give up so a dead hint relay can't spin the loop forever.
 		assert!(!should_reannounce(false, ANNOUNCE_MAX_ATTEMPTS));
 		assert!(!should_reannounce(false, ANNOUNCE_MAX_ATTEMPTS + 5));
+	}
+
+	// Opportunistic NIP-42 auto-auth: a Client built with a signer + explicit
+	// `automatic_authentication(true)` answers a relay's AUTH challenge with a
+	// signer-signed kind-22242 event and ONLY when challenged. This asserts the
+	// options + signer wiring the `run_service` builder relies on constructs, so a
+	// signature change in the SDK (or a lost `.opts(...)` call) fails the build
+	// here rather than silently disabling DM reads on the hardened relay. It does
+	// NOT open a connection, so it stays inert against non-challenging relays.
+	#[tokio::test]
+	async fn auto_auth_client_builds_with_active_signer() {
+		use nostr_sdk::prelude::NostrSigner;
+		let keys = Keys::generate();
+		let pubkey = keys.public_key();
+		let client = Client::builder()
+			.signer(keys)
+			.opts(ClientOptions::new().automatic_authentication(true))
+			.build();
+		// The active identity is the single signer this connection auto-auths as
+		// (multi-identity beyond this is documented at the `run_service` builder).
+		let signer = client.signer().await.expect("signer is set");
+		assert_eq!(signer.get_public_key().await.unwrap(), pubkey);
 	}
 }
