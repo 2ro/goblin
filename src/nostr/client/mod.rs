@@ -400,6 +400,20 @@ impl NostrService {
 		}
 		let svc = self.clone();
 		thread::spawn(move || {
+			// Reset the run flags on ANY exit of this thread — a normal return OR a
+			// panic that unwinds out of the runtime (F2). Without this, a panic
+			// inside the service future would leave `started` stuck true, so
+			// restart() (which waits for `started` to fall) would hang forever and
+			// the wallet could never re-listen. A drop guard runs on both paths.
+			struct StopGuard(Arc<NostrService>);
+			impl Drop for StopGuard {
+				fn drop(&mut self) {
+					self.0.started.store(false, Ordering::SeqCst);
+					self.0.connected.store(false, Ordering::Relaxed);
+					info!("nostr: service stopped");
+				}
+			}
+			let _stop_guard = StopGuard(svc.clone());
 			let rt = tokio::runtime::Builder::new_multi_thread()
 				.worker_threads(2)
 				.enable_all()
@@ -409,9 +423,6 @@ impl NostrService {
 			rt.block_on(async move {
 				run_service(svc_run, wallet).await;
 			});
-			svc.started.store(false, Ordering::SeqCst);
-			svc.connected.store(false, Ordering::Relaxed);
-			info!("nostr: service stopped");
 		});
 	}
 

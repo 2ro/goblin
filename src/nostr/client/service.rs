@@ -90,6 +90,26 @@ impl NostrService {
 					.update_request_status(&req.rumor_id, RequestStatus::Expired);
 			}
 		}
+
+		// Actually reclaim the disk that terminal rows hold: the requests just
+		// flipped to `Expired` above, plus any previously Cancelled/Declined, will
+		// never transition again, so delete them. A live PENDING request is never
+		// touched — this only removes terminal rows (the disk-DoS bound, F1).
+		let pruned = self.store.prune_terminal_requests();
+		if pruned > 0 {
+			info!("nostr: pruned {pruned} terminal payment-request row(s)");
+		}
+	}
+}
+
+/// Extract a human-readable message from a caught panic payload (F2 logging).
+fn panic_message(panic: &(dyn std::any::Any + Send)) -> String {
+	if let Some(s) = panic.downcast_ref::<&str>() {
+		(*s).to_string()
+	} else if let Some(s) = panic.downcast_ref::<String>() {
+		s.clone()
+	} else {
+		"unknown panic".to_string()
 	}
 }
 
@@ -377,14 +397,42 @@ pub(super) async fn run_service(svc: Arc<NostrService>, wallet: Wallet) {
 			notification = notifications.recv() => {
 				match notification {
 					Ok(RelayPoolNotification::Event { event, .. }) => {
-						// News long-form posts, session-channel envelopes, and gift
-						// wraps ride the same feed; route by kind.
-						if event.kind.as_u16() == crate::nostr::session::CHANNEL_EVENT_KIND {
-							handle_channel(&svc, &client, &event).await;
-						} else if let Some(pk) = news_pk && event.kind == Kind::LongFormTextNote {
-							handle_news(&svc, pk, *event).await;
-						} else {
-							handle_wrap(&svc, &wallet, *event).await;
+						// Isolate each per-event handler in catch_unwind (F2): a panic in
+						// ONE event (a malformed wrap, a parser edge) must not unwind out
+						// of the runtime and kill the service thread — which would leave
+						// `started` stuck true (so restart() would hang forever) and let
+						// the next-launch catch-up re-run the same event and re-panic (a
+						// self-reinforcing brick). The happy path is unchanged: the
+						// handler still runs to completion inline, in order, on this
+						// runtime. (Effective only where panics unwind — desktop/dev
+						// builds; the Android APK profile is panic=abort, where the drop
+						// guard on the service thread is the remaining safeguard.)
+						let ev_id_hex = event.id.to_hex();
+						let svc_ref = &svc;
+						let wallet_ref = &wallet;
+						let client_ref = &client;
+						let dispatch = std::panic::AssertUnwindSafe(async move {
+							// News long-form posts, session-channel envelopes, and gift
+							// wraps ride the same feed; route by kind.
+							if event.kind.as_u16() == crate::nostr::session::CHANNEL_EVENT_KIND {
+								handle_channel(svc_ref, client_ref, &event).await;
+							} else if let Some(pk) = news_pk && event.kind == Kind::LongFormTextNote {
+								handle_news(svc_ref, pk, *event).await;
+							} else {
+								handle_wrap(svc_ref, wallet_ref, *event).await;
+							}
+						});
+						if let Err(panic) = futures::FutureExt::catch_unwind(dispatch).await {
+							error!(
+								"nostr: event handler panicked ({}); skipping event {} to keep the service alive",
+								panic_message(&panic),
+								ev_id_hex
+							);
+							// Poison-pill guard: record the offending event as processed so
+							// a reliably-panicking event is not retried forever by catch-up.
+							// Only reached AFTER an actual panic, so a legitimate event is
+							// never pre-skipped.
+							svc.store.mark_processed(&ev_id_hex);
 						}
 					}
 					Ok(_) => {}
@@ -1803,7 +1851,7 @@ async fn handle_wrap(svc: &Arc<NostrService>, wallet: &Wallet, event: Event) {
 			svc.ensure_contact(&sender_hex);
 			// Resolve the requester's @username so the card isn't a bare npub.
 			svc.resolve_contact_identity(&sender_hex);
-			svc.store.save_request(&PaymentRequest {
+			let stored = svc.store.save_incoming_request(&PaymentRequest {
 				ver: 1,
 				rumor_id: rumor_id.clone(),
 				slate_id: slate.id.to_string(),
@@ -1814,6 +1862,19 @@ async fn handle_wrap(svc: &Arc<NostrService>, wallet: &Wallet, event: Event) {
 				received_at: unix_time(),
 				status: RequestStatus::Pending,
 			});
+			if !stored {
+				// Disk-DoS backpressure (F1): the request store is at its cap with
+				// no terminal row to evict, so we REFUSE this new request rather than
+				// drop a live pending one. Deliberately NOT marked processed — once
+				// capacity frees (terminal rows age out on expiry / the user acts on
+				// pending requests) a later catch-up re-surfaces it.
+				warn!(
+					"nostr: request store at cap ({}), refusing incoming request {} (backpressure)",
+					crate::nostr::NostrStore::REQUEST_CAP,
+					rumor_id
+				);
+				return;
+			}
 			svc.has_new_requests.store(true, Ordering::Relaxed);
 			// The request is durably saved — safe to mark this wrap processed.
 			svc.store.mark_processed(&wrap_id);

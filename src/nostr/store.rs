@@ -53,6 +53,17 @@ pub struct NostrStore {
 }
 
 impl NostrStore {
+	/// Cap on total stored incoming payment requests — a disk-exhaustion-DoS
+	/// bound. An attacker can stream valid Invoice1 requests from fresh ephemeral
+	/// keys (bypassing the per-sender limit); without a cap each ~30 KB slatepack
+	/// armor row accretes until the device disk fills. A few thousand rows is
+	/// already far beyond any real backlog a human will act on. When the store is
+	/// full the bound is enforced by deleting TERMINAL rows (Expired/Cancelled/
+	/// Declined — they will never transition again) oldest-first, and only if none
+	/// can be freed does it REFUSE the new request (backpressure). A live PENDING
+	/// or user-Approved request is NEVER evicted.
+	pub const REQUEST_CAP: usize = 2000;
+
 	/// Open or create the archive in the provided directory.
 	pub fn new(dir: PathBuf) -> Self {
 		let _ = fs::create_dir_all(&dir);
@@ -214,6 +225,59 @@ impl NostrStore {
 			.collect();
 		reqs.sort_by_key(|r| std::cmp::Reverse(r.received_at));
 		reqs
+	}
+
+	/// Delete a stored payment request by rumor id.
+	pub fn delete_request(&self, rumor_id: &str) {
+		self.delete(&self.requests, rumor_id);
+	}
+
+	/// Delete every TERMINAL (Expired/Cancelled/Declined) request row, reclaiming
+	/// the disk their ~30 KB armor holds. A terminal request will never transition
+	/// again, so this never removes a live PENDING or user-Approved request.
+	/// Returns the count removed. Called from the expiry sweep so freshly-expired
+	/// requests are actually deleted rather than left flipped-to-`Expired` forever.
+	pub fn prune_terminal_requests(&self) -> usize {
+		let terminal: Vec<String> = self
+			.all_requests()
+			.into_iter()
+			.filter(|r| request_is_terminal(r.status))
+			.map(|r| r.rumor_id)
+			.collect();
+		let n = terminal.len();
+		for id in &terminal {
+			self.delete(&self.requests, id);
+		}
+		n
+	}
+
+	/// Store a freshly-received INCOMING payment request under the disk-DoS cap
+	/// (`REQUEST_CAP`). Returns `true` if stored, `false` if refused (backpressure).
+	///
+	/// Never drops a legitimate PENDING request: when the store is at the cap it
+	/// first deletes terminal rows (Expired/Cancelled/Declined) oldest-first to
+	/// make room; only if none can be freed does it REFUSE the new request rather
+	/// than evict a live one. A refused request is simply not persisted (and the
+	/// caller does not mark it processed), so a later catch-up re-surfaces it once
+	/// capacity frees. Used only for the ingest path — `save_request` (backup
+	/// restore, status updates) stays unbounded so a user's own data is never
+	/// refused.
+	pub fn save_incoming_request(&self, request: &PaymentRequest) -> bool {
+		let existing: Vec<(String, RequestStatus, i64)> = self
+			.all_requests()
+			.into_iter()
+			.map(|r| (r.rumor_id, r.status, r.received_at))
+			.collect();
+		match plan_incoming_admission(&existing, Self::REQUEST_CAP) {
+			Admission::Refuse => false,
+			Admission::Store(evict) => {
+				for id in &evict {
+					self.delete(&self.requests, id);
+				}
+				self.save_request(request);
+				true
+			}
+		}
 	}
 
 	// ── processed markers ───────────────────────────────────────────────────
@@ -412,6 +476,57 @@ impl NostrStore {
 		self.clear(&self.requests);
 		self.clear(&self.processed);
 	}
+}
+
+/// A request in a terminal state (Expired/Cancelled/Declined) will never
+/// transition again, so its row is safe to delete to reclaim disk. Pure so the
+/// bounds policy is unit-testable without the rkv env.
+fn request_is_terminal(status: RequestStatus) -> bool {
+	matches!(
+		status,
+		RequestStatus::Expired | RequestStatus::Cancelled | RequestStatus::Declined
+	)
+}
+
+/// Outcome of admitting a NEW incoming request under the request-store cap.
+#[derive(Debug, PartialEq, Eq)]
+enum Admission {
+	/// Store the newcomer after deleting these terminal rows (by rumor id) to
+	/// stay within the cap. Empty when there is already room.
+	Store(Vec<String>),
+	/// Refuse the newcomer: the store is full of live PENDING/Approved rows and
+	/// no terminal row can be evicted to make space (backpressure).
+	Refuse,
+}
+
+/// Pure admission policy for the request-store disk bound. `existing` is every
+/// currently-stored request as `(rumor_id, status, received_at)`. Never selects a
+/// Pending or Approved row for eviction — it evicts terminal rows OLDEST-first
+/// (smallest `received_at`), and REFUSES the newcomer rather than dropping a live
+/// one. This is the load-bearing guarantee: a legitimate pending invoice is never
+/// discarded.
+fn plan_incoming_admission(existing: &[(String, RequestStatus, i64)], cap: usize) -> Admission {
+	if existing.len() < cap {
+		return Admission::Store(Vec::new());
+	}
+	// Free enough terminal rows for the newcomer to fit at/under the cap.
+	let need = existing.len() + 1 - cap;
+	let mut evictable: Vec<(&str, i64)> = existing
+		.iter()
+		.filter(|(_, status, _)| request_is_terminal(*status))
+		.map(|(id, _, ts)| (id.as_str(), *ts))
+		.collect();
+	if evictable.len() < need {
+		return Admission::Refuse;
+	}
+	evictable.sort_by_key(|(_, ts)| *ts); // oldest received_at first
+	Admission::Store(
+		evictable
+			.into_iter()
+			.take(need)
+			.map(|(id, _)| id.to_string())
+			.collect(),
+	)
 }
 
 /// Merge an incoming news post into the stored set: newest `created_at` wins
@@ -747,5 +862,172 @@ mod tests {
 		// Contacts survive by design (the address book, not payment history).
 		assert_eq!(store.all_contacts().len(), 1);
 		assert!(store.contact(npub).is_some());
+	}
+
+	fn req_status(rumor: &str, status: RequestStatus, received_at: i64) -> PaymentRequest {
+		PaymentRequest {
+			ver: 1,
+			rumor_id: rumor.to_string(),
+			slate_id: "s".to_string(),
+			slatepack: "sp".to_string(),
+			npub: "np".to_string(),
+			amount: 42,
+			note: None,
+			received_at,
+			status,
+		}
+	}
+
+	/// Load-bearing disk-DoS bound proof (pure policy). Filling PAST the cap with a
+	/// mix of terminal and pending rows must: evict terminal rows OLDEST-first, and
+	/// NEVER select a pending (or approved) row — refusing the newcomer instead.
+	#[test]
+	fn admission_evicts_terminal_oldest_first_and_never_drops_pending() {
+		// Under cap → store with nothing evicted.
+		let some = vec![
+			("p1".to_string(), RequestStatus::Pending, 10),
+			("e1".to_string(), RequestStatus::Expired, 5),
+		];
+		assert_eq!(
+			plan_incoming_admission(&some, 5),
+			Admission::Store(vec![]),
+			"below the cap, admit without evicting anything"
+		);
+
+		// At cap with terminal rows present → evict the OLDEST terminal first.
+		// received_at: e-old=1 (Expired), c-mid=2 (Cancelled), p=3/4/5 (Pending).
+		let full = vec![
+			("p3".to_string(), RequestStatus::Pending, 3),
+			("e-old".to_string(), RequestStatus::Expired, 1),
+			("p4".to_string(), RequestStatus::Pending, 4),
+			("c-mid".to_string(), RequestStatus::Cancelled, 2),
+			("p5".to_string(), RequestStatus::Pending, 5),
+		];
+		// cap 5, len 5 → need 1 freed. Oldest terminal is e-old (received_at 1).
+		assert_eq!(
+			plan_incoming_admission(&full, 5),
+			Admission::Store(vec!["e-old".to_string()]),
+			"evict the oldest terminal row, not either newer terminal nor any pending"
+		);
+
+		// Two terminal rows, need two freed → both terminal, oldest first order.
+		// cap 4, len 5 → need 2. Terminals are e-old(1) then c-mid(2).
+		let plan = plan_incoming_admission(&full, 4);
+		assert_eq!(
+			plan,
+			Admission::Store(vec!["e-old".to_string(), "c-mid".to_string()]),
+			"free exactly `need` terminal rows, oldest-first, never a pending"
+		);
+
+		// At cap with ONLY pending/approved rows → REFUSE (backpressure); a live
+		// pending request is never dropped to admit a newcomer.
+		let all_live = vec![
+			("p1".to_string(), RequestStatus::Pending, 1),
+			("p2".to_string(), RequestStatus::Pending, 2),
+			("a1".to_string(), RequestStatus::Approved, 3),
+		];
+		assert_eq!(
+			plan_incoming_admission(&all_live, 3),
+			Admission::Refuse,
+			"with no terminal rows to evict, refuse rather than drop a pending/approved"
+		);
+
+		// Enough pending but not enough terminal to cover `need` → still refuse.
+		// cap 3, len 5 → need 3, but only 2 terminal exist.
+		let mostly_pending = vec![
+			("p1".to_string(), RequestStatus::Pending, 1),
+			("p2".to_string(), RequestStatus::Pending, 2),
+			("p3".to_string(), RequestStatus::Pending, 3),
+			("e1".to_string(), RequestStatus::Expired, 4),
+			("d1".to_string(), RequestStatus::Declined, 5),
+		];
+		assert_eq!(
+			plan_incoming_admission(&mostly_pending, 3),
+			Admission::Refuse,
+			"cannot free enough terminal rows without touching a pending → refuse"
+		);
+	}
+
+	/// End-to-end on the real store: terminal rows are actually DELETED (disk
+	/// reclaimed) while pending rows survive, and the bounded ingest path stores
+	/// under the cap.
+	#[test]
+	fn prune_terminal_deletes_terminal_keeps_pending() {
+		let store = temp_store_tagged("prune-terminal");
+		store.save_request(&req_status("pend", RequestStatus::Pending, 1));
+		store.save_request(&req_status("appr", RequestStatus::Approved, 2));
+		store.save_request(&req_status("exp", RequestStatus::Expired, 3));
+		store.save_request(&req_status("canc", RequestStatus::Cancelled, 4));
+		store.save_request(&req_status("decl", RequestStatus::Declined, 5));
+		assert_eq!(store.all_requests().len(), 5);
+
+		let removed = store.prune_terminal_requests();
+		assert_eq!(removed, 3, "Expired + Cancelled + Declined are deleted");
+
+		let remaining: Vec<RequestStatus> =
+			store.all_requests().into_iter().map(|r| r.status).collect();
+		assert_eq!(remaining.len(), 2, "only the two live rows survive");
+		assert!(
+			store.request("pend").is_some(),
+			"pending must never be deleted"
+		);
+		assert!(store.request("appr").is_some(), "approved must be kept");
+		assert!(store.request("exp").is_none());
+		assert!(store.request("canc").is_none());
+		assert!(store.request("decl").is_none());
+
+		// Bounded ingest under the cap stores normally.
+		assert!(store.save_incoming_request(&req_status("new", RequestStatus::Pending, 6)));
+		assert!(store.request("new").is_some());
+	}
+
+	/// The real bounded ingest path at the true `REQUEST_CAP`: fill to the cap with
+	/// pending rows + one terminal row, then a new incoming request evicts the
+	/// terminal row (not any pending). A further incoming with the store full of
+	/// pending is refused, and every pending row is still present.
+	#[test]
+	fn save_incoming_request_respects_cap_without_dropping_pending() {
+		let store = temp_store_tagged("req-cap");
+		let cap = NostrStore::REQUEST_CAP;
+		// (cap - 1) pending rows + 1 terminal row = cap total.
+		for i in 0..(cap - 1) {
+			store.save_request(&req_status(
+				&format!("p{i}"),
+				RequestStatus::Pending,
+				100 + i as i64,
+			));
+		}
+		store.save_request(&req_status("terminal", RequestStatus::Expired, 1));
+		assert_eq!(store.all_requests().len(), cap);
+
+		// New incoming: evict the terminal row, store the newcomer, stay at cap.
+		assert!(store.save_incoming_request(&req_status("newA", RequestStatus::Pending, 999)));
+		assert!(store.request("terminal").is_none(), "terminal row evicted");
+		assert!(store.request("newA").is_some(), "newcomer stored");
+		assert_eq!(store.all_requests().len(), cap);
+		assert_eq!(
+			store.pending_requests().len(),
+			cap,
+			"all rows are now pending and none were dropped"
+		);
+
+		// Store now full of pending only → next incoming is refused (backpressure),
+		// and NO existing pending row is dropped.
+		assert!(
+			!store.save_incoming_request(&req_status("newB", RequestStatus::Pending, 1000)),
+			"refuse when only pending rows remain"
+		);
+		assert!(
+			store.request("newB").is_none(),
+			"refused newcomer not stored"
+		);
+		assert_eq!(store.all_requests().len(), cap, "no pending row evicted");
+		assert!(store.request("newA").is_some());
+		for i in 0..(cap - 1) {
+			assert!(
+				store.request(&format!("p{i}")).is_some(),
+				"pending p{i} survives"
+			);
+		}
 	}
 }
