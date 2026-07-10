@@ -42,7 +42,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use bytes::Bytes;
-use http_body_util::{BodyExt, Full};
+use http_body_util::Full;
 use hyper_util::rt::TokioIo;
 use log::{debug, warn};
 use tokio::io::{AsyncRead, AsyncWrite};
@@ -253,7 +253,9 @@ async fn request_once(
 	} else {
 		None
 	};
-	let bytes = resp.into_body().collect().await.ok()?.to_bytes().to_vec();
+	// Bound the collected body so a hostile exit / endpoint can't OOM the wallet
+	// with a multi-GB stream (shared cap with the clearnet path).
+	let bytes = crate::http::collect_body_capped(resp).await?;
 	Some((status, bytes, location))
 }
 
