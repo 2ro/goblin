@@ -289,11 +289,14 @@ impl GoblinWalletView {
 				ui.add_space(10.0);
 				if w::big_action(ui, &t!("goblin.relays.save_reconnect"), false).clicked() {
 					if let Some(s) = wallet.nostr_service() {
-						{
-							let mut c = s.config.write();
-							c.set_relays(self.relay_edit.clone());
-							c.save();
-						}
+						// Remember the edited list for the ACTIVE transport only
+						// (Tor vs clearnet), keyed so each network keeps its own
+						// set. The list is used verbatim: defaults are just
+						// defaults and every entry is removable.
+						let over_tor = s.tor_routing();
+						s.config
+							.write()
+							.set_relays_for(over_tor, self.relay_edit.clone());
 						s.restart(wallet.clone());
 					}
 					self.settings_page = SettingsPage::Main;

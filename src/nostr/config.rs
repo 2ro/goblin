@@ -36,8 +36,18 @@ pub enum AcceptPolicy {
 pub struct NostrConfig {
 	/// Whether the nostr subsystem runs for this wallet.
 	enabled: Option<bool>,
-	/// Relay list override.
+	/// Legacy transport-agnostic relay list override (pre per-transport memory).
+	/// Still honored as a fallback for whichever transport has no explicit set,
+	/// so an old `nostr.toml` keeps working with no migration.
 	relays: Option<Vec<String>>,
+	/// User relay list remembered for the Tor transport, used verbatim. `Some`
+	/// only once the user has edited relays while on Tor; otherwise the default
+	/// `TOR_RELAYS` set is used.
+	relays_tor: Option<Vec<String>>,
+	/// User relay list remembered for the clearnet transport, used verbatim.
+	/// `Some` only once the user has edited relays while on clearnet; otherwise
+	/// the per-identity random healthy subset is used.
+	relays_clearnet: Option<Vec<String>>,
 	/// Accept policy for incoming payments.
 	accept_from: Option<AcceptPolicy>,
 	/// NIP-05 identity server base URL.
@@ -96,19 +106,37 @@ impl NostrConfig {
 		self.save();
 	}
 
-	pub fn relays(&self) -> Vec<String> {
-		self.relays_override()
-			.unwrap_or_else(|| DEFAULT_RELAYS.iter().map(|s| s.to_string()).collect())
+	/// The built-in clearnet default relay set, used until the per-identity
+	/// advertised set has been selected.
+	pub fn default_relays(&self) -> Vec<String> {
+		DEFAULT_RELAYS.iter().map(|s| s.to_string()).collect()
 	}
 
-	/// The relay list explicitly set by the user in nostr.toml, if any. An
-	/// override disables the per-identity advertised-set selection entirely.
-	pub fn relays_override(&self) -> Option<Vec<String>> {
-		self.relays.clone().filter(|r| !r.is_empty())
+	/// The relay list the user explicitly saved for the given transport, if any.
+	/// A `Some` override disables the per-identity advertised-set selection for
+	/// that transport entirely. Precedence: the transport-specific list wins;
+	/// failing that, the legacy transport-agnostic `relays` list is honored so an
+	/// old `nostr.toml` keeps working. Empty lists are treated as "not set".
+	pub fn relays_override(&self, over_tor: bool) -> Option<Vec<String>> {
+		let specific = if over_tor {
+			&self.relays_tor
+		} else {
+			&self.relays_clearnet
+		};
+		specific
+			.clone()
+			.or_else(|| self.relays.clone())
+			.filter(|r| !r.is_empty())
 	}
 
-	pub fn set_relays(&mut self, relays: Vec<String>) {
-		self.relays = Some(relays);
+	/// Remember the user's relay list for the given transport (Tor vs clearnet),
+	/// keeping the two independent so a switch of network keeps each side's set.
+	pub fn set_relays_for(&mut self, over_tor: bool, relays: Vec<String>) {
+		if over_tor {
+			self.relays_tor = Some(relays);
+		} else {
+			self.relays_clearnet = Some(relays);
+		}
 		self.save();
 	}
 
@@ -227,5 +255,59 @@ mod tests {
 			toml::from_str("tor_enabled = false\n").expect("explicit-off nostr.toml parses");
 		assert!(off.tor_enabled_is_set());
 		assert!(!off.tor_enabled());
+	}
+
+	#[test]
+	fn per_transport_relay_overrides_are_independent_and_round_trip() {
+		// A fresh config has no override for either transport.
+		let mut cfg = NostrConfig::default();
+		assert!(cfg.relays_override(true).is_none());
+		assert!(cfg.relays_override(false).is_none());
+
+		// Editing on clearnet stores a clearnet-only override; Tor is untouched.
+		let clearnet = vec!["wss://a.example".to_string(), "wss://b.example".to_string()];
+		cfg.set_relays_for(false, clearnet.clone());
+		assert_eq!(cfg.relays_override(false), Some(clearnet.clone()));
+		assert!(cfg.relays_override(true).is_none());
+
+		// Editing on Tor stores a separate Tor-only override; clearnet unchanged.
+		let tor = vec!["wss://tor-only.example".to_string()];
+		cfg.set_relays_for(true, tor.clone());
+		assert_eq!(cfg.relays_override(true), Some(tor));
+		assert_eq!(cfg.relays_override(false), Some(clearnet));
+
+		// The two lists survive a serialize -> deserialize round-trip (an app
+		// update reads the same nostr.toml back).
+		let toml_str = toml::to_string(&cfg).expect("serialize");
+		let back: NostrConfig = toml::from_str(&toml_str).expect("deserialize");
+		assert_eq!(back.relays_override(true), cfg.relays_override(true));
+		assert_eq!(back.relays_override(false), cfg.relays_override(false));
+	}
+
+	#[test]
+	fn legacy_relays_field_is_honored_as_a_fallback_for_both_transports() {
+		// An old nostr.toml written before per-transport memory existed only has
+		// the transport-agnostic `relays` list; it must still apply to both.
+		let legacy: NostrConfig = toml::from_str("relays = [\"wss://legacy.example\"]\n")
+			.expect("legacy relays nostr.toml parses");
+		let expected = Some(vec!["wss://legacy.example".to_string()]);
+		assert_eq!(legacy.relays_override(true), expected);
+		assert_eq!(legacy.relays_override(false), expected);
+
+		// A per-transport override takes precedence over the legacy fallback for
+		// that transport, while the other transport still falls back to legacy.
+		let mut cfg = legacy;
+		let clearnet = vec!["wss://new-clearnet.example".to_string()];
+		cfg.set_relays_for(false, clearnet.clone());
+		assert_eq!(cfg.relays_override(false), Some(clearnet));
+		assert_eq!(
+			cfg.relays_override(true),
+			Some(vec!["wss://legacy.example".to_string()])
+		);
+
+		// An empty stored list is treated as "not set".
+		let mut empty = NostrConfig::default();
+		empty.set_relays_for(false, vec![]);
+		assert!(empty.relays_override(false).is_none());
 	}
 }
