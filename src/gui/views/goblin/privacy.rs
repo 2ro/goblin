@@ -149,10 +149,15 @@ pub(super) fn network_privacy_panels(ui: &mut egui::Ui, tor_on: bool) -> Option<
 		});
 	});
 	ui.add_space(12.0);
+	// The VPN nudge is a deliberate safety recommendation, so it reads a step
+	// stronger than the surrounding muted captions: semibold (the app's standard
+	// emphasis weight) and brightened one tone off the mute color. Emphasis is
+	// styling-only — the whole nudge is one localized string, so no locale copy
+	// changes and nothing to retranslate.
 	ui.label(
 		RichText::new(t!("goblin.privacy.vpn_note"))
-			.font(FontId::new(12.5, fonts::regular()))
-			.color(t.text_mute),
+			.font(FontId::new(12.5, fonts::semibold()))
+			.color(t.text_dim),
 	);
 	toggled
 }
