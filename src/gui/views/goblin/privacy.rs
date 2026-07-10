@@ -149,15 +149,34 @@ pub(super) fn network_privacy_panels(ui: &mut egui::Ui, tor_on: bool) -> Option<
 		});
 	});
 	ui.add_space(12.0);
-	// The VPN nudge is a deliberate safety recommendation, so it reads a step
-	// stronger than the surrounding muted captions: semibold (the app's standard
-	// emphasis weight) and brightened one tone off the mute color. Emphasis is
-	// styling-only — the whole nudge is one localized string, so no locale copy
+	// The VPN nudge is a deliberate safety recommendation, so it gets a real
+	// highlighter-marker background — a yellow wash behind the text, per-line
+	// (RichText::background_color highlights each wrapped row tight to the glyphs,
+	// exactly like a marker stroke). The ink is always the near-black brand ink so
+	// dark-on-yellow stays highly legible (>=9:1 in every theme); only the yellow
+	// is tuned per theme so the highlight both reads as a marker AND contrasts with
+	// the surface it sits on:
+	//   • Light  — a softer warm yellow (#FFE45C) so it reads as a marker on the
+	//     near-white page instead of a loud brand-yellow block.
+	//   • Dark   — full brand yellow (#FFD60A) for real presence on the near-black
+	//     page.
+	//   • Yellow — the page itself is brand yellow, so a brand-yellow highlight
+	//     would vanish; a deeper amber (#F0A800) reads as a distinct marker stroke
+	//     on the lemon background.
+	// Kept semibold — the marker + bold together read as a clear "recommendation".
+	// Styling-only: the whole nudge is one localized string, so no locale copy
 	// changes and nothing to retranslate.
+	let vpn_ink = Color32::from_rgb(0x0E, 0x0E, 0x0C);
+	let vpn_highlight = match theme::kind() {
+		theme::ThemeKind::Light => Color32::from_rgb(0xFF, 0xE4, 0x5C),
+		theme::ThemeKind::Dark => Color32::from_rgb(0xFF, 0xD6, 0x0A),
+		theme::ThemeKind::Yellow => Color32::from_rgb(0xF0, 0xA8, 0x00),
+	};
 	ui.label(
 		RichText::new(t!("goblin.privacy.vpn_note"))
 			.font(FontId::new(12.5, fonts::semibold()))
-			.color(t.text_dim),
+			.color(vpn_ink)
+			.background_color(vpn_highlight),
 	);
 	toggled
 }
