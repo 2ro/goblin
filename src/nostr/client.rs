@@ -697,18 +697,22 @@ impl NostrService {
 		});
 	}
 
-	/// Current relay list: a user-set nostr.toml override wins, otherwise the
-	/// per-identity sticky advertised set (Goblin relay + pool picks), with
-	/// the built-in defaults until one has been selected.
+	/// Current relay list, resolved for the wallet's ACTIVE transport
+	/// (per-user-tor §4). A user `nostr.toml` override wins in both regimes.
+	/// Otherwise: on Tor the FIXED pinned `TOR_RELAYS` set (same for every
+	/// identity); on clearnet this identity's persisted random healthy subset
+	/// (`dm_relays`), falling back to the built-in defaults until selection has
+	/// run. `relay.floonet.dev` is pinned first in every case. Because this reads
+	/// `tor_routing()` live, a Tor toggle (which calls `restart()`) recomputes the
+	/// set for the new transport at the next `run_service` without touching the
+	/// persisted clearnet subset.
 	pub fn relays(&self) -> Vec<String> {
-		if let Some(over) = self.config.read().relays_override() {
-			return over;
-		}
-		let sticky = self.identity.read().dm_relays.clone();
-		if !sticky.is_empty() {
-			return sticky;
-		}
-		self.config.read().relays()
+		crate::nostr::relays::effective_relays(
+			self.tor_routing(),
+			self.config.read().relays_override(),
+			self.identity.read().dm_relays.clone(),
+			self.config.read().relays(),
+		)
 	}
 
 	/// Auto-expire stale pending transactions after the configured window
@@ -1711,18 +1715,26 @@ async fn relays_connected(client: &Client) -> bool {
 		.any(|r| r.status() == RelayStatus::Connected)
 }
 
-/// One-time advertised-set selection: the Goblin relay plus up to two pool
-/// "dm" relays, weighted-random (vetted entries 3:1), each gated by a NIP-11
+/// One-time CLEARNET advertised-set selection: the Goblin relay plus up to two
+/// pool "dm" relays, weighted-random (vetted entries 3:1), each gated by a NIP-11
 /// probe at pick time so only relays about to be used are probed. Persisted
 /// on the identity and sticky thereafter — no timer rotation, since 10050
 /// churn breaks payers' cached routing. A user relay override in nostr.toml
 /// disables selection entirely. When no pool relay passes (e.g. offline),
 /// nothing is persisted and the built-in defaults serve this session;
 /// selection retries next start.
+///
+/// Only runs on CLEARNET: on Tor every identity uses the fixed [`TOR_RELAYS`]
+/// set (per-user-tor §4), so there is nothing to select — and we must NOT touch
+/// the identity's persisted clearnet `dm_relays` subset (it stays stable so a
+/// switch back to clearnet keeps the same per-identity relays).
 async fn ensure_advertised_set(svc: &Arc<NostrService>) {
 	use crate::nostr::pool;
 	use crate::nostr::relays::DEFAULT_RELAYS;
 	use rand::Rng;
+	if svc.tor_routing() {
+		return;
+	}
 	if svc.config.read().relays_override().is_some() || !svc.identity.read().dm_relays.is_empty() {
 		return;
 	}
