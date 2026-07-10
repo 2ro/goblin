@@ -39,3 +39,6 @@ grin-wallet.toml
 # untracked (mod e2e is gated behind the `e2e-internal` feature)
 src/wallet/e2e.rs
 tests/nostr_e2e.rs
+# Local agent tooling + in-flight worktrees — never commit
+.claude/
+.worktrees/
