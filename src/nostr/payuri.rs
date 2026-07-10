@@ -242,19 +242,24 @@ fn validate_amount(raw: &str) -> Option<String> {
 	}
 }
 
-/// Validate a `memo` value: percent-decode, strip ASCII control chars and
-/// newlines (untrusted free text — display / tx-message only, never a path or
-/// route), then hard-cap at [`MAX_MEMO_BYTES`] on a UTF-8 boundary. Empty →
-/// `None`.
+/// Validate a `memo` value: percent-decode, then drop every display-dangerous
+/// codepoint — ASCII control chars/newlines AND the bidi-override / isolate /
+/// zero-width format chars (see
+/// [`crate::nostr::sanitize::is_display_dangerous`]) — because a memo is
+/// untrusted free text rendered in the payment strip (display / tx-message
+/// only, never a path or route). Then hard-cap at [`MAX_MEMO_BYTES`] on a UTF-8
+/// boundary. Empty → `None`. Filtering by CHAR after decoding (not by byte) is
+/// what catches the multibyte bidi codepoints a byte filter would miss.
 fn validate_memo(raw: &str) -> Option<String> {
 	let decoded = percent_decode(raw);
-	// Drop ASCII control bytes (< 0x20, covering NUL / newline / tab) and DEL.
-	let cleaned: Vec<u8> = decoded
-		.into_iter()
-		.filter(|&b| b >= 0x20 && b != 0x7f)
+	let text = String::from_utf8_lossy(&decoded);
+	// Drop control chars (NUL / newline / tab / DEL) and bidi/zero-width format
+	// chars — leaving legitimate letters of every script intact.
+	let cleaned: String = text
+		.chars()
+		.filter(|c| !crate::nostr::sanitize::is_display_dangerous(*c))
 		.collect();
-	let text = String::from_utf8_lossy(&cleaned).into_owned();
-	let text = truncate_on_char_boundary(text, MAX_MEMO_BYTES);
+	let text = truncate_on_char_boundary(cleaned, MAX_MEMO_BYTES);
 	let text = text.trim().to_string();
 	if text.is_empty() { None } else { Some(text) }
 }

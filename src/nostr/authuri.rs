@@ -531,20 +531,13 @@ pub fn content_preview(content: &str) -> (String, usize) {
 /// passes through unchanged. Used on ALL requester-controlled strings (content,
 /// tag values, titles) before they reach a label.
 pub fn escape_for_display(s: &str) -> String {
-	// TODO(audit M5): widen escaping to category-based (all C0/C1, bidi controls)
-	// rather than the current explicit list.
+	// Category-based, shared with every other untrusted-string surface (completes
+	// the former TODO(audit M5)): all Cc controls (C0/C1/DEL), the bidi
+	// overrides/isolates/marks, and the zero-width/BOM format chars.
 	let mut out = String::with_capacity(s.len());
 	for c in s.chars() {
-		let code = c as u32;
-		let dangerous = code < 0x20
-			|| code == 0x7f
-			|| c == '\u{200E}' // LEFT-TO-RIGHT MARK
-			|| c == '\u{200F}' // RIGHT-TO-LEFT MARK
-			|| c == '\u{061C}' // ARABIC LETTER MARK
-			|| (0x202A..=0x202E).contains(&code) // LRE, RLE, PDF, LRO, RLO
-			|| (0x2066..=0x2069).contains(&code); // LRI, RLI, FSI, PDI
-		if dangerous {
-			out.push_str(&format!("\\u{{{code:04X}}}"));
+		if crate::nostr::sanitize::is_display_dangerous(c) {
+			out.push_str(&format!("\\u{{{:04X}}}", c as u32));
 		} else {
 			out.push(c);
 		}

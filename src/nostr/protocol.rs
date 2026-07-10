@@ -50,12 +50,21 @@ static SLATEPACK_RE: LazyLock<Regex> = LazyLock::new(|| {
 	Regex::new(r"BEGINSLATEPACK\.[\s\S]*?ENDSLATEPACK\.").expect("slatepack regex")
 });
 
-/// Sanitize a user note: strip control characters, collapse whitespace,
-/// trim and cap the length. Returns `None` when nothing readable remains.
+/// Sanitize a user note: neutralize control AND bidi/zero-width format
+/// characters (see [`crate::nostr::sanitize::is_display_dangerous`]) to spaces,
+/// collapse whitespace, trim and cap the length. Returns `None` when nothing
+/// readable remains. Mapping to a space (rather than dropping) preserves word
+/// boundaries and keeps a hidden joiner from silently fusing two tokens.
 pub fn sanitize_note(raw: &str) -> Option<String> {
 	let cleaned: String = raw
 		.chars()
-		.map(|c| if c.is_control() { ' ' } else { c })
+		.map(|c| {
+			if crate::nostr::sanitize::is_display_dangerous(c) {
+				' '
+			} else {
+				c
+			}
+		})
 		.collect();
 	let collapsed = cleaned.split_whitespace().collect::<Vec<_>>().join(" ");
 	let trimmed = collapsed.trim();

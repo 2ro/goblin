@@ -25,6 +25,11 @@ use crate::nostr::relays::HOME_NIP05_DOMAIN;
 use crate::tor;
 use parking_lot::RwLock;
 
+/// Hard cap on a name-authority `@name` before it is shown as a contact handle.
+/// A display name has no business being hundreds of characters; this bounds a
+/// hostile/compromised authority that returns a wall of text.
+const MAX_NAME_CHARS: usize = 64;
+
 /// The active name-authority "home" domain, mirrored here from the wallet config
 /// once per frame so resolution + display (some on worker threads) can read it
 /// without threading the config through every call site. `None` = the default
@@ -122,10 +127,12 @@ pub async fn name_by_pubkey(domain: &str, pubkey_hex: &str) -> Option<String> {
 	);
 	let body = tor::http_request("GET", url, None, vec![]).await?;
 	let doc: Value = serde_json::from_str(&body).ok()?;
-	doc.get("name")
-		.and_then(|v| v.as_str())
-		.filter(|s| !s.is_empty())
-		.map(|s| s.to_string())
+	let raw = doc.get("name").and_then(|v| v.as_str())?;
+	// The authority is untrusted display data: strip any control/bidi/zero-width
+	// codepoints and cap the length before this name becomes a contact handle
+	// rendered as the payer/peer identity. A hostile or compromised authority
+	// must not be able to spoof or reorder the displayed name.
+	crate::nostr::sanitize::sanitize_name(raw, MAX_NAME_CHARS)
 }
 
 /// Verify that a pubkey matches its claimed NIP-05 identifier.

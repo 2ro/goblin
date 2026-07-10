@@ -49,6 +49,7 @@ pub use client::{HeldIdentityKeys, NostrProfile, NostrService, TransportStatus, 
 
 pub mod avatar;
 pub mod nip05;
+pub mod sanitize;
 
 pub mod authuri;
 pub mod loginuri;
