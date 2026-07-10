@@ -119,6 +119,37 @@ pub(super) fn settings_row_toggle(
 	toggled
 }
 
+/// Like [`settings_row_toggle`] but the switch is forced visually ON, dimmed and
+/// non-interactive, and the label/subtitle are dimmed to match — for a toggle
+/// that is superseded by a higher-priority setting (e.g. "Hide all details"
+/// locking on "Hide amounts"/"Hide names"). Renders only; it never reports a
+/// toggle and never touches the underlying stored value, so the row snaps back
+/// to the user's real choice once the governing toggle is turned off.
+pub(super) fn settings_row_toggle_locked(ui: &mut egui::Ui, label: &str, sub: &str) {
+	let t = theme::tokens();
+	ui.horizontal(|ui| {
+		let toggle_w = 58.0;
+		let text_w = (ui.available_width() - toggle_w).max(0.0);
+		ui.vertical(|ui| {
+			ui.set_width(text_w);
+			ui.label(
+				RichText::new(label)
+					.font(FontId::new(15.0, fonts::medium()))
+					.color(t.surface_text.gamma_multiply(0.5)),
+			);
+			ui.label(
+				RichText::new(sub)
+					.font(FontId::new(13.0, fonts::regular()))
+					.color(t.surface_text_dim.gamma_multiply(0.7)),
+			);
+		});
+		ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+			w::toggle_locked(ui);
+		});
+	});
+	ui.add_space(10.0);
+}
+
 pub(super) fn settings_row(ui: &mut egui::Ui, label: &str, value: &str) {
 	settings_row_ink(ui, label, value, theme::tokens().surface_text_dim);
 }

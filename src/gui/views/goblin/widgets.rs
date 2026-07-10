@@ -238,6 +238,25 @@ pub fn toggle(ui: &mut Ui, on: bool) -> Response {
 	resp.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
+/// A locked variant of [`toggle`]: always drawn in the ON state but dimmed and
+/// non-interactive. Used when a higher-priority setting supersedes this one
+/// (e.g. "Hide all details" forces "Hide amounts"/"Hide names" on). Same 46×28
+/// footprint as [`toggle`] so locked rows line up with live ones; allocated with
+/// `Sense::hover()` (no click) and no pointing-hand cursor so taps do nothing.
+pub fn toggle_locked(ui: &mut Ui) -> Response {
+	let t = theme::tokens();
+	let (rect, resp) = ui.allocate_exact_size(Vec2::new(46.0, 28.0), Sense::hover());
+	let track = t.accent.gamma_multiply(0.45);
+	ui.painter()
+		.rect_filled(rect, CornerRadius::same(14), track);
+	let knob_r = 11.0;
+	let knob_x = rect.right() - knob_r - 3.0;
+	let knob = t.accent_ink.gamma_multiply(0.6);
+	ui.painter()
+		.circle_filled(egui::pos2(knob_x, rect.center().y), knob_r, knob);
+	resp
+}
+
 /// A large on/off switch for the Network-privacy Tor toggle. Unlike [`toggle`]
 /// (brand yellow when on), this is dormant GRAY when OFF and blueviolet ("tor
 /// purple") when ON — never yellow — so the privacy state reads distinctly from

@@ -235,7 +235,19 @@ impl GoblinWalletView {
 				);
 				ui.add_space(16.0);
 				settings_group(ui, &t!("goblin.advprivacy.notifications"), |ui| {
-					if let Some(v) = settings_row_toggle(
+					// "Hide all details" supersedes the two finer toggles: while it
+					// is on, they render forced-on, dimmed and locked (non-interactive)
+					// via settings_row_toggle_locked, which never writes their stored
+					// values — so turning it back off restores the user's real
+					// hide_amounts / hide_names choices.
+					let hide_all = crate::AppConfig::notif_hide_details();
+					if hide_all {
+						settings_row_toggle_locked(
+							ui,
+							&t!("goblin.settings.hide_amounts"),
+							&t!("goblin.settings.hide_amounts_sub"),
+						);
+					} else if let Some(v) = settings_row_toggle(
 						ui,
 						&t!("goblin.settings.hide_amounts"),
 						&t!("goblin.settings.hide_amounts_sub"),
@@ -243,7 +255,13 @@ impl GoblinWalletView {
 					) {
 						crate::AppConfig::set_hide_amounts(v);
 					}
-					if let Some(v) = settings_row_toggle(
+					if hide_all {
+						settings_row_toggle_locked(
+							ui,
+							&t!("goblin.advprivacy.hide_names"),
+							&t!("goblin.advprivacy.hide_names_sub"),
+						);
+					} else if let Some(v) = settings_row_toggle(
 						ui,
 						&t!("goblin.advprivacy.hide_names"),
 						&t!("goblin.advprivacy.hide_names_sub"),
