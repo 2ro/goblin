@@ -70,32 +70,22 @@ pub(super) fn settings_group_colored(
 /// onboarding stashes it and writes it before the service starts).
 pub(super) fn network_privacy_panels(ui: &mut egui::Ui, tor_on: bool) -> Option<bool> {
 	let t = theme::tokens();
+	// One short intro block: what Goblin sends + how it stays private
+	// (deliberately no crypto version numbers).
 	ui.label(
 		RichText::new(t!("goblin.privacy.intro"))
 			.font(FontId::new(14.0, fonts::regular()))
 			.color(t.text_dim),
 	);
-	ui.add_space(14.0);
-	ui.label(
-		RichText::new(t!("goblin.privacy.how_privacy"))
-			.font(FontId::new(14.0, fonts::semibold()))
-			.color(t.text),
-	);
-	ui.add_space(4.0);
-	ui.label(
-		RichText::new(t!("goblin.privacy.how_privacy_blurb"))
-			.font(FontId::new(13.0, fonts::regular()))
-			.color(t.text_dim),
-	);
 	ui.add_space(16.0);
 
-	// Grin node — ALWAYS DIRECT, grey dot, full width. Public chain data, the
-	// same for everyone, never routed over Tor.
+	// Grin node — ALWAYS DIRECT, brand-yellow dot, full width. Public chain
+	// data, the same for everyone, never routed over Tor.
 	settings_group(ui, &t!("goblin.privacy.always_direct"), |ui| {
 		ui.set_min_width(ui.available_width());
 		privacy_line(
 			ui,
-			t.surface_text_mute,
+			theme::GOBLIN_YELLOW,
 			&t!("goblin.privacy.grin_node"),
 			&t!("goblin.privacy.grin_node_blurb"),
 		);
@@ -132,30 +122,30 @@ pub(super) fn network_privacy_panels(ui: &mut egui::Ui, tor_on: bool) -> Option<
 	});
 	ui.add_space(18.0);
 
-	// Large Tor switch — dormant gray when off, blueviolet when on (never
-	// yellow). The color state lives on the dots above; this reads on/off.
+	// Large Tor switch — the whole card is stacked and centered so it reads as
+	// "flip between Tor and direct": title on top, the big switch on its own
+	// row, then a full-width caption below that can never clip. The switch is
+	// dormant gray when off, blueviolet when on (never yellow) — the color state
+	// lives on the dots above; this reads on/off.
 	let mut toggled = None;
 	w::card(ui, |ui| {
 		ui.set_min_width(ui.available_width());
-		ui.horizontal(|ui| {
-			ui.vertical(|ui| {
-				ui.label(
-					RichText::new(t!("goblin.privacy.tor_switch"))
-						.font(FontId::new(15.0, fonts::semibold()))
-						.color(t.surface_text),
-				);
-				ui.add_space(2.0);
-				ui.label(
-					RichText::new(t!("goblin.privacy.tor_switch_sub"))
-						.font(FontId::new(12.5, fonts::regular()))
-						.color(t.surface_text_dim),
-				);
-			});
-			ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-				if w::toggle_large(ui, tor_on).clicked() {
-					toggled = Some(!tor_on);
-				}
-			});
+		ui.vertical_centered(|ui| {
+			ui.label(
+				RichText::new(t!("goblin.privacy.tor_switch"))
+					.font(FontId::new(15.0, fonts::semibold()))
+					.color(t.surface_text),
+			);
+			ui.add_space(12.0);
+			if w::toggle_large(ui, tor_on).clicked() {
+				toggled = Some(!tor_on);
+			}
+			ui.add_space(12.0);
+			ui.label(
+				RichText::new(t!("goblin.privacy.tor_switch_sub"))
+					.font(FontId::new(12.5, fonts::regular()))
+					.color(t.surface_text_dim),
+			);
 		});
 	});
 	ui.add_space(12.0);
