@@ -241,22 +241,23 @@ pub fn build_login_event(keys: &Keys, challenge: &str, domain: &str) -> Result<E
 }
 
 /// POST the signed login event to the callback as `{"event": <event-json>}`.
-/// Goes through the app's shared [`crate::http::HttpClient`], so it follows
-/// the exact same transport policy (proxy settings included) as every other
-/// clearnet call. The caller wraps this in its own timeout.
+/// Goes through [`crate::tor::http_request_bytes`], the transport-aware helper:
+/// over Tor when the open wallet routes over Tor, clearnet otherwise. Routing
+/// over Tor when it is on keeps the callback server from tying the user's real
+/// IP to the identity pubkey in the signed event. The helper sets a browser-like
+/// default `User-Agent`, so the request is not trivially fingerprintable as
+/// Goblin at the destination (no identifying `goblin-wallet` header). The caller
+/// wraps this in its own timeout.
 pub async fn post_login_event(callback: &str, event: &Event) -> Result<(), String> {
 	let body = serde_json::json!({ "event": event }).to_string();
-	let req = hyper::Request::builder()
-		.method(hyper::Method::POST)
-		.uri(callback)
-		.header("Content-Type", "application/json")
-		.header("User-Agent", "goblin-wallet")
-		.body(http_body_util::Full::new(bytes::Bytes::from(body)))
-		.map_err(|e| e.to_string())?;
-	let resp = crate::http::HttpClient::send(req)
-		.await
-		.map_err(|e| e.to_string())?;
-	let status = resp.status().as_u16();
+	let (status, _) = crate::tor::http_request_bytes(
+		"POST",
+		callback.to_string(),
+		Some(body.into_bytes()),
+		vec![("Content-Type".to_string(), "application/json".to_string())],
+	)
+	.await
+	.ok_or_else(|| "callback request failed".to_string())?;
 	if (200..300).contains(&status) {
 		Ok(())
 	} else {
