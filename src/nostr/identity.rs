@@ -341,6 +341,11 @@ pub struct FullBackup {
 	pub active: String,
 	/// Every held identity with its unlocked keys, re-openable by the restorer.
 	pub identities: Vec<(NostrIdentity, Keys)>,
+	/// The wallet's sealed activity history (an [`crate::nostr::ArchiveSnapshot`]
+	/// serialized to JSON), if the backup carried one. `None` for a legacy backup
+	/// written before the format included history; the caller deserializes and
+	/// merges it into the restored store.
+	pub history: Option<String>,
 }
 
 /// Seal an arbitrary UTF-8 string under a password with NO plaintext, reusing the
@@ -396,10 +401,19 @@ pub fn open_secret_text(k: &str, d: &str, password: &str) -> Result<String, Iden
 /// seed, no npub, no name) ever appears in the output. `identities` carries each
 /// identity with its already-unlocked keys; `active_hex` is the identity active
 /// at backup time.
+///
+/// `history_json`, when present, is the wallet's activity metadata (an
+/// [`crate::nostr::ArchiveSnapshot`] serialized to JSON: tx notes, counterparty
+/// npubs/names, request records) sealed under the SAME password with
+/// [`seal_secret_text`], so the restored wallet's activity list survives a chain
+/// rescan. It carries npubs, names and notes, so it is sealed, never plaintext.
+/// An empty or `None` value simply omits the field, keeping the output
+/// byte-shaped exactly like the pre-history format.
 pub fn build_full_backup(
 	seed_phrase: &str,
 	identities: &[(NostrIdentity, Keys)],
 	active_hex: &str,
+	history_json: Option<&str>,
 	password: &str,
 ) -> Result<String, IdentityError> {
 	let (k, d) = seal_secret_text(seed_phrase, password)?;
@@ -407,12 +421,20 @@ pub fn build_full_backup(
 	for (id, keys) in identities {
 		elems.push(id.to_encrypted_backup(keys)?);
 	}
-	let envelope = serde_json::json!({
+	let mut envelope = serde_json::json!({
 		"goblin_backup": 2,
 		"seed": { "k": k, "d": d },
 		"identities": elems,
 		"active": active_hex,
 	});
+	// Optional sealed history. A new field older builds don't read (they pull the
+	// envelope apart with `.get()` on the fields they know), so a NEW file still
+	// restores on an OLD app; and its absence is tolerated on open below, so an
+	// OLD file still restores on a NEW app.
+	if let Some(hist) = history_json.filter(|h| !h.is_empty()) {
+		let (hk, hd) = seal_secret_text(hist, password)?;
+		envelope["history"] = serde_json::json!({ "k": hk, "d": hd });
+	}
 	serde_json::to_string(&envelope).map_err(IdentityError::from)
 }
 
@@ -450,6 +472,24 @@ pub fn open_full_backup(blob: &str, password: &str) -> Result<FullBackup, Identi
 		.and_then(|x| x.as_str())
 		.unwrap_or("")
 		.to_string();
+	// Optional sealed activity history — absent on legacy backups, in which case
+	// the restore simply has nothing extra to merge. Sealed with the same
+	// password as the seed, so a present-but-unopenable blob is a hard error (the
+	// file is corrupt), not silently dropped.
+	let history = match v.get("history") {
+		Some(h) => {
+			let hk = h
+				.get("k")
+				.and_then(|x| x.as_str())
+				.ok_or_else(|| IdentityError::Key("backup missing history key".into()))?;
+			let hd = h
+				.get("d")
+				.and_then(|x| x.as_str())
+				.ok_or_else(|| IdentityError::Key("backup missing history data".into()))?;
+			Some(open_secret_text(hk, hd, password)?)
+		}
+		None => None,
+	};
 	let mut identities = Vec::new();
 	if let Some(arr) = v.get("identities").and_then(|x| x.as_array()) {
 		for elem in arr {
@@ -464,6 +504,7 @@ pub fn open_full_backup(blob: &str, password: &str) -> Result<FullBackup, Identi
 		seed_phrase,
 		active,
 		identities,
+		history,
 	})
 }
 
@@ -486,7 +527,9 @@ mod tests {
 		let active_hex = b.pubkey_hex().unwrap();
 		let ids = vec![(a.clone(), ka.clone()), (b.clone(), kb.clone())];
 
-		let blob = build_full_backup(seed, &ids, &active_hex, "walletpw").unwrap();
+		// Seal a scrap of activity history alongside the seed and identities.
+		let history = r#"{"ver":1,"tx_meta":[],"contacts":[],"requests":[]}"#;
+		let blob = build_full_backup(seed, &ids, &active_hex, Some(history), "walletpw").unwrap();
 		assert!(is_full_backup(&blob));
 		// A full backup is NOT a v1 single-identity backup, but the shared
 		// `goblin_backup` marker still reads as "an encrypted backup".
@@ -501,6 +544,8 @@ mod tests {
 		assert_eq!(opened.seed_phrase, seed);
 		assert_eq!(opened.active, active_hex);
 		assert_eq!(opened.identities.len(), 2);
+		// The sealed history survives the round trip verbatim.
+		assert_eq!(opened.history.as_deref(), Some(history));
 		// Both identities and their keys restore exactly, metadata intact.
 		let npubs: Vec<_> = opened
 			.identities
@@ -519,6 +564,59 @@ mod tests {
 		assert_eq!(restored_a.1.public_key(), ka.public_key());
 		// Wrong password opens nothing.
 		assert!(open_full_backup(&blob, "wrong").is_err());
+	}
+
+	#[test]
+	fn legacy_full_backup_without_history_opens_cleanly() {
+		// A v2 backup written before the history field existed carries no
+		// `history` key. It must still open, with `history == None` (nothing extra
+		// to merge), on the new app.
+		let seed = "abandon abandon abandon abandon abandon abandon abandon abandon \
+			abandon abandon abandon abandon abandon abandon abandon abandon abandon \
+			abandon abandon abandon abandon abandon abandon art";
+		let (a, ka) = NostrIdentity::create_random("pw").unwrap();
+		let active_hex = a.pubkey_hex().unwrap();
+		let ids = vec![(a, ka)];
+		// history_json = None reproduces the exact pre-history envelope.
+		let blob = build_full_backup(seed, &ids, &active_hex, None, "pw").unwrap();
+		assert!(
+			!blob.contains("history"),
+			"omitted history must not appear in the file"
+		);
+		let opened = open_full_backup(&blob, "pw").unwrap();
+		assert_eq!(opened.seed_phrase, seed);
+		assert!(opened.history.is_none());
+	}
+
+	#[test]
+	fn new_full_backup_keeps_legacy_open_path_fields() {
+		// Forward-compat: an OLD app opens a full backup by pulling the `seed`,
+		// `active` and `identities` fields out of the JSON with `.get()` and
+		// ignoring anything else. Adding `history` must leave those three exactly
+		// where the old path looks, so a NEW file still restores on an OLD build.
+		let seed = "abandon abandon abandon abandon abandon abandon abandon abandon \
+			abandon abandon abandon abandon abandon abandon abandon abandon abandon \
+			abandon abandon abandon abandon abandon abandon art";
+		let (a, ka) = NostrIdentity::create_random("pw").unwrap();
+		let active_hex = a.pubkey_hex().unwrap();
+		let ids = vec![(a, ka)];
+		let history = r#"{"ver":1,"tx_meta":[],"contacts":[],"requests":[]}"#;
+		let blob = build_full_backup(seed, &ids, &active_hex, Some(history), "pw").unwrap();
+		let v: serde_json::Value = serde_json::from_str(&blob).unwrap();
+		// The fields the legacy open path reads are all present and well-shaped.
+		assert_eq!(v.get("goblin_backup").and_then(|x| x.as_u64()), Some(2));
+		assert!(v.get("seed").and_then(|s| s.get("k")).is_some());
+		assert!(v.get("seed").and_then(|s| s.get("d")).is_some());
+		assert_eq!(
+			v.get("active").and_then(|x| x.as_str()),
+			Some(active_hex.as_str())
+		);
+		assert_eq!(
+			v.get("identities")
+				.and_then(|x| x.as_array())
+				.map(|a| a.len()),
+			Some(1)
+		);
 	}
 
 	#[test]

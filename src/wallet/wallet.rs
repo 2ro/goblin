@@ -739,8 +739,22 @@ impl Wallet {
 				.map_err(|_| "Wrong password".to_string())?;
 			identities.push((id, keys));
 		}
-		crate::nostr::build_full_backup(&phrase, &identities, &index.active, password)
-			.map_err(|e| format!("backup failed: {e}"))
+		// Seal the activity history (tx notes, counterparty names, request records)
+		// of ALL identities alongside the seed and keys, so a restore rebuilds the
+		// activity list — a chain rescan recovers the funds but not this metadata.
+		// Best-effort: a serialization slip must not block backing up the money.
+		let history_json = serde_json::to_string(
+			&NostrStore::new(self.get_config().get_nostr_db_path()).snapshot_archive(),
+		)
+		.ok();
+		crate::nostr::build_full_backup(
+			&phrase,
+			&identities,
+			&index.active,
+			history_json.as_deref(),
+			password,
+		)
+		.map_err(|e| format!("backup failed: {e}"))
 	}
 
 	/// Restore every identity from a FULL backup into THIS freshly created wallet,
@@ -825,6 +839,19 @@ impl Wallet {
 		}
 		let nostr_config = NostrConfig::load(PathBuf::from(config.get_data_path()));
 		let store = NostrStore::new(config.get_nostr_db_path());
+		// Reinstate the sealed activity history into the store, non-destructively:
+		// a fresh restore has an empty store so everything lands; a restore over an
+		// existing wallet keeps newer local rows (see `merge_archive`). Legacy
+		// backups carry no history, so this is simply skipped.
+		if let Some(history) = &full.history {
+			match serde_json::from_str::<crate::nostr::ArchiveSnapshot>(history) {
+				Ok(snap) => {
+					let n = store.merge_archive(&snap);
+					info!("nostr: merged {n} activity rows from full backup");
+				}
+				Err(e) => warn!("nostr: backup history unreadable, skipping: {e}"),
+			}
+		}
 		let (recv, active_hex) = self
 			.unlock_all_identities(&nostr_dir, wallet_password)
 			.ok_or_else(|| "identity unlock failed".to_string())?;

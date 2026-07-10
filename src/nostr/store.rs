@@ -344,6 +344,54 @@ impl NostrStore {
 		}
 	}
 
+	// ── full-backup snapshot / merge (activity history) ─────────────────────
+
+	/// Collect the activity metadata a full `.backup` seals: every tx meta,
+	/// contact and payment request across ALL held identities. Processed markers,
+	/// service settings and cached news are intentionally excluded — they are
+	/// operational or relay-reproducible, not user activity a chain rescan loses.
+	pub fn snapshot_archive(&self) -> ArchiveSnapshot {
+		ArchiveSnapshot {
+			ver: 1,
+			tx_meta: self.all_tx_meta(),
+			contacts: self.all_contacts(),
+			requests: self.all_requests(),
+		}
+	}
+
+	/// Merge a backup's activity metadata into this store WITHOUT clobbering
+	/// newer local data. A tx meta is written only when the store has no row for
+	/// its slate, or the backup row is newer (`updated_at`). A contact or request
+	/// is written only when the store has no row for it yet, so a locally-edited
+	/// petname or an already-answered request is never regressed by an older
+	/// backup. Returns the number of rows written.
+	pub fn merge_archive(&self, snap: &ArchiveSnapshot) -> usize {
+		let mut written = 0usize;
+		for meta in &snap.tx_meta {
+			let keep_local = self
+				.tx_meta(&meta.slate_id)
+				.map(|cur| cur.updated_at >= meta.updated_at)
+				.unwrap_or(false);
+			if !keep_local {
+				self.save_tx_meta(meta);
+				written += 1;
+			}
+		}
+		for contact in &snap.contacts {
+			if self.contact(&contact.npub).is_none() {
+				self.save_contact(contact);
+				written += 1;
+			}
+		}
+		for request in &snap.requests {
+			if self.request(&request.rumor_id).is_none() {
+				self.save_request(request);
+				written += 1;
+			}
+		}
+		written
+	}
+
 	// ── archive control (user-facing) ───────────────────────────────────────
 
 	/// Export the whole archive as a JSON document.
@@ -401,6 +449,155 @@ mod tests {
 		}
 	}
 
+	fn temp_store() -> (NostrStore, PathBuf) {
+		let dir = std::env::temp_dir().join(format!(
+			"goblin-store-test-{}-{}",
+			std::process::id(),
+			unix_time_nanos()
+		));
+		(NostrStore::new(dir.clone()), dir)
+	}
+
+	fn unix_time_nanos() -> u128 {
+		std::time::SystemTime::now()
+			.duration_since(std::time::UNIX_EPOCH)
+			.map(|d| d.as_nanos())
+			.unwrap_or(0)
+	}
+
+	fn tx(slate: &str, note: &str, updated_at: i64) -> TxNostrMeta {
+		TxNostrMeta {
+			ver: 1,
+			slate_id: slate.to_string(),
+			npub: "np".to_string(),
+			direction: NostrTxDirection::Sent,
+			note: Some(note.to_string()),
+			status: NostrSendStatus::Finalized,
+			sent_event_id: None,
+			received_rumor_id: None,
+			created_at: 0,
+			updated_at,
+			proof_mode: false,
+			proof_order: None,
+			proof_notify: None,
+			proof_amount: None,
+			proof_delivered: false,
+			receipt_sent: false,
+			recipient_pubkey: String::new(),
+			proof_address: None,
+		}
+	}
+
+	fn contact(npub: &str, petname: &str) -> Contact {
+		Contact {
+			ver: 1,
+			npub: npub.to_string(),
+			petname: Some(petname.to_string()),
+			nip05: None,
+			nip05_verified_at: None,
+			relays: vec![],
+			nip44_v3: false,
+			hue: 0,
+			unknown: false,
+			added_at: 0,
+			last_paid_at: None,
+			blocked: false,
+		}
+	}
+
+	fn request(rumor: &str) -> PaymentRequest {
+		PaymentRequest {
+			ver: 1,
+			rumor_id: rumor.to_string(),
+			slate_id: "s".to_string(),
+			slatepack: "sp".to_string(),
+			npub: "np".to_string(),
+			amount: 42,
+			note: None,
+			received_at: 0,
+			status: RequestStatus::Pending,
+		}
+	}
+
+	#[test]
+	fn snapshot_then_merge_into_empty_store_restores_activity() {
+		// Seed a source store, snapshot it, then merge into a fresh empty store:
+		// every tx meta, contact and request must reappear.
+		let (src, src_dir) = temp_store();
+		src.save_tx_meta(&tx("slate-1", "coffee", 100));
+		src.save_tx_meta(&tx("slate-2", "rent", 100));
+		src.save_contact(&contact("aa", "Alice"));
+		src.save_request(&request("rum-1"));
+		let snap = src.snapshot_archive();
+		assert_eq!(snap.tx_meta.len(), 2);
+		assert_eq!(snap.contacts.len(), 1);
+		assert_eq!(snap.requests.len(), 1);
+
+		let (dst, dst_dir) = temp_store();
+		let written = dst.merge_archive(&snap);
+		assert_eq!(written, 4);
+		assert_eq!(
+			dst.tx_meta("slate-1").unwrap().note.as_deref(),
+			Some("coffee")
+		);
+		assert_eq!(
+			dst.tx_meta("slate-2").unwrap().note.as_deref(),
+			Some("rent")
+		);
+		assert_eq!(dst.contact("aa").unwrap().petname.as_deref(), Some("Alice"));
+		assert!(dst.request("rum-1").is_some());
+
+		let _ = std::fs::remove_dir_all(&src_dir);
+		let _ = std::fs::remove_dir_all(&dst_dir);
+	}
+
+	#[test]
+	fn merge_does_not_clobber_newer_local_rows() {
+		// Local edits must win over an older backup: a newer local tx meta, a
+		// locally-renamed contact, and an already-answered request are all kept.
+		let (dst, dst_dir) = temp_store();
+		dst.save_tx_meta(&tx("slate-1", "local-newer", 200));
+		dst.save_contact(&contact("aa", "LocalName"));
+		let mut answered = request("rum-1");
+		answered.status = RequestStatus::Approved;
+		dst.save_request(&answered);
+
+		// Backup snapshot carries OLDER / different versions of the same rows,
+		// plus a brand-new tx the local store hasn't seen.
+		let snap = ArchiveSnapshot {
+			ver: 1,
+			tx_meta: vec![
+				tx("slate-1", "backup-older", 100),
+				tx("slate-2", "new-tx", 50),
+			],
+			contacts: vec![contact("aa", "BackupName")],
+			requests: vec![request("rum-1")],
+		};
+		let written = dst.merge_archive(&snap);
+		// Only the genuinely-new tx is written; the three colliding rows are kept.
+		assert_eq!(written, 1);
+		assert_eq!(
+			dst.tx_meta("slate-1").unwrap().note.as_deref(),
+			Some("local-newer"),
+			"newer local tx meta must not be clobbered by an older backup"
+		);
+		assert_eq!(
+			dst.contact("aa").unwrap().petname.as_deref(),
+			Some("LocalName")
+		);
+		assert_eq!(
+			dst.request("rum-1").unwrap().status,
+			RequestStatus::Approved
+		);
+		// The new-to-us tx did land.
+		assert_eq!(
+			dst.tx_meta("slate-2").unwrap().note.as_deref(),
+			Some("new-tx")
+		);
+
+		let _ = std::fs::remove_dir_all(&dst_dir);
+	}
+
 	#[test]
 	fn newest_per_d_wins_and_cap_prunes() {
 		// Same d, newer created_at replaces (and carries the newer title).
@@ -449,7 +646,7 @@ mod tests {
 		);
 	}
 
-	fn temp_store(tag: &str) -> NostrStore {
+	fn temp_store_tagged(tag: &str) -> NostrStore {
 		let dir = std::env::temp_dir().join(format!(
 			"goblin-store-test-{}-{}-{:?}",
 			std::process::id(),
@@ -524,7 +721,7 @@ mod tests {
 	/// book), which is asserted here so a future change to that is deliberate.
 	#[test]
 	fn wipe_archive_clears_tx_association_but_keeps_contacts() {
-		let store = temp_store("wipe");
+		let store = temp_store_tagged("wipe");
 		let npub = "abc123def456";
 		store.save_tx_meta(&sample_meta("slate-1", npub));
 		store.save_contact(&sample_contact(npub));
