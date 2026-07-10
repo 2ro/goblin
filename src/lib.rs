@@ -371,6 +371,23 @@ fn setup_i18n() {
 		// sys_locale may hand back either `zh-CN` or `zh_CN`; normalize the
 		// separator so a region-specific locale can match its file name.
 		let normalized = locale.replace('_', "-");
+		// The OS may also report Chinese by script/region subtag instead of the
+		// exact file names we ship (`zh-CN`, `zh-TW`): `zh-Hans`/`zh-Hans-CN` for
+		// Simplified, and `zh-Hant`/`zh-Hant-TW`/`zh-Hant-HK`/`zh-HK` for
+		// Traditional (Hong Kong has no locale file of its own but uses
+		// Traditional characters, same as Taiwan). Fold those onto our two
+		// Chinese locale files before the exact/primary-subtag match below, so
+		// e.g. a Hong Kong or generic `zh-Hant` system lands on Traditional
+		// instead of falling through to the default locale.
+		let lower = normalized.to_lowercase();
+		let normalized = if lower == "zh-hant" || lower == "zh-hk" || lower.starts_with("zh-hant-")
+		{
+			String::from("zh-TW")
+		} else if lower == "zh-hans" || lower.starts_with("zh-hans-") {
+			String::from("zh-CN")
+		} else {
+			normalized
+		};
 		let available = rust_i18n::available_locales!();
 		// Prefer an exact region match (e.g. `zh-CN`, the only CJK locale and one
 		// the bare-subtag fallback could never reach), then the language subtag

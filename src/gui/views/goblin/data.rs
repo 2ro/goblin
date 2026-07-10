@@ -451,6 +451,11 @@ fn news_pool(wallet: &Wallet) -> Vec<NewsItem> {
 /// Traditional readers currently match the same `zh` news as Simplified),
 /// and every other locale already is a two-letter primary. Region and
 /// separator (`-`/`_`) are dropped.
+///
+/// The `zh-TW` -> `zh` fold is intentional, not a bug: Traditional-script
+/// readers get the same `zh` news feed as Simplified readers (there is no
+/// separate Traditional article pipeline). This is an accepted, low-priority
+/// gap — building a distinct Traditional news feed is out of scope here.
 fn news_locale_code() -> String {
 	let loc = rust_i18n::locale().to_string().to_lowercase();
 	loc.split(['-', '_']).next().unwrap_or("en").to_string()
