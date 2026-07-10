@@ -651,8 +651,6 @@ goblin:
     usernames_blurb: "NIP-05-Namensabfragen zu und von goblin.st."
     price_avatars: "Preis"
     price_avatars_blurb: "Der Live-Wechselkurs neben den Beträgen."
-    over_tor: "Über Tor"
-    direct_connection: "Direkte Verbindung"
     grin_node: "Grin-Node"
     grin_node_blurb: "Block-Synchronisierung und Übertragung deiner Transaktion ins Netzwerk. Dies sind öffentliche Chain-Daten, für alle gleich, und nicht mit deiner Identität verknüpft."
     how_privacy: "So funktioniert deine Privatsphäre"

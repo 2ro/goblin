@@ -651,8 +651,6 @@ goblin:
     usernames_blurb: "goblin.stとの間で行われるNIP-05の名前検索です。"
     price_avatars: "価格"
     price_avatars_blurb: "金額の隣に表示されるリアルタイムの法定通貨レートです。"
-    over_tor: "Tor経由"
-    direct_connection: "直接接続"
     grin_node: "Grinノード"
     grin_node_blurb: "ブロックの同期と、取引をネットワークにブロードキャストする処理です。これは誰にとっても同じ公開されたチェーンデータであり、あなたのアイデンティティとは結び付いていません。"
     how_privacy: "プライバシーの仕組み"

@@ -651,8 +651,6 @@ goblin:
     usernames_blurb: "goblin.st와 주고받는 NIP-05 이름 조회입니다."
     price_avatars: "가격"
     price_avatars_blurb: "금액 옆에 표시되는 실시간 환율입니다."
-    over_tor: "Tor 경유"
-    direct_connection: "직접 연결"
     grin_node: "Grin 노드"
     grin_node_blurb: "블록 동기화와 거래를 네트워크에 전파하는 과정입니다. 이는 모두에게 동일한 공개 체인 데이터이며 신원과 연결되지 않습니다."
     how_privacy: "프라이버시가 작동하는 방식"

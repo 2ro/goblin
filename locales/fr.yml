@@ -651,8 +651,6 @@ goblin:
     usernames_blurb: "Recherches de noms NIP-05 vers et depuis goblin.st."
     price_avatars: "Prix"
     price_avatars_blurb: "Le taux en temps réel affiché à côté des montants."
-    over_tor: "Via Tor"
-    direct_connection: "Connexion directe"
     grin_node: "Nœud grin"
     grin_node_blurb: "Synchronisation des blocs et diffusion de votre transaction sur le réseau. Ce sont des données de chaîne publiques, identiques pour tous, et non liées à votre identité."
     how_privacy: "Comment fonctionne votre confidentialité"

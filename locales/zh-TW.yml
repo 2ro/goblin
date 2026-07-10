@@ -651,8 +651,6 @@ goblin:
     usernames_blurb: "往返 goblin.st 的 NIP-05 名稱查詢。"
     price_avatars: "價格"
     price_avatars_blurb: "金額旁顯示的即時法幣匯率。"
-    over_tor: "經由 Tor"
-    direct_connection: "直接連線"
     grin_node: "Grin 節點"
     grin_node_blurb: "區塊同步及向網路廣播你的交易。這是公開的鏈上資料，對所有人都一樣，且不與你的身份關聯。"
     how_privacy: "你的隱私如何運作"

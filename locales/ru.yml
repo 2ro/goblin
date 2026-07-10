@@ -651,8 +651,6 @@ goblin:
     usernames_blurb: "Поиск имён NIP-05 к и от goblin.st."
     price_avatars: "Цена"
     price_avatars_blurb: "Текущий курс рядом с суммами."
-    over_tor: "Через Tor"
-    direct_connection: "Прямое соединение"
     grin_node: "Узел Grin"
     grin_node_blurb: "Синхронизация блоков и трансляция транзакции в сеть. Это публичные данные цепочки, одинаковые для всех, и они не связаны с вашей личностью."
     how_privacy: "Как работает ваша приватность"

@@ -651,8 +651,6 @@ goblin:
     usernames_blurb: "goblin.st'ye ve oradan NIP-05 ad aramaları."
     price_avatars: "Fiyat"
     price_avatars_blurb: "Tutarların yanında gösterilen anlık kur."
-    over_tor: "Tor üzerinden"
-    direct_connection: "Doğrudan bağlantı"
     grin_node: "Grin düğümü"
     grin_node_blurb: "Blok eşitleme ve işlemini ağa yayma. Bu, herkes için aynı olan genel zincir verisidir ve kimliğinle ilişkilendirilmez."
     how_privacy: "Gizliliğin nasıl çalıştığı"
