@@ -297,9 +297,10 @@ impl NostrService {
 	/// `nip44_v3`; no tag (or no 10050 at all) = v2 only.
 	///
 	/// MONEY-PATH SAFETY: we must NEVER return a target set that excludes our own
-	/// relays. Our advertised set always begins with the shared relay floor
-	/// (`relay.floonet.dev`, `DEFAULT_RELAYS[0]`, pinned first by
-	/// `ensure_advertised_set`), and every Goblin peer's inbox subscription
+	/// relays. By default our advertised set begins with the shared rendezvous
+	/// (`relay.floonet.dev`, `DEFAULT_RELAYS[0]`, placed first by
+	/// `ensure_advertised_set`; a user relay edit may drop it), and every Goblin
+	/// peer's inbox subscription
 	/// (`{kinds:[1059], "#p":[them]}`, see the service loop) likewise reads that
 	/// same shared relay. The prior code early-returned ONLY the recipient's
 	/// cached 10050 set: if that cache was stale or hint-seeded and missed the

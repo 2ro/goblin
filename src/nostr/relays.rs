@@ -14,8 +14,14 @@
 
 //! Default relay set and relay list helpers.
 
-/// Default DM relays: the Floonet relay (the pinned shared floor) plus
-/// Tor-reachable public relays for redundancy.
+/// The shared Floonet rendezvous relay. First entry of every DEFAULT list (so
+/// two out-of-the-box wallets always share a rendezvous), but a plain member
+/// otherwise: the user can remove it and their per-wallet, per-transport edit
+/// is honored like any other relay.
+pub const FLOONET_RELAY: &str = "wss://relay.floonet.dev";
+
+/// Default DM relays: the Floonet relay plus Tor-reachable public relays for
+/// redundancy.
 ///
 /// TRANSPORT CONSTRAINT: Goblin dials every relay over Tor, so the defaults MUST
 /// be relays that accept Tor-exit connections. `relay.damus.io` and `nos.lol`
@@ -24,24 +30,19 @@
 /// the Floonet onion flapped, so its payments stopped flowing. `relay.0xchat.com`
 /// and `offchain.pub` are Tor-friendly (and are also probe-vetted pool `dm`
 /// candidates), giving a real fallback that survives an onion drop.
-/// The shared Floonet rendezvous relay. Pinned FIRST in every resolved relay
-/// list and never removable by the user, so any two Goblin wallets always share
-/// a guaranteed rendezvous regardless of transport or per-wallet edits.
-pub const FLOONET_RELAY: &str = "wss://relay.floonet.dev";
-
 pub const DEFAULT_RELAYS: &[&str] = &[
 	FLOONET_RELAY,
 	"wss://relay.0xchat.com",
 	"wss://offchain.pub",
 ];
 
-/// FIXED pinned relay set used by EVERY identity when the wallet routes over Tor.
+/// FIXED default relay set used by EVERY identity when the wallet routes over Tor.
 ///
 /// Per the owner's ruling (per-user-tor plan §4): on Tor there is NO per-identity
 /// variation — all identities share this one set so switching identity on Tor
 /// never changes relays (and keeps the instant in-process switch). `relay.floonet.dev`
-/// is pinned FIRST here (as it is in [`DEFAULT_RELAYS`]) so any two Goblin users
-/// always share a guaranteed rendezvous. All three are reached over a Tor exit to
+/// ships FIRST here (as it does in [`DEFAULT_RELAYS`]) so any two out-of-the-box
+/// Goblin users share a rendezvous. All three are reached over a Tor exit to
 /// their clearnet host (no onion). The clearnet regime instead draws a per-identity
 /// random healthy subset from the pool (see [`effective_relays`]).
 pub const TOR_RELAYS: &[&str] = &[FLOONET_RELAY, "wss://relay.nostr.net", "wss://offchain.pub"];
@@ -58,17 +59,17 @@ pub const MAX_DM_RELAYS: usize = 3;
 /// Resolve the effective relay list for the CURRENT transport (per-user-tor §4).
 ///
 /// Precedence, in order:
-/// 1. A user `nostr.toml` relay override wins in BOTH regimes (explicit user intent).
+/// 1. A user relay override for this transport wins in BOTH regimes (explicit
+///    user intent) and is used verbatim: [`FLOONET_RELAY`] ships in the default
+///    lists but is an ordinary entry the user may remove.
 /// 2. Tor ON -> the FIXED [`TOR_RELAYS`] set, identical for every identity.
 /// 3. Clearnet -> this identity's persisted random healthy subset (`clearnet_sticky`,
-///    i.e. `NostrIdentity.dm_relays`), which pins `relay.floonet.dev` first.
+///    i.e. `NostrIdentity.dm_relays`), floonet first.
 /// 4. Clearnet with no subset yet selected -> the built-in `clearnet_defaults`
-///    ([`DEFAULT_RELAYS`], floonet pinned first) until selection runs.
+///    ([`DEFAULT_RELAYS`], floonet first) until selection runs.
 ///
-/// `relay.floonet.dev` is therefore pinned first in every branch, so any two users
-/// share a rendezvous regardless of transport or per-identity subset. On Tor the
-/// persisted clearnet subset is IGNORED (not read, not mutated) so it survives a
-/// round-trip back to clearnet unchanged.
+/// On Tor the persisted clearnet subset is IGNORED (not read, not mutated) so it
+/// survives a round-trip back to clearnet unchanged.
 pub fn effective_relays(
 	over_tor: bool,
 	override_set: Option<Vec<String>>,
@@ -76,7 +77,7 @@ pub fn effective_relays(
 	clearnet_defaults: Vec<String>,
 ) -> Vec<String> {
 	if let Some(over) = override_set {
-		return pin_floonet(over);
+		return over;
 	}
 	if over_tor {
 		return TOR_RELAYS.iter().map(|s| s.to_string()).collect();
@@ -85,19 +86,6 @@ pub fn effective_relays(
 		return clearnet_sticky;
 	}
 	clearnet_defaults
-}
-
-/// Ensure [`FLOONET_RELAY`] is present and pinned FIRST, preserving the order of
-/// the remaining entries and dropping any duplicate floonet occurrences. Applied
-/// to every user relay override so the shared rendezvous can never be edited out.
-pub fn pin_floonet(relays: Vec<String>) -> Vec<String> {
-	let mut out = vec![FLOONET_RELAY.to_string()];
-	for r in relays {
-		if r != FLOONET_RELAY && !out.contains(&r) {
-			out.push(r);
-		}
-	}
-	out
 }
 
 /// Normalize a user-entered relay url (adds wss:// when missing).
@@ -147,8 +135,9 @@ mod tests {
 	const FLOONET: &str = "wss://relay.floonet.dev";
 
 	#[test]
-	fn floonet_is_pinned_first_in_both_regimes() {
-		// The shared rendezvous is the first entry of every base set.
+	fn floonet_is_the_first_default_in_both_regimes() {
+		// The shared rendezvous ships first in every DEFAULT set (a plain,
+		// user-removable member, not a forced pin).
 		assert_eq!(DEFAULT_RELAYS[0], FLOONET);
 		assert_eq!(TOR_RELAYS[0], FLOONET);
 		// Tor set stays within the DM-relay size cap.
@@ -156,7 +145,7 @@ mod tests {
 	}
 
 	#[test]
-	fn tor_yields_the_fixed_pinned_set_with_floonet() {
+	fn tor_yields_the_fixed_default_set_with_floonet() {
 		// On Tor the fixed set is used regardless of any persisted clearnet subset,
 		// and it is identical for every identity.
 		let stale_clearnet = vec!["wss://someones.clearnet.example".to_string()];
@@ -178,45 +167,23 @@ mod tests {
 	}
 
 	#[test]
-	fn clearnet_without_a_subset_falls_back_to_defaults_floonet_pinned() {
+	fn clearnet_without_a_subset_falls_back_to_defaults_floonet_first() {
 		let r = effective_relays(false, None, vec![], defaults());
 		assert_eq!(r, defaults());
 		assert_eq!(r[0], FLOONET);
 	}
 
 	#[test]
-	fn a_user_override_wins_in_both_regimes_with_floonet_pinned() {
+	fn a_user_override_wins_in_both_regimes_and_is_used_verbatim() {
+		// The override wins over both the Tor set and the clearnet subset and is
+		// used exactly as saved: floonet ships in the defaults but is an ordinary
+		// entry, so a list edited to exclude it stays without it.
 		let ov = vec!["wss://only.example".to_string()];
-		let expected = vec![FLOONET.to_string(), "wss://only.example".to_string()];
-		// The override wins over both the Tor set and the clearnet subset, and
-		// floonet is pinned first in each regime even when the user omitted it.
-		assert_eq!(
-			effective_relays(true, Some(ov.clone()), vec![], vec![]),
-			expected
-		);
+		assert!(!ov.contains(&FLOONET.to_string()));
+		assert_eq!(effective_relays(true, Some(ov.clone()), vec![], vec![]), ov);
 		assert_eq!(
 			effective_relays(false, Some(ov.clone()), vec![], vec![]),
-			expected
+			ov
 		);
-	}
-
-	#[test]
-	fn pin_floonet_prepends_and_dedups() {
-		// Missing floonet gets prepended.
-		assert_eq!(
-			pin_floonet(vec!["wss://a.example".to_string()]),
-			vec![FLOONET.to_string(), "wss://a.example".to_string()]
-		);
-		// A floonet already in the middle is moved to the front (deduped).
-		assert_eq!(
-			pin_floonet(vec![
-				"wss://a.example".to_string(),
-				FLOONET.to_string(),
-				"wss://a.example".to_string(),
-			]),
-			vec![FLOONET.to_string(), "wss://a.example".to_string()]
-		);
-		// Floonet can never be edited out entirely.
-		assert_eq!(pin_floonet(vec![]), vec![FLOONET.to_string()]);
 	}
 }

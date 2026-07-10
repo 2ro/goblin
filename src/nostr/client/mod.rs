@@ -435,14 +435,14 @@ impl NostrService {
 	}
 
 	/// Current relay list, resolved for the wallet's ACTIVE transport
-	/// (per-user-tor §4). A user `nostr.toml` override wins in both regimes.
-	/// Otherwise: on Tor the FIXED pinned `TOR_RELAYS` set (same for every
-	/// identity); on clearnet this identity's persisted random healthy subset
-	/// (`dm_relays`), falling back to the built-in defaults until selection has
-	/// run. `relay.floonet.dev` is pinned first in every case. Because this reads
-	/// `tor_routing()` live, a Tor toggle (which calls `restart()`) recomputes the
-	/// set for the new transport at the next `run_service` without touching the
-	/// persisted clearnet subset.
+	/// (per-user-tor §4). A user relay edit stored for this transport wins in
+	/// both regimes and is used verbatim (defaults are just defaults; every
+	/// entry is removable). Otherwise: on Tor the FIXED `TOR_RELAYS` default set
+	/// (same for every identity); on clearnet this identity's persisted random
+	/// healthy subset (`dm_relays`), falling back to the built-in defaults until
+	/// selection has run. Because this reads `tor_routing()` live, a Tor toggle
+	/// (which calls `restart()`) recomputes the set for the new transport at the
+	/// next `run_service` without touching the persisted clearnet subset.
 	pub fn relays(&self) -> Vec<String> {
 		let over_tor = self.tor_routing();
 		crate::nostr::relays::effective_relays(

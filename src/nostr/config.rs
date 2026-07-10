@@ -40,13 +40,13 @@ pub struct NostrConfig {
 	/// Still honored as a fallback for whichever transport has no explicit set,
 	/// so an old `nostr.toml` keeps working with no migration.
 	relays: Option<Vec<String>>,
-	/// User relay list remembered for the Tor transport. `Some` only once the
-	/// user has edited relays while on Tor; otherwise the pinned `TOR_RELAYS`
-	/// set is used. `relay.floonet.dev` is always pinned first on resolve.
+	/// User relay list remembered for the Tor transport, used verbatim. `Some`
+	/// only once the user has edited relays while on Tor; otherwise the default
+	/// `TOR_RELAYS` set is used.
 	relays_tor: Option<Vec<String>>,
-	/// User relay list remembered for the clearnet transport. `Some` only once
-	/// the user has edited relays while on clearnet; otherwise the per-identity
-	/// random healthy subset is used. `relay.floonet.dev` is always pinned first.
+	/// User relay list remembered for the clearnet transport, used verbatim.
+	/// `Some` only once the user has edited relays while on clearnet; otherwise
+	/// the per-identity random healthy subset is used.
 	relays_clearnet: Option<Vec<String>>,
 	/// Accept policy for incoming payments.
 	accept_from: Option<AcceptPolicy>,
@@ -106,8 +106,8 @@ impl NostrConfig {
 		self.save();
 	}
 
-	/// The built-in clearnet default relay set (floonet pinned first), used
-	/// until the per-identity advertised set has been selected.
+	/// The built-in clearnet default relay set, used until the per-identity
+	/// advertised set has been selected.
 	pub fn default_relays(&self) -> Vec<String> {
 		DEFAULT_RELAYS.iter().map(|s| s.to_string()).collect()
 	}
