@@ -30,6 +30,30 @@ use crate::gui::views::types::{QrScanResult, QrScanState};
 use crate::wallet::WalletUtils;
 use crate::wallet::types::PhraseSize;
 
+/// Resets the `image_processing` flag on scope exit so a panic inside the
+/// scanner thread cannot leave the flag stuck `true` and wedge the scanner.
+/// Disarm it on the intentional success returns, where the flag is meant to
+/// stay `true` until the caller consumes the result and drops the scanner.
+struct ProcessingGuard {
+	state: Arc<RwLock<QrScanState>>,
+	armed: bool,
+}
+
+impl ProcessingGuard {
+	fn disarm(&mut self) {
+		self.armed = false;
+	}
+}
+
+impl Drop for ProcessingGuard {
+	fn drop(&mut self) {
+		if self.armed {
+			let mut w_scan = self.state.write();
+			w_scan.image_processing = false;
+		}
+	}
+}
+
 /// Camera QR code scanner.
 pub struct CameraContent {
 	/// QR code scanning progress and result.
@@ -225,6 +249,12 @@ impl CameraContent {
 		let ur_data = self.ur_data.clone();
 
 		let on_scan = async move {
+			// Reset the processing flag on any scope exit, including a panic, so a
+			// crash while decoding cannot wedge the scanner permanently.
+			let mut processing_guard = ProcessingGuard {
+				state: qr_scan_state.clone(),
+				armed: true,
+			};
 			// Prepare image data.
 			let img = image_data.to_luma8();
 			let mut img: rqrr::PreparedImage<image::GrayImage> = rqrr::PreparedImage::prepare(img);
@@ -259,10 +289,15 @@ impl CameraContent {
 									}
 									cur_data
 								};
-								if !cur_data.contains(&uri) {
+								// Defensive bounds check: `index`/`total` are validated in
+								// `parse_qr_code`, but never write out of bounds even if the
+								// stored buffer length disagrees with `total`. Assign into the
+								// pre-sized slot rather than `insert` (which would shift entries
+								// and grow the vec past `total`).
+								if index < cur_data.len() && !cur_data.contains(&uri) {
 									// Save part of UR data.
 									{
-										cur_data.insert(index, uri);
+										cur_data[index] = uri;
 										let mut w_data = ur_data.write();
 										*w_data = Some((cur_data.clone(), total));
 									}
@@ -288,6 +323,9 @@ impl CameraContent {
 											// Save scan result.
 											let mut w_scan = qr_scan_state.write();
 											w_scan.qr_scan_result = Some(res);
+											// Keep the flag set: the caller consumes the
+											// result and drops the scanner.
+											processing_guard.disarm();
 											return;
 										}
 									}
@@ -300,17 +338,17 @@ impl CameraContent {
 								// Save scan result.
 								let mut w_scan = qr_scan_state.write();
 								w_scan.qr_scan_result = Some(res);
+								// Keep the flag set: the caller consumes the result and
+								// drops the scanner.
+								processing_guard.disarm();
 								return;
 							}
 						}
 					}
 				}
 			}
-			// Reset scanning flag to process again.
-			{
-				let mut w_scan = qr_scan_state.write();
-				w_scan.image_processing = false;
-			}
+			// Reset scanning flag to process again (handled by `processing_guard`
+			// on scope exit, which also covers a panic while decoding).
 		};
 
 		// Launch scanner at separate thread.
@@ -345,12 +383,20 @@ impl CameraContent {
 			let split = text.split("/").collect::<Vec<_>>();
 			if let Some(index_total) = split.get(1) {
 				if let Some((index, total)) = index_total.split_once("-") {
-					let index = index.parse::<usize>();
-					let total = total.parse::<usize>();
-					if index.is_ok() && total.is_ok() {
-						let index = index.unwrap() - 1;
-						let total = total.unwrap();
-						return QrScanResult::URPart(text_string, index, total);
+					if let (Ok(index), Ok(total)) = (index.parse::<usize>(), total.parse::<usize>())
+					{
+						// Validate the fountain-sequence header before trusting a
+						// crafted QR. UR animated sequences are small, so cap
+						// `total` to guard against a huge value forcing a multi-GB
+						// allocation (OOM), require a non-zero `total`, and require
+						// the 1-based `index` to fall within `1..=total`. This makes
+						// the `index - 1` below impossible to underflow and keeps the
+						// assembly write in bounds. An out-of-range frame simply falls
+						// through and is treated as an unrecognized scan (no crash).
+						const MAX_UR_PARTS: usize = 1024;
+						if total >= 1 && total <= MAX_UR_PARTS && index >= 1 && index <= total {
+							return QrScanResult::URPart(text_string, index - 1, total);
+						}
 					}
 				}
 			}
@@ -518,6 +564,39 @@ mod tests {
 		match CameraContent::parse_qr_code(uri.as_bytes().to_vec()) {
 			QrScanResult::Text(text) => assert_eq!(text.to_string(), uri),
 			other => panic!("expected Text, got {:?}", other.text()),
+		}
+	}
+
+	/// A legitimate animated `ur:bytes` frame parses to a zero-based part index
+	/// and its total, so multi-frame reassembly keeps working.
+	#[test]
+	fn ur_part_parses_index_and_total() {
+		match CameraContent::parse_qr_code(b"ur:bytes/2-3/aabbcc".to_vec()) {
+			QrScanResult::URPart(_, index, total) => {
+				assert_eq!(index, 1, "1-based frame 2 maps to zero-based index 1");
+				assert_eq!(total, 3);
+			}
+			other => panic!("expected URPart, got {:?}", other.text()),
+		}
+	}
+
+	/// Malformed `ur:bytes` headers must be rejected (never panic, never
+	/// underflow/OOM) and degrade to an unrecognized Text scan. Covers the
+	/// index-0 underflow, out-of-range index, and huge-total (OOM) cases.
+	#[test]
+	fn malformed_ur_parts_are_rejected() {
+		for frame in [
+			"ur:bytes/0-3/aabb",         // index 0 -> would underflow `index - 1`
+			"ur:bytes/4-3/aabb",         // index > total -> out-of-bounds write
+			"ur:bytes/1-0/aabb",         // zero total
+			"ur:bytes/1-999999999/aabb", // total over the cap -> OOM allocation
+		] {
+			match CameraContent::parse_qr_code(frame.as_bytes().to_vec()) {
+				QrScanResult::URPart(_, _, _) => {
+					panic!("malformed UR frame should not parse as URPart: {frame}")
+				}
+				_ => {}
+			}
 		}
 	}
 }
