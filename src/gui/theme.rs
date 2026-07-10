@@ -68,6 +68,10 @@ pub struct ThemeTokens {
 	pub accent_ink: Color32,
 	pub pos: Color32,
 	pub neg: Color32,
+	/// Blueviolet ("tor purple") accent for the Tor-on privacy state (CSS
+	/// `blueviolet` = #8A2BE2). Carries the "private traffic on" color on the
+	/// network-privacy status dots and the active big Tor switch.
+	pub tor_purple: Color32,
 	pub chip: Color32,
 	pub hover: Color32,
 	/// Avatar background palette (initial ink picked by luminance).
@@ -130,6 +134,7 @@ pub const LIGHT: ThemeTokens = ThemeTokens {
 	accent_ink: Color32::from_rgb(0x0E, 0x0E, 0x0C),
 	pos: Color32::from_rgb(0x0E, 0x7C, 0x3A),
 	neg: Color32::from_rgb(0xB0, 0x48, 0x1E),
+	tor_purple: Color32::from_rgb(0x8A, 0x2B, 0xE2),
 	chip: Color32::from_rgb(0xF2, 0xF1, 0xEC),
 	hover: Color32::from_rgb(0xE9, 0xE7, 0xE0),
 	avatar_pairs: AVATAR_PAIRS,
@@ -153,6 +158,7 @@ pub const DARK: ThemeTokens = ThemeTokens {
 	accent_ink: Color32::from_rgb(0x0E, 0x0E, 0x0C),
 	pos: Color32::from_rgb(0x5B, 0xD2, 0x7A),
 	neg: Color32::from_rgb(0xFF, 0x8B, 0x5E),
+	tor_purple: Color32::from_rgb(0x8A, 0x2B, 0xE2),
 	chip: Color32::from_rgb(0x24, 0x24, 0x20),
 	hover: Color32::from_rgb(0x2E, 0x2E, 0x29),
 	avatar_pairs: AVATAR_PAIRS,
@@ -178,6 +184,7 @@ pub const YELLOW: ThemeTokens = ThemeTokens {
 	accent_ink: Color32::from_rgb(0xFF, 0xD6, 0x0A),
 	pos: Color32::from_rgb(0x0E, 0x7C, 0x3A),
 	neg: Color32::from_rgb(0x9E, 0x2E, 0x0E),
+	tor_purple: Color32::from_rgb(0x8A, 0x2B, 0xE2),
 	chip: Color32::from_rgba_premultiplied(2, 2, 2, 20),
 	hover: Color32::from_rgb(0xEF, 0xC8, 0x00),
 	avatar_pairs: AVATAR_PAIRS,

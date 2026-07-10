@@ -47,6 +47,10 @@ enum Step {
 	WalletSetup,
 	Words,
 	ConfirmWords,
+	/// Network-privacy choice (Tor on/off), shown right before the wallet is
+	/// created so the new wallet writes an explicit Tor setting before its nostr
+	/// service starts.
+	Privacy,
 	Identity,
 }
 
@@ -95,6 +99,10 @@ pub struct OnboardingContent {
 	restore_result: std::sync::Arc<std::sync::Mutex<Option<Result<(), String>>>>,
 	/// Sticky error from the identity restore, shown on the identity step.
 	restore_error: Option<String>,
+	/// Tor choice from the Network-privacy step, applied as the new wallet's
+	/// explicit Tor setting before its nostr service starts. New users default
+	/// OFF (owner spec): fast onboarding, one tap to turn on, VPN nudge shown.
+	tor_choice: bool,
 }
 
 /// Full-backup restore sub-state on the restore-from-seed words step.
@@ -157,6 +165,8 @@ impl Default for OnboardingContent {
 			restore_busy: false,
 			restore_result: std::sync::Arc::new(std::sync::Mutex::new(None)),
 			restore_error: None,
+			// New users default to Tor OFF (owner spec).
+			tor_choice: false,
 		}
 	}
 }
@@ -196,6 +206,7 @@ impl OnboardingContent {
 						Step::WalletSetup => self.wallet_setup_ui(ui, cb),
 						Step::Words => self.words_ui(ui, wallets, cb),
 						Step::ConfirmWords => self.confirm_ui(ui, wallets, cb),
+						Step::Privacy => self.privacy_step_ui(ui, wallets),
 						Step::Identity => done = self.identity_ui(ui, cb),
 					}
 					ui.add_space(View::get_bottom_inset() + 24.0);
@@ -557,7 +568,9 @@ impl OnboardingContent {
 	fn words_ui(
 		&mut self,
 		ui: &mut egui::Ui,
-		wallets: &mut WalletList,
+		// Wallet creation now happens on the later Privacy step, so this path no
+		// longer needs the list; kept for signature parity with the step router.
+		_wallets: &mut WalletList,
 		cb: &dyn PlatformCallbacks,
 	) {
 		let t = theme::tokens();
@@ -673,7 +686,8 @@ impl OnboardingContent {
 		if ready {
 			if w::big_action(ui, &label, false).clicked() {
 				if restore {
-					self.create_wallet(wallets);
+					// Network-privacy choice comes before the wallet is created.
+					self.step = Step::Privacy;
 				} else {
 					self.step = Step::ConfirmWords;
 				}
@@ -796,7 +810,9 @@ impl OnboardingContent {
 	fn confirm_ui(
 		&mut self,
 		ui: &mut egui::Ui,
-		wallets: &mut WalletList,
+		// Wallet creation now happens on the later Privacy step, so this path no
+		// longer needs the list; kept for signature parity with the step router.
+		_wallets: &mut WalletList,
 		cb: &dyn PlatformCallbacks,
 	) {
 		let t = theme::tokens();
@@ -821,7 +837,8 @@ impl OnboardingContent {
 		ui.add_space(14.0);
 		if !self.mnemonic_setup.mnemonic.has_empty_or_invalid() {
 			if w::big_action(ui, &t!("goblin.onboarding.confirm.create_wallet"), false).clicked() {
-				self.create_wallet(wallets);
+				// Network-privacy choice comes before the wallet is created.
+				self.step = Step::Privacy;
 			}
 		} else {
 			ui.label(
@@ -842,6 +859,34 @@ impl OnboardingContent {
 					.color(theme::tokens().neg),
 			);
 		}
+	}
+
+	// ── Network privacy (Tor on/off, before wallet creation) ─────────────
+
+	/// Network-privacy step: choose Tor on/off before the wallet is created,
+	/// using the same shared panels as the Settings privacy screen. Continue
+	/// creates the wallet, which writes the choice as its explicit Tor setting.
+	fn privacy_step_ui(&mut self, ui: &mut egui::Ui, wallets: &mut WalletList) {
+		// Back returns to whichever step led here (restore vs create).
+		let back = if self.restore {
+			Step::Words
+		} else {
+			Step::ConfirmWords
+		};
+		self.step_header(
+			ui,
+			&t!("goblin.onboarding.privacy.kicker"),
+			&t!("goblin.privacy.title"),
+			back,
+		);
+		if let Some(new_val) = super::network_privacy_panels(ui, self.tor_choice) {
+			self.tor_choice = new_val;
+		}
+		ui.add_space(18.0);
+		if w::big_action(ui, &t!("goblin.onboarding.privacy.continue"), false).clicked() {
+			self.create_wallet(wallets);
+		}
+		self.error_ui(ui);
 	}
 
 	/// Resolve the connection method, create the wallet, open it and move
@@ -882,6 +927,17 @@ impl OnboardingContent {
 				wallets.add(w.clone());
 				match w.open(pass) {
 					Ok(_) => {
+						// Write this NEW wallet's EXPLICIT Tor choice (from the
+						// privacy step) before its nostr service starts. init_nostr
+						// built the service synchronously inside open(); start() runs
+						// later on the sync thread, so setting it now writes nostr.toml
+						// and picks the transport before the pool builds. (Cohort rule:
+						// only new-wallet onboarding writes an explicit value;
+						// upgraders keep None -> Tor ON.)
+						if let Some(svc) = w.nostr_service() {
+							svc.config.write().set_tor_enabled(self.tor_choice);
+							crate::tor::set_route_over_tor(self.tor_choice);
+						}
 						// A full-backup restore: reinstate every identity from the
 						// backup in a worker once nostr is up (the seed itself was
 						// already restored through this creation path).
@@ -995,12 +1051,28 @@ impl OnboardingContent {
 						);
 					}
 					ui.label(
-						// Relay-gated readiness: "connected over Tor" only once a
-						// relay is actually live, not merely when the tunnel is warm.
-						RichText::new(if crate::tor::transport_ready() {
-							t!("goblin.onboarding.identity.connected_tor")
-						} else {
-							t!("goblin.onboarding.identity.connecting_tor")
+						// Transport-aware readiness: Tor states are relay-gated (a
+						// warm tunnel is not enough), while a clearnet wallet reads
+						// "connected (direct)" instead of forever "connecting over
+						// Tor".
+						RichText::new({
+							use crate::nostr::TransportStatus::*;
+							let status = service
+								.as_ref()
+								.map(|s| s.transport_status())
+								.unwrap_or(ConnectingTor);
+							match status {
+								ConnectedTor => t!("goblin.onboarding.identity.connected_tor"),
+								TorReady | ConnectingTor => {
+									t!("goblin.onboarding.identity.connecting_tor")
+								}
+								ConnectedDirect => {
+									t!("goblin.onboarding.identity.connected_direct")
+								}
+								ConnectingDirect => {
+									t!("goblin.onboarding.identity.connecting_direct")
+								}
+							}
 						})
 						.font(FontId::new(12.0, fonts::regular()))
 						.color(t.surface_text_mute),

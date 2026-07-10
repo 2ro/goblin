@@ -81,6 +81,11 @@ impl Colors {
 		theme::tokens().neg
 	}
 
+	/// Blueviolet ("tor purple") accent for the Tor-on privacy state.
+	pub fn tor_purple() -> Color32 {
+		theme::tokens().tor_purple
+	}
+
 	pub fn blue() -> Color32 {
 		if dark_base() {
 			Color32::from_rgb(0x7B, 0xA7, 0xFF)

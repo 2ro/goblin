@@ -238,6 +238,32 @@ pub fn toggle(ui: &mut Ui, on: bool) -> Response {
 	resp.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
+/// A large on/off switch for the Network-privacy Tor toggle. Unlike [`toggle`]
+/// (brand yellow when on), this is dormant GRAY when OFF and blueviolet ("tor
+/// purple") when ON — never yellow — so the privacy state reads distinctly from
+/// the app accent. Returns the response; the caller flips the bound state.
+pub fn toggle_large(ui: &mut Ui, on: bool) -> Response {
+	let t = theme::tokens();
+	let (rect, resp) = ui.allocate_exact_size(Vec2::new(64.0, 36.0), Sense::click());
+	let track = if on { t.tor_purple } else { t.surface2 };
+	ui.painter()
+		.rect_filled(rect, CornerRadius::same(18), track);
+	let knob_r = 15.0;
+	let knob_x = if on {
+		rect.right() - knob_r - 3.0
+	} else {
+		rect.left() + knob_r + 3.0
+	};
+	let knob = if on {
+		Color32::WHITE
+	} else {
+		t.surface_text_mute
+	};
+	ui.painter()
+		.circle_filled(egui::pos2(knob_x, rect.center().y), knob_r, knob);
+	resp.on_hover_cursor(egui::CursorIcon::PointingHand)
+}
+
 /// A segmented control (e.g. `["Scan", "My Code"]`). Highlights `selected`;
 /// returns `Some(i)` when a different segment is tapped.
 pub fn segmented(ui: &mut Ui, labels: &[&str], selected: usize) -> Option<usize> {
