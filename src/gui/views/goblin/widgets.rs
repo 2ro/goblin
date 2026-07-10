@@ -697,6 +697,7 @@ pub fn activity_row(
 	system: bool,
 	tex: Option<&egui::TextureHandle>,
 	anon: bool,
+	anon_avatar: bool,
 ) -> Response {
 	let t = theme::tokens();
 	// A touch taller than a single-line row so the amount can sit centered
@@ -727,9 +728,11 @@ pub fn activity_row(
 				FontId::new(20.0, fonts::regular()),
 				t.text,
 			);
-		} else if anon {
-			// Anonymous mode: the uniform censored tile stands in for every
-			// counterparty avatar, so nothing about who they are leaks.
+		} else if anon || anon_avatar {
+			// Anonymous mode, OR a row with no npub association (e.g. after a
+			// payment-history wipe, or a non-nostr tx): the uniform yellow-goblin
+			// tile stands in for every counterparty avatar, so a real profile
+			// picture can never betray who a wiped/unknown tx was with.
 			avatar_censored(ui, 40.0);
 		} else {
 			avatar_any(ui, title, id, 40.0, tex);

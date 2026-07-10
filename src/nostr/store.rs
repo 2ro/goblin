@@ -448,4 +448,107 @@ mod tests {
 			"untagged English variant must survive the cap"
 		);
 	}
+
+	fn temp_store(tag: &str) -> NostrStore {
+		let dir = std::env::temp_dir().join(format!(
+			"goblin-store-test-{}-{}-{:?}",
+			std::process::id(),
+			tag,
+			std::time::SystemTime::now()
+				.duration_since(std::time::UNIX_EPOCH)
+				.map(|d| d.as_nanos())
+				.unwrap_or(0)
+		));
+		let _ = fs::remove_dir_all(&dir);
+		NostrStore::new(dir)
+	}
+
+	fn sample_meta(slate_id: &str, npub: &str) -> TxNostrMeta {
+		TxNostrMeta {
+			ver: 1,
+			slate_id: slate_id.to_string(),
+			npub: npub.to_string(),
+			direction: NostrTxDirection::Sent,
+			note: Some("lunch".to_string()),
+			status: NostrSendStatus::Finalized,
+			sent_event_id: None,
+			received_rumor_id: None,
+			created_at: 100,
+			updated_at: 100,
+			proof_mode: false,
+			proof_order: None,
+			proof_notify: None,
+			proof_amount: None,
+			proof_delivered: false,
+			receipt_sent: false,
+			recipient_pubkey: String::new(),
+			proof_address: None,
+		}
+	}
+
+	fn sample_contact(npub: &str) -> Contact {
+		Contact {
+			ver: 1,
+			npub: npub.to_string(),
+			petname: Some("Alice".to_string()),
+			nip05: Some("alice@goblin.st".to_string()),
+			nip05_verified_at: Some(100),
+			relays: vec![],
+			nip44_v3: false,
+			hue: 0,
+			unknown: false,
+			added_at: 100,
+			last_paid_at: Some(100),
+			blocked: false,
+		}
+	}
+
+	fn sample_request(rumor_id: &str, npub: &str) -> PaymentRequest {
+		PaymentRequest {
+			ver: 1,
+			rumor_id: rumor_id.to_string(),
+			slate_id: "slate-req".to_string(),
+			slatepack: "BEGINSLATEPACK.END".to_string(),
+			npub: npub.to_string(),
+			amount: 42,
+			note: None,
+			received_at: 100,
+			status: RequestStatus::Pending,
+		}
+	}
+
+	/// After a payment-history wipe, none of the queries the activity UI reads
+	/// (tx metadata, payment requests, processed markers) can resolve a
+	/// counterparty for a wiped tx anymore — so no leftover name/npub is left to
+	/// resolve a profile picture. Contacts are intentionally kept (the address
+	/// book), which is asserted here so a future change to that is deliberate.
+	#[test]
+	fn wipe_archive_clears_tx_association_but_keeps_contacts() {
+		let store = temp_store("wipe");
+		let npub = "abc123def456";
+		store.save_tx_meta(&sample_meta("slate-1", npub));
+		store.save_contact(&sample_contact(npub));
+		store.save_request(&sample_request("rumor-1", npub));
+		store.mark_processed("slate-1:S1");
+
+		// Pre-wipe: the tx resolves its counterparty.
+		assert_eq!(store.all_tx_meta().len(), 1);
+		assert!(store.tx_meta("slate-1").is_some());
+		assert_eq!(store.pending_requests().len(), 1);
+		assert!(store.is_processed("slate-1:S1"));
+
+		store.wipe_archive();
+
+		// Post-wipe: nothing the activity feed / receipt reads can join a
+		// surviving grin tx row back to an npub, name, or avatar.
+		assert!(store.all_tx_meta().is_empty());
+		assert!(store.tx_meta("slate-1").is_none());
+		assert!(store.all_requests().is_empty());
+		assert!(store.pending_requests().is_empty());
+		assert!(!store.is_processed("slate-1:S1"));
+
+		// Contacts survive by design (the address book, not payment history).
+		assert_eq!(store.all_contacts().len(), 1);
+		assert!(store.contact(npub).is_some());
+	}
 }

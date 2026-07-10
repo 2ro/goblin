@@ -193,6 +193,17 @@ fn is_canceled(tx: &WalletTx, meta: Option<&TxNostrMeta>) -> bool {
 			.unwrap_or(false))
 }
 
+/// Whether a transaction row must render the anonymous yellow-goblin avatar
+/// instead of resolving a real profile picture: true when the row has no npub
+/// association (a non-nostr tx, or one whose nostr metadata was cleared by a
+/// payment-history wipe). System (mining) rows draw their own cube tile, so this
+/// never applies to them. The rule is: no npub association => anonymous avatar,
+/// so the picture can never leak who a wiped tx was with once the name/npub are
+/// gone from the row.
+pub fn tx_row_anonymous(npub: Option<&str>, system: bool) -> bool {
+	!system && npub.is_none()
+}
+
 /// Resolve the display title for a contact npub.
 pub fn contact_title(store: &NostrStore, npub: &str) -> String {
 	if let Some(contact) = store.contact(npub) {
@@ -603,6 +614,18 @@ pub fn split_urls(s: &str) -> Vec<(String, bool)> {
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	#[test]
+	fn tx_row_anonymous_gates_on_npub() {
+		// A row with a counterparty npub resolves its real avatar/name.
+		assert!(!tx_row_anonymous(Some("abc123"), false));
+		// No npub (non-nostr tx, or wiped metadata) => anonymous yellow goblin.
+		assert!(tx_row_anonymous(None, false));
+		// System (mining) rows never take the anonymous-avatar path — they draw
+		// their own cube tile — regardless of npub.
+		assert!(!tx_row_anonymous(None, true));
+		assert!(!tx_row_anonymous(Some("abc123"), true));
+	}
 
 	#[test]
 	fn split_urls_isolates_links() {
