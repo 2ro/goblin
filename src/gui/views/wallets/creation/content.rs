@@ -231,7 +231,10 @@ impl WalletCreationContent {
 							PhraseMode::Generate => {
 								let c_t = format!("{} {}", COPY, t!("copy"));
 								View::button(ui, c_t, Colors::white_or_black(false), || {
-									cb.copy_string_to_buffer(
+									// Secret: auto-clears from the clipboard after a
+									// delay (compare-then-clear) so the seed phrase
+									// does not linger there, matching the nsec.
+									cb.copy_secret_to_buffer(
 										self.mnemonic_setup.mnemonic.get_phrase(),
 									);
 								});

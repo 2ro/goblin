@@ -666,7 +666,9 @@ impl OnboardingContent {
 				t!("goblin.onboarding.words.copy_clipboard").to_string()
 			};
 			if w::chip(ui, &label, false).clicked() {
-				cb.copy_string_to_buffer(self.mnemonic_setup.mnemonic.get_phrase());
+				// Secret: auto-clears from the clipboard after a delay
+				// (compare-then-clear) so the seed phrase does not linger there.
+				cb.copy_secret_to_buffer(self.mnemonic_setup.mnemonic.get_phrase());
 				cb.vibrate_copy();
 				self.words_copied = Some(std::time::Instant::now());
 			}
