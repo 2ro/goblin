@@ -3300,8 +3300,9 @@ impl GoblinWalletView {
 		}
 		ui.horizontal(|ui| {
 			let half = (ui.available_width() - 10.0) / 2.0;
-			// Share a friendly "pay me" message carrying the bare npub — the
-			// public key people pay you on. Never the nprofile or a grin address.
+			// Share the nprofile: the payer learns which relays to reach you on
+			// (the bare npub still shows in-app as who-is-paid; the shareable
+			// handle carries relay hints so per-identity relays interoperate).
 			ui.scope_builder(
 				egui::UiBuilder::new().max_rect(egui::Rect::from_min_size(
 					ui.cursor().min,
@@ -3309,15 +3310,17 @@ impl GoblinWalletView {
 				)),
 				|ui| {
 					let label = t!("goblin.send.share_btn", "icon" => SHARE);
-					if w::big_action(ui, &label, true).clicked() && !npub.is_empty() {
+					if w::big_action(ui, &label, true).clicked() && !nprofile.is_empty() {
 						cb.share_text(
-							t!("goblin.receive.share_message", "npub" => npub.clone()).to_string(),
+							t!("goblin.receive.share_message", "npub" => nprofile.clone())
+								.to_string(),
 						);
 					}
 				},
 			);
 			ui.add_space(10.0);
-			// Copy the bare npub itself.
+			// Copy the nprofile (the QR encodes the same); the human-copy now
+			// matches what the QR scans.
 			ui.scope_builder(
 				egui::UiBuilder::new().max_rect(egui::Rect::from_min_size(
 					ui.cursor().min,
@@ -3327,10 +3330,10 @@ impl GoblinWalletView {
 					let label = if copied {
 						format!("{} {}", CHECK, t!("goblin.receive.copied"))
 					} else {
-						format!("{} {}", COPY, t!("goblin.receive.copy_npub"))
+						format!("{} {}", COPY, t!("goblin.receive.copy"))
 					};
-					if w::big_action(ui, &label, false).clicked() && !npub.is_empty() {
-						cb.copy_string_to_buffer(npub.clone());
+					if w::big_action(ui, &label, false).clicked() && !nprofile.is_empty() {
+						cb.copy_string_to_buffer(nprofile.clone());
 						cb.vibrate_copy();
 						self.receive_copied = Some((1, std::time::Instant::now()));
 					}

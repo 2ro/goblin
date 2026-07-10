@@ -463,7 +463,7 @@ pub fn chip(ui: &mut Ui, label: &str, active: bool) -> Response {
 pub fn qr_code(ui: &mut Ui, text: &str, size: f32) {
 	let plate = Color32::WHITE;
 	let ink = Color32::from_rgb(0x0E, 0x0E, 0x0C);
-	// Plain QR (no center mark): High ECC retained for robust scanning.
+	// High ECC so the centered goblin mark (below) doesn't break scanning.
 	let Ok(qr) = qrcodegen::QrCode::encode_text(text, qrcodegen::QrCodeEcc::High) else {
 		return;
 	};
@@ -490,6 +490,23 @@ pub fn qr_code(ui: &mut Ui, text: &str, size: f32) {
 			}
 		}
 	}
+	// Center the black goblin mark. High ECC recovers ~30% of the code, so a
+	// modest center occlusion (~20% of the side, cleared to a white plate) stays
+	// scannable. The plate overpaints the modules beneath the mark.
+	let mark_side = size * 0.20;
+	let center = rect.center();
+	ui.painter().rect_filled(
+		egui::Rect::from_center_size(center, Vec2::splat(mark_side * 1.3)),
+		CornerRadius::same((mark_side * 0.32) as u8),
+		plate,
+	);
+	egui::Image::new(egui::include_image!(
+		"../../../../img/goblin-mark-black.svg"
+	))
+	.paint_at(
+		ui,
+		egui::Rect::from_center_size(center, Vec2::splat(mark_side)),
+	);
 }
 
 /// A filled input well for a text field sitting on a card, so the field

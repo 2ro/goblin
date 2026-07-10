@@ -449,7 +449,7 @@ goblin:
     copied: "Copié"
     copy_nostr_id: "Copier l'ID nostr"
     copy_address: "Copier l'adresse"
-    copy_npub: "Copier npub"
+    copy: "Copier"
     share_message: "Payez-moi sur Goblin (goblin.st) — %{npub}"
     privacy_note: "Votre nom d'utilisateur est public. Le contenu des paiements reste chiffré sur le réseau."
     privacy_note_npub: "Votre npub est public. Le contenu des paiements reste chiffré sur le réseau."

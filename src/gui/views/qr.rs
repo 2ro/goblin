@@ -326,6 +326,25 @@ impl QrCodeContent {
 				.response
 				.rect;
 
+			// Center the black goblin mark on static (single) codes. Animated UR
+			// frames are fragmented and encoded at Low ECC, so they get no mark.
+			// The static path is bumped to High ECC (see `create_svg`), which
+			// recovers ~30% and tolerates this modest center occlusion.
+			if !self.animated {
+				let side = content_rect.width() * 0.18;
+				let center = content_rect.center();
+				ui.painter().rect_filled(
+					egui::Rect::from_center_size(center, egui::Vec2::splat(side * 1.3)),
+					egui::CornerRadius::same((side * 0.32) as u8),
+					egui::Color32::WHITE,
+				);
+				egui::Image::new(egui::include_image!("../../../img/goblin-mark-black.svg"))
+					.paint_at(
+						ui,
+						egui::Rect::from_center_size(center, egui::Vec2::splat(side)),
+					);
+			}
+
 			// Setup background size.
 			content_rect.min -= egui::emath::vec2(10.0, 0.0);
 			content_rect.max += egui::emath::vec2(10.0, 0.0);
@@ -380,7 +399,9 @@ impl QrCodeContent {
 		let qr_state = self.qr_image_state.clone();
 		let text = self.text.clone();
 		thread::spawn(move || {
-			if let Ok(qr) = QrCode::encode_text(text.as_str(), qrcodegen::QrCodeEcc::Low) {
+			// High ECC so the centered goblin mark (drawn in `qr_image_ui`)
+			// doesn't break scanning; the static path carries small payloads.
+			if let Ok(qr) = QrCode::encode_text(text.as_str(), qrcodegen::QrCodeEcc::High) {
 				let svg = Self::qr_to_svg(qr, 0);
 				let mut w_state = qr_state.write();
 				w_state.loading = false;

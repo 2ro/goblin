@@ -449,7 +449,7 @@ goblin:
     copied: "コピーしました"
     copy_nostr_id: "nostr IDをコピー"
     copy_address: "アドレスをコピー"
-    copy_npub: "npubをコピー"
+    copy: "コピー"
     share_message: "Goblin(goblin.st)で支払ってください — %{npub}"
     privacy_note: "ユーザー名は公開されます。支払い内容はネットワーク上で暗号化されたままです。"
     privacy_note_npub: "npubは公開されます。支払い内容はネットワーク上で暗号化されたままです。"

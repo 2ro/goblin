@@ -449,7 +449,7 @@ goblin:
     copied: "已复制"
     copy_nostr_id: "复制 nostr ID"
     copy_address: "复制地址"
-    copy_npub: "复制 npub"
+    copy: "复制"
     share_message: "在 Goblin 上向我付款 (goblin.st) — %{npub}"
     privacy_note: "你的用户名是公开的。付款内容在网络中保持加密。"
     privacy_note_npub: "你的 npub 是公开的。付款内容在网络中保持加密。"

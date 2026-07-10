@@ -449,7 +449,7 @@ goblin:
     copied: "Kopyalandı"
     copy_nostr_id: "nostr kimliğini kopyala"
     copy_address: "Adresi kopyala"
-    copy_npub: "npub kopyala"
+    copy: "Kopyala"
     share_message: "Goblin'de bana öde (goblin.st) — %{npub}"
     privacy_note: "Kullanıcı adın herkese açıktır. Ödeme içeriği ağ üzerinde şifreli kalır."
     privacy_note_npub: "npub'ın herkese açıktır. Ödeme içeriği ağ üzerinde şifreli kalır."
