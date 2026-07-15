@@ -443,6 +443,20 @@ pub(super) async fn run_service(svc: Arc<NostrService>, wallet: Wallet) {
 				}
 			}
 			_ = status_tick.tick() => {
+				// Unlock drain: the wallet just went from locked to unlocked and
+				// gift wraps arrived while it was locked. Replay each buffered wrap
+				// through the normal ingest now that money-seed operations are
+				// allowed, so payments received while locked complete normally
+				// (receive + S2 reply, or finalize+post). Idempotent — handle_wrap
+				// re-dedupes and decide() drops anything already handled — so a wrap
+				// that also came back via relay catch-up is processed at most once.
+				if !wallet.is_locked() && svc.has_deferred_wraps() {
+					let buffered = svc.take_deferred_wraps();
+					info!("nostr: unlocked; draining {} buffered payment(s)", buffered.len());
+					for ev in buffered {
+						handle_wrap(&svc, &wallet, ev).await;
+					}
+				}
 				// A tunnel reselect (new exit) bumps the generation. The current
 				// relay sockets rode the now-dead exit, so drop them and re-dial
 				// through the fresh tunnel, re-establishing the kind:1059
@@ -1747,6 +1761,21 @@ async fn handle_wrap(svc: &Arc<NostrService>, wallet: &Wallet, event: Event) {
 		&sender_hex[..8],
 		decision
 	);
+
+	// Money-path lock gate: while the wallet is locked, a receive or finalize
+	// must NOT run against the money seed. Buffer the raw wrap (deliberately NOT
+	// marked processed, so relay catch-up still backstops it across a restart) and
+	// replay it through this same path on unlock. Surface/request/drop are not
+	// seed operations, so they fall through and run — a payment still lands as a
+	// visibly pending card while locked.
+	if defer_while_locked(wallet.is_locked(), decision) {
+		info!(
+			"nostr: money path locked; deferring {:?} for slate {} until unlock",
+			decision, slate.id
+		);
+		svc.buffer_deferred_wrap(event);
+		return;
+	}
 
 	match decision {
 		IngestDecision::AutoReceive => {

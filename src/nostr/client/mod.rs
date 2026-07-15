@@ -30,7 +30,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::Duration;
 
-use crate::nostr::ingest::{IngestContext, IngestDecision, decide};
+use crate::nostr::ingest::{IngestContext, IngestDecision, decide, defer_while_locked};
 use crate::nostr::protocol;
 use crate::nostr::relays::MAX_DM_RELAYS;
 use crate::nostr::types::*;
@@ -192,7 +192,22 @@ pub struct NostrService {
 	/// would freeze in the paused service (the Build 153 QR-trust bug).
 	/// Transient and tiny (one entry per grant this run).
 	announced_ok: RwLock<std::collections::HashSet<String>>,
+	/// Gift wraps that arrived while the wallet's money path was LOCKED. Their
+	/// money-seed operation (receive/finalize) is deferred, so the raw wrap is
+	/// buffered here — NOT marked processed — and replayed through the normal
+	/// ingest once the wallet unlocks. Bounded and deduped by event id; because
+	/// nothing is marked processed, a process death while locked loses only these
+	/// in-memory copies and the relay re-delivers them on the next catch-up, so no
+	/// payment is dropped.
+	deferred_wraps: Mutex<Vec<Event>>,
 }
+
+/// Cap on gift wraps buffered while locked, so a relay redelivering the same
+/// backlog for a long locked stretch can't grow this without bound. Well above
+/// any realistic count of payments arriving during one lock; excess is dropped
+/// from memory only (still recoverable via relay catch-up, never marked
+/// processed).
+const DEFERRED_WRAP_CAP: usize = 512;
 
 /// Transport-aware connection state for the UI status lines. Tor and clearnet
 /// are distinct so a Tor-off wallet never reads as "connecting over Tor". See
@@ -265,7 +280,34 @@ impl NostrService {
 			money_answers: Mutex::new(Vec::new()),
 			session_notice: RwLock::new(None),
 			announced_ok: RwLock::new(std::collections::HashSet::new()),
+			deferred_wraps: Mutex::new(Vec::new()),
 		})
+	}
+
+	/// Buffer a gift wrap whose money-seed operation was deferred because the
+	/// wallet is locked. Deduped by event id and capped ([`DEFERRED_WRAP_CAP`]);
+	/// the wrap is deliberately NOT marked processed, so relay catch-up remains
+	/// the durable backstop across a restart.
+	pub fn buffer_deferred_wrap(&self, event: Event) {
+		let mut buf = self.deferred_wraps.lock();
+		if buf.iter().any(|e| e.id == event.id) {
+			return;
+		}
+		if buf.len() >= DEFERRED_WRAP_CAP {
+			return;
+		}
+		buf.push(event);
+	}
+
+	/// Take every buffered deferred gift wrap, clearing the buffer. Called on
+	/// unlock to replay them through the normal ingest.
+	pub fn take_deferred_wraps(&self) -> Vec<Event> {
+		std::mem::take(&mut *self.deferred_wraps.lock())
+	}
+
+	/// Whether any gift wrap is buffered awaiting unlock.
+	pub fn has_deferred_wraps(&self) -> bool {
+		!self.deferred_wraps.lock().is_empty()
 	}
 
 	/// Own (active) public key.

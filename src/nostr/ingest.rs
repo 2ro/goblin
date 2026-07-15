@@ -60,6 +60,26 @@ pub struct IngestContext<'a> {
 	pub allow_requests: bool,
 }
 
+/// Whether this decision runs a MONEY-SEED operation on the wallet (a receive
+/// or a finalize+post). The surface/drop/request outcomes never touch the seed:
+/// they only store a visible pending card or discard. Used to gate the ingest
+/// while the money path is locked.
+pub fn decision_touches_seed(decision: IngestDecision) -> bool {
+	matches!(
+		decision,
+		IngestDecision::AutoReceive | IngestDecision::FinalizePost
+	)
+}
+
+/// The money-path lock gate: `true` when this incoming slate must be DEFERRED
+/// (buffered, not processed) because the wallet is locked and the decision would
+/// otherwise run a money-seed operation. When unlocked, nothing is deferred; when
+/// locked, only seed-touching decisions defer — surface/request/drop still run so
+/// a payment stays visibly pending and controls are still honoured.
+pub fn defer_while_locked(locked: bool, decision: IngestDecision) -> bool {
+	locked && decision_touches_seed(decision)
+}
+
 /// Pure policy function — unit tested, no side effects.
 pub fn decide(ctx: &IngestContext) -> IngestDecision {
 	match ctx.state {
@@ -337,6 +357,24 @@ mod tests {
 		assert_eq!(decide(&c), IngestDecision::FinalizePost);
 		let c2 = ctx(SlateState::Invoice2, 100, MALLORY, Some(&m), true);
 		assert!(matches!(decide(&c2), IngestDecision::Drop(_)));
+	}
+
+	#[test]
+	fn locked_defers_only_seed_touching_decisions() {
+		// While locked, a receive or a finalize+post must be deferred (buffered,
+		// not run against the money seed)...
+		assert!(defer_while_locked(true, IngestDecision::AutoReceive));
+		assert!(defer_while_locked(true, IngestDecision::FinalizePost));
+		// ...but surfacing a pending card, surfacing a request, or dropping never
+		// touches the seed, so they still run while locked (payment stays visibly
+		// pending; controls are still honoured).
+		assert!(!defer_while_locked(true, IngestDecision::SurfaceIncoming));
+		assert!(!defer_while_locked(true, IngestDecision::SurfaceRequest));
+		assert!(!defer_while_locked(true, IngestDecision::Drop("x")));
+		// Unlocked: nothing is ever deferred — every decision processes normally.
+		assert!(!defer_while_locked(false, IngestDecision::AutoReceive));
+		assert!(!defer_while_locked(false, IngestDecision::FinalizePost));
+		assert!(!defer_while_locked(false, IngestDecision::SurfaceIncoming));
 	}
 
 	#[test]

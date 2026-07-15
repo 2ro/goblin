@@ -148,6 +148,13 @@ pub struct Wallet {
 	reopen: Arc<AtomicBool>,
 	/// Flag to check if wallet is open.
 	is_open: Arc<AtomicBool>,
+	/// Money-path lock. When set, the wallet stays open in memory and the nostr
+	/// service keeps its relay connections live (payments keep ARRIVING), but NO
+	/// money-seed/keychain operation runs on an incoming slatepack: the gift-wrap
+	/// ingest defers receive/finalize (buffering the raw event) until unlock, when
+	/// the buffered payments are drained and completed normally. Independent of
+	/// `is_open` on purpose — the seed is present but untouched while locked.
+	locked: Arc<AtomicBool>,
 	/// Flag to check if wallet is closing.
 	closing: Arc<AtomicBool>,
 	/// Flag to check if wallet was deleted to remove it from the list.
@@ -216,6 +223,7 @@ impl Wallet {
 			more_txs_loading: Arc::new(AtomicBool::new(false)),
 			reopen: Arc::new(AtomicBool::new(false)),
 			is_open: Arc::from(AtomicBool::new(false)),
+			locked: Arc::new(AtomicBool::new(false)),
 			closing: Arc::new(AtomicBool::new(false)),
 			deleted: Arc::new(AtomicBool::new(false)),
 			foreign_api_server: Arc::new(RwLock::new(None)),
@@ -454,6 +462,8 @@ impl Wallet {
 						thread_w.clone().unwrap().unpark();
 					}
 					self.is_open.store(true, Ordering::Relaxed);
+					// A freshly opened wallet is never locked; clear any stale flag.
+					self.locked.store(false, Ordering::Relaxed);
 				}
 				Err(e) => {
 					if !self.syncing() {
@@ -1395,6 +1405,37 @@ impl Wallet {
 		self.is_open.load(Ordering::Relaxed)
 	}
 
+	/// Whether the money path is locked. While locked the wallet stays open and
+	/// the nostr service keeps its relays connected (payments keep arriving), but
+	/// the gift-wrap ingest defers every money-seed operation (receive/finalize)
+	/// until unlock. See the `locked` field.
+	pub fn is_locked(&self) -> bool {
+		self.locked.load(Ordering::Relaxed)
+	}
+
+	/// Set the money-path lock flag directly. `lock()`/`unlock()` are the intended
+	/// entry points; this is exposed for callers that already own the boolean.
+	pub fn set_locked(&self, locked: bool) {
+		self.locked.store(locked, Ordering::Relaxed);
+	}
+
+	/// Lock the money path WITHOUT tearing down the wallet or its nostr service:
+	/// relays stay connected so payments keep arriving, but no incoming slatepack
+	/// is received/finalized until [`Wallet::unlock`]. A no-op on a wallet that
+	/// is not open.
+	pub fn lock(&self) {
+		if self.is_open() {
+			self.locked.store(true, Ordering::Relaxed);
+		}
+	}
+
+	/// Clear the money-path lock. The nostr service loop then drains any incoming
+	/// payments that arrived and were buffered while locked, completing them
+	/// normally.
+	pub fn unlock(&self) {
+		self.locked.store(false, Ordering::Relaxed);
+	}
+
 	/// Check if wallet is closing.
 	pub fn is_closing(&self) -> bool {
 		self.closing.load(Ordering::Relaxed)
@@ -1445,6 +1486,8 @@ impl Wallet {
 			Self::close_wallet(&instance);
 			wallet_close.closing.store(false, Ordering::Relaxed);
 			wallet_close.is_open.store(false, Ordering::Relaxed);
+			// A fully closed wallet is not "locked" — it is gone from memory.
+			wallet_close.locked.store(false, Ordering::Relaxed);
 			// Setup current connection.
 			{
 				let mut w_conn = conn.write();
