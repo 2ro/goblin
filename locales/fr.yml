@@ -770,6 +770,11 @@ goblin:
     pass_prompt: "Saisissez le mot de passe de votre portefeuille pour confirmer."
     confirm_hold: "Maintenez pour confirmer"
     encrypt_desc: "Un message de commande chiffré qui engage un paiement."
+  lock:
+    title: "Portefeuille verrouillé"
+    subtitle: "Les paiements continuent d'arriver pendant le verrouillage. Saisissez votre mot de passe pour déverrouiller et utiliser vos fonds."
+    unlock: "Déverrouiller"
+    close_wallet: "Fermer le portefeuille"
   trusted_sites:
     title: "Sites de confiance"
     intro: "Les sites auxquels vous avez fait confiance cette session peuvent signer des actions à faible risque sans demander. L'argent demande toujours. Terminez toute session ici."

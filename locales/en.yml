@@ -770,6 +770,11 @@ goblin:
     pass_prompt: "Enter your wallet password to confirm."
     confirm_hold: "Hold to confirm"
     encrypt_desc: "An encrypted order message that commits to a payment."
+  lock:
+    title: "Wallet locked"
+    subtitle: "Payments keep arriving while locked. Enter your password to unlock and use your funds."
+    unlock: "Unlock"
+    close_wallet: "Close wallet"
   trusted_sites:
     title: "Trusted Sites"
     intro: "Sites you trusted this session can sign low-risk actions without asking. Money always asks. End any session here."

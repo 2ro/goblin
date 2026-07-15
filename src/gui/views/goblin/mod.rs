@@ -186,6 +186,12 @@ pub struct GoblinWalletView {
 	/// visit. Presentation-only and transient — reset whenever the user leaves
 	/// the Home tab so a later glance is censored again.
 	balance_revealed: bool,
+	/// Money-path unlock screen: the password typed to unlock. While
+	/// `wallet.is_locked()` the whole surface is replaced by the unlock screen;
+	/// this holds the in-progress entry, cleared the moment it is consumed.
+	lock_pass: String,
+	/// The last unlock attempt used a wrong password — show the red line.
+	lock_wrong: bool,
 }
 
 /// Whether the per-identity cue is drawn on activity rows (owner-approved). The
@@ -356,6 +362,8 @@ impl Default for GoblinWalletView {
 			money: None,
 			money_hold: w::HoldToSend::default(),
 			balance_revealed: false,
+			lock_pass: String::new(),
+			lock_wrong: false,
 		}
 	}
 }
@@ -752,6 +760,17 @@ impl GoblinWalletView {
 	/// Render the full Goblin surface for an open wallet.
 	pub fn ui(&mut self, ui: &mut egui::Ui, wallet: &Wallet, cb: &dyn PlatformCallbacks) {
 		let t = theme::tokens();
+
+		// Money-path lock: while locked, the ENTIRE wallet surface is replaced by
+		// the unlock screen. Returning here — before any tab, header, deep-link
+		// intake, modal, or overlay is drawn — is precisely what makes every
+		// in-app money action (Approve, send, the QR scanner, pending deep links)
+		// unreachable. There is deliberately no route around this screen: pending
+		// pay/login/authorize URIs are left un-consumed and fire only after unlock.
+		if wallet.is_locked() {
+			self.lock_screen_ui(ui, wallet, cb);
+			return;
+		}
 
 		// Reset transient UI state when the bound wallet changes, so a
 		// half-filled send or claim never leaks across a wallet switch.

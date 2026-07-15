@@ -1423,17 +1423,34 @@ impl Wallet {
 	/// relays stay connected so payments keep arriving, but no incoming slatepack
 	/// is received/finalized until [`Wallet::unlock`]. A no-op on a wallet that
 	/// is not open.
+	///
+	/// This also stops the local Foreign API receive listener: its `/v2/foreign`
+	/// `receive_tx` builds outputs with the keychain mask (a money-seed
+	/// operation), so it must not answer while locked. The sync loop restarts it
+	/// on unlock (its start is guarded by `!is_locked()`).
 	pub fn lock(&self) {
 		if self.is_open() {
 			self.locked.store(true, Ordering::Relaxed);
+			// Seal the Foreign API listener too — stop it now, immediately.
+			let running = { self.foreign_api_server.read().is_some() };
+			if running {
+				let mut w_api_server = self.foreign_api_server.write();
+				if let Some(server) = w_api_server.as_mut() {
+					server.0.stop();
+				}
+				*w_api_server = None;
+			}
 		}
 	}
 
 	/// Clear the money-path lock. The nostr service loop then drains any incoming
 	/// payments that arrived and were buffered while locked, completing them
-	/// normally.
+	/// normally, and the sync loop restarts the Foreign API receive listener.
+	/// Waking the sync thread makes that restart prompt rather than waiting out
+	/// the next sync interval.
 	pub fn unlock(&self) {
 		self.locked.store(false, Ordering::Relaxed);
+		self.sync();
 	}
 
 	/// Check if wallet is closing.
@@ -2787,7 +2804,11 @@ fn start_sync(wallet: Wallet) -> Thread {
 					sync_wallet_data(&wallet, false);
 				}
 
-				if wallet.is_open() && !wallet.is_closing() {
+				// The Foreign API receive listener performs money-seed operations
+				// (receive_tx builds outputs with the keychain mask), so it stays
+				// stopped while the wallet is locked; lock() stops any running
+				// instance and this guard keeps it from restarting until unlock.
+				if wallet.is_open() && !wallet.is_closing() && !wallet.is_locked() {
 					// Start Foreign API listener if not running.
 					let api_server_running = { wallet.foreign_api_server.read().is_some() };
 					if !api_server_running {

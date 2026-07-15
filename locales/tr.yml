@@ -770,6 +770,11 @@ goblin:
     pass_prompt: "Onaylamak için cüzdan parolanızı girin."
     confirm_hold: "Onaylamak için basılı tutun"
     encrypt_desc: "Bir ödemeyi bağlayan şifreli sipariş mesajı."
+  lock:
+    title: "Cüzdan kilitli"
+    subtitle: "Kilitliyken ödemeler gelmeye devam eder. Kilidi açıp bakiyeni kullanmak için parolanı gir."
+    unlock: "Kilidi aç"
+    close_wallet: "Cüzdanı kapat"
   trusted_sites:
     title: "Güvenilen Siteler"
     intro: "Bu oturumda güvendiğiniz siteler, düşük riskli eylemleri sormadan imzalayabilir. Para her zaman sorar. Herhangi bir oturumu buradan sonlandırın."

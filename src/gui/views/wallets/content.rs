@@ -412,6 +412,19 @@ impl WalletsContent {
 			}
 			return false;
 		} else if self.showing_wallet() {
+			// While the money path is locked the unlock screen owns the whole
+			// surface: system back must not escape it — not to a sub-page, and
+			// not via the double-back deselect to the wallet switcher. Swallow it
+			// entirely so the only ways out stay the on-screen Unlock / Close.
+			if self
+				.wallets
+				.selected()
+				.as_ref()
+				.map(|w| w.is_locked())
+				.unwrap_or(false)
+			{
+				return false;
+			}
 			// Go back at stack; on Home with nothing open, back is a no-op.
 			// Leaving the wallet is intentional-only (switch/lock controls),
 			// never a back fallback to the chooser.

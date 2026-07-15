@@ -770,6 +770,11 @@ goblin:
     pass_prompt: "Ingresa tu contraseña de billetera para confirmar."
     confirm_hold: "Mantén presionado para confirmar"
     encrypt_desc: "Un mensaje de pedido cifrado que compromete un pago."
+  lock:
+    title: "Billetera bloqueada"
+    subtitle: "Los pagos siguen llegando mientras está bloqueada. Ingresa tu contraseña para desbloquear y usar tus fondos."
+    unlock: "Desbloquear"
+    close_wallet: "Cerrar billetera"
   trusted_sites:
     title: "Sitios de confianza"
     intro: "Los sitios en los que confiaste esta sesión pueden firmar acciones de bajo riesgo sin preguntar. El dinero siempre pregunta. Termina cualquier sesión aquí."

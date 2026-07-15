@@ -546,7 +546,11 @@ impl GoblinWalletView {
 				)
 				.clicked()
 				{
-					wallet.close();
+					// Lock — NOT close. The wallet stays open and its nostr relays
+					// stay connected (payments keep arriving and queue up), but the
+					// whole surface is replaced by the unlock screen and the money
+					// seed is sealed until the password is re-entered.
+					wallet.lock();
 				}
 				ui.add_space(10.0);
 				if w::outlined_icon_action(
@@ -561,6 +565,128 @@ impl GoblinWalletView {
 					self.settings_page = SettingsPage::Advanced;
 				}
 				ui.add_space(20.0);
+			});
+	}
+
+	/// The money-path unlock screen, shown full-surface whenever the wallet is
+	/// locked (`wallet.is_locked()`). It is drawn as an early return from
+	/// [`GoblinWalletView::ui`], so it covers every tab, header, overlay and
+	/// pending deep link — no money action is reachable behind it. It offers
+	/// exactly two ways out: unlock in place (the relays stayed connected, so any
+	/// payments that queued while locked drain right after), or fully close the
+	/// wallet (the old lock-button behavior: stops the nostr service and seals
+	/// the seed to disk).
+	pub(super) fn lock_screen_ui(
+		&mut self,
+		ui: &mut egui::Ui,
+		wallet: &Wallet,
+		cb: &dyn PlatformCallbacks,
+	) {
+		let t = theme::tokens();
+		egui::CentralPanel::default()
+			.frame(egui::Frame {
+				fill: t.bg,
+				inner_margin: Margin {
+					left: (View::far_left_inset_margin(ui) + 20.0) as i8,
+					right: (View::get_right_inset() + 20.0) as i8,
+					top: (View::get_top_inset() + 12.0) as i8,
+					bottom: (View::get_bottom_inset() + 12.0) as i8,
+				},
+				..Default::default()
+			})
+			.show_inside(ui, |ui| {
+				w::centered_column(ui, Content::SIDE_PANEL_WIDTH * 1.2, |ui| {
+					ScrollArea::vertical()
+						.id_salt("goblin_lock_scroll")
+						.auto_shrink([false; 2])
+						.scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
+						.show(ui, |ui| {
+							ui.add_space(48.0);
+							ui.vertical_centered(|ui| {
+								ui.label(
+									RichText::new(crate::gui::icons::LOCK_KEY)
+										.font(FontId::new(56.0, fonts::regular()))
+										.color(t.surface_text),
+								);
+								ui.add_space(16.0);
+								ui.label(
+									RichText::new(t!("goblin.lock.title"))
+										.size(22.0)
+										.color(Colors::title(false)),
+								);
+								ui.add_space(8.0);
+								ui.label(
+									RichText::new(t!("goblin.lock.subtitle"))
+										.size(14.0)
+										.color(Colors::gray()),
+								);
+							});
+							ui.add_space(24.0);
+
+							let mut field =
+								TextEdit::new(egui::Id::new("goblin_lock_pass")).password();
+							field.ui(ui, &mut self.lock_pass, cb);
+							// Wrong-password line, cleared the moment the field empties.
+							if self.lock_pass.is_empty() {
+								self.lock_wrong = false;
+							} else if self.lock_wrong {
+								ui.add_space(10.0);
+								ui.vertical_centered(|ui| {
+									ui.label(
+										RichText::new(t!("goblin.advanced.wrong_password"))
+											.size(15.0)
+											.color(Colors::red()),
+									);
+								});
+							}
+							ui.add_space(18.0);
+
+							// Enter submits, matching the wallet-open password modal.
+							let mut unlock = ui.input(|i| i.key_pressed(egui::Key::Enter))
+								&& !self.lock_pass.is_empty();
+							ui.vertical_centered_justified(|ui| {
+								View::colored_text_button(
+									ui,
+									t!("goblin.lock.unlock").to_string(),
+									t.accent_ink,
+									t.accent,
+									|| {
+										unlock = true;
+									},
+								);
+							});
+							ui.add_space(10.0);
+							ui.vertical_centered_justified(|ui| {
+								View::button(
+									ui,
+									t!("goblin.lock.close_wallet"),
+									Colors::white_or_black(false),
+									|| {
+										self.lock_pass.clear();
+										self.lock_wrong = false;
+										wallet.close();
+									},
+								);
+							});
+							ui.add_space(24.0);
+
+							if unlock {
+								if self.lock_pass.is_empty()
+									|| !wallet.verify_nostr_password(&self.lock_pass)
+								{
+									self.lock_wrong = true;
+								} else {
+									// Verified WITHOUT re-opening — the wallet is still
+									// open, only the money path was sealed. Clearing the
+									// flag lets the service loop drain queued payments and
+									// the sync loop restart the Foreign API listener.
+									wallet.unlock();
+									self.lock_pass.clear();
+									self.lock_wrong = false;
+								}
+							}
+						});
+				});
 			});
 	}
 }

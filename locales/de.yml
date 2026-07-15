@@ -770,6 +770,11 @@ goblin:
     pass_prompt: "Gib dein Wallet-Passwort zum Bestätigen ein."
     confirm_hold: "Halten zum Bestätigen"
     encrypt_desc: "Eine verschlüsselte Bestellnachricht, die eine Zahlung zusichert."
+  lock:
+    title: "Wallet gesperrt"
+    subtitle: "Zahlungen kommen auch im gesperrten Zustand weiter an. Gib dein Passwort ein, um zu entsperren und dein Guthaben zu nutzen."
+    unlock: "Entsperren"
+    close_wallet: "Wallet schließen"
   trusted_sites:
     title: "Vertrauenswürdige Seiten"
     intro: "Seiten, denen du in dieser Sitzung vertraut hast, können risikoarme Aktionen ohne Nachfrage signieren. Bei Geld wird immer gefragt. Beende jede Sitzung hier."

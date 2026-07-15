@@ -770,6 +770,11 @@ goblin:
     pass_prompt: "輸入錢包密碼以確認。"
     confirm_hold: "長按以確認"
     encrypt_desc: "一條鎖定付款的加密訂單訊息。"
+  lock:
+    title: "錢包已鎖定"
+    subtitle: "鎖定期間付款仍會到帳。輸入密碼即可解鎖並使用資金。"
+    unlock: "解鎖"
+    close_wallet: "關閉錢包"
   trusted_sites:
     title: "受信任網站"
     intro: "本次會話中你信任的網站可在不詢問的情況下籤署低風險操作。資金操作始終詢問。可在此結束任意會話。"
