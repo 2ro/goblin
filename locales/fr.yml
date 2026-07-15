@@ -775,6 +775,7 @@ goblin:
     subtitle: "Les paiements continuent d'arriver pendant le verrouillage. Saisissez votre mot de passe pour déverrouiller et utiliser vos fonds."
     unlock: "Déverrouiller"
     close_wallet: "Fermer le portefeuille"
+    approve_locked: "Le portefeuille a été verrouillé avant que ce paiement puisse être effectué. Il est toujours en attente — approuvez-le à nouveau."
   trusted_sites:
     title: "Sites de confiance"
     intro: "Les sites auxquels vous avez fait confiance cette session peuvent signer des actions à faible risque sans demander. L'argent demande toujours. Terminez toute session ici."

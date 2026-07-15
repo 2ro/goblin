@@ -3542,6 +3542,16 @@ async fn handle_task(w: &Wallet, t: WalletTask) {
 				error!("nostr pay: request is not pending");
 				return;
 			}
+			// Money-path lock guard: an Approve tapped just before (or racing) a
+			// lock must not spend or receive while locked. Bounce it the way the
+			// ingest gate defers — the request stays Pending in the store (still
+			// approvable after unlock) and the FAILED phase un-greys the card and
+			// surfaces why, instead of half-executing a seed operation.
+			if w.is_locked() {
+				info!("nostr pay: wallet locked, bouncing request back to pending");
+				service.fail_send(t!("goblin.lock.approve_locked"));
+				return;
+			}
 			// Drive the approve button's busy/failed state so it doesn't stay
 			// greyed forever if the pay can't go through.
 			service.set_send_phase(crate::nostr::send_phase::WORKING);

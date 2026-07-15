@@ -775,6 +775,7 @@ goblin:
     subtitle: "Kilitliyken ödemeler gelmeye devam eder. Kilidi açıp bakiyeni kullanmak için parolanı gir."
     unlock: "Kilidi aç"
     close_wallet: "Cüzdanı kapat"
+    approve_locked: "Ödeme yapılamadan cüzdan kilitlendi. İstek hâlâ beklemede — yeniden onayla."
   trusted_sites:
     title: "Güvenilen Siteler"
     intro: "Bu oturumda güvendiğiniz siteler, düşük riskli eylemleri sormadan imzalayabilir. Para her zaman sorar. Herhangi bir oturumu buradan sonlandırın."

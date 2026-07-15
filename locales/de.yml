@@ -775,6 +775,7 @@ goblin:
     subtitle: "Zahlungen kommen auch im gesperrten Zustand weiter an. Gib dein Passwort ein, um zu entsperren und dein Guthaben zu nutzen."
     unlock: "Entsperren"
     close_wallet: "Wallet schließen"
+    approve_locked: "Die Wallet wurde gesperrt, bevor dies bezahlt werden konnte. Es ist weiter ausstehend — genehmige es erneut."
   trusted_sites:
     title: "Vertrauenswürdige Seiten"
     intro: "Seiten, denen du in dieser Sitzung vertraut hast, können risikoarme Aktionen ohne Nachfrage signieren. Bei Geld wird immer gefragt. Beende jede Sitzung hier."

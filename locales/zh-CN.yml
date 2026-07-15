@@ -775,6 +775,7 @@ goblin:
     subtitle: "锁定期间付款仍会到账。输入密码即可解锁并使用资金。"
     unlock: "解锁"
     close_wallet: "关闭钱包"
+    approve_locked: "付款完成前钱包已被锁定。请求仍在等待中——请重新批准。"
   trusted_sites:
     title: "受信任网站"
     intro: "本次会话中你信任的网站可在不询问的情况下签署低风险操作。资金操作始终询问。可在此结束任意会话。"

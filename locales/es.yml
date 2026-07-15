@@ -775,6 +775,7 @@ goblin:
     subtitle: "Los pagos siguen llegando mientras está bloqueada. Ingresa tu contraseña para desbloquear y usar tus fondos."
     unlock: "Desbloquear"
     close_wallet: "Cerrar billetera"
+    approve_locked: "La billetera se bloqueó antes de que esto pudiera pagarse. Sigue pendiente — apruébalo de nuevo."
   trusted_sites:
     title: "Sitios de confianza"
     intro: "Los sitios en los que confiaste esta sesión pueden firmar acciones de bajo riesgo sin preguntar. El dinero siempre pregunta. Termina cualquier sesión aquí."

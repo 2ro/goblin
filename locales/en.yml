@@ -775,6 +775,7 @@ goblin:
     subtitle: "Payments keep arriving while locked. Enter your password to unlock and use your funds."
     unlock: "Unlock"
     close_wallet: "Close wallet"
+    approve_locked: "The wallet was locked before this could be paid. It's still pending — approve it again."
   trusted_sites:
     title: "Trusted Sites"
     intro: "Sites you trusted this session can sign low-risk actions without asking. Money always asks. End any session here."
