@@ -42,14 +42,14 @@ e2e-internal = []
 log = "0.4.27"
 
 # node
-grin_api = { path = "node/api" }
-grin_chain = { path = "node/chain" }
-grin_config = { path = "node/config" }
-grin_core = { path = "node/core" }
-grin_p2p = { path = "node/p2p" }
-grin_servers = { path = "node/servers" }
-grin_keychain = { path = "node/keychain" }
-grin_util = { path = "node/util" }
+grin_api = { path = "wallet/grin/api" }
+grin_chain = { path = "wallet/grin/chain" }
+grin_config = { path = "wallet/grin/config" }
+grin_core = { path = "wallet/grin/core" }
+grin_p2p = { path = "wallet/grin/p2p" }
+grin_servers = { path = "wallet/grin/servers" }
+grin_keychain = { path = "wallet/grin/keychain" }
+grin_util = { path = "wallet/grin/util" }
 
 # wallet
 grin_wallet_impls = { path = "wallet/impls" }
@@ -105,7 +105,7 @@ hyper-tls = "0.6.0"
 # Version already present transitively (async-socks5 tree) — no new download.
 tokio-socks = "0.5"
 async-std = "1.13.2"
-uuid = { version = "0.8.2", features = ["v4"] }
+uuid = { version = "1.23.4", features = ["serde", "v4"] }
 num-bigint = "0.4.6"
 
 ## nostr
