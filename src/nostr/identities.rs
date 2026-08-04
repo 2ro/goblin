@@ -204,6 +204,24 @@ impl HeldIdentities {
 		let legacy_hex = legacy.pubkey_hex()?;
 		match Self::load(nostr_dir) {
 			Some(mut idx) => {
+				// Self-heal: drop any entry whose file holds a DIFFERENT key than the
+				// entry claims. Such an entry is a lie about disk — it makes the same
+				// identity load twice (once under its own entry, once under the stale
+				// one) and hides the fact that the key the entry names is gone.
+				// Dropping it is honest: the switcher then shows what the wallet can
+				// actually still open. Only a parsed mismatch prunes; an unreadable
+				// file is left alone (a transient read error must not evict a key).
+				let before = idx.identities.len();
+				idx.identities.retain(|e| match e.load(nostr_dir) {
+					Some(id) => id.pubkey_hex().as_deref() == Some(e.pubkey.as_str()),
+					None => true,
+				});
+				if idx.identities.len() != before {
+					let kept: Vec<&str> =
+						idx.identities.iter().map(|e| e.pubkey.as_str()).collect();
+					idx.order.retain(|h| kept.contains(&h.as_str()));
+					let _ = idx.save(nostr_dir);
+				}
 				// Repair: ensure identity #1 is always represented (it is the
 				// rollback anchor), without disturbing the active pointer.
 				if !idx.contains(&legacy_hex) {
@@ -271,6 +289,77 @@ impl HeldIdentities {
 		self.save(nostr_dir)
 			.map_err(|e| HeldError::Io(e.to_string()))?;
 		Ok(hex)
+	}
+
+	/// The file a given identity MUST be written to: its own entry's path when the
+	/// wallet holds it, else the legacy `identity.json`.
+	///
+	/// Every writer of an identity file goes through this. Writing a non-primary
+	/// identity to the fixed legacy path overwrites identity #1's encrypted key
+	/// with the other identity's — the key is then unrecoverable and, because the
+	/// index still points `hex1 -> identity.json`, the next open loads identity #2
+	/// under identity #1's entry, so #1 vanishes from the switcher. That is a
+	/// permanent identity loss, not a display glitch.
+	pub fn path_for(&self, nostr_dir: &PathBuf, hex: &str) -> PathBuf {
+		match self.entry(hex) {
+			Some(e) => e.abs_path(nostr_dir),
+			None => {
+				let mut p = nostr_dir.clone();
+				p.push(LEGACY_FILE);
+				p
+			}
+		}
+	}
+
+	/// Repoint the PRIMARY entry (the one living in the legacy `identity.json`) at
+	/// a different key, which the caller has already written to that file, and make
+	/// it active. Keeps the index in step with disk: leaving the old pubkey on the
+	/// `identity.json` entry would make the index describe a key that no longer
+	/// exists there, which [`Self::load_or_migrate`] then drops as a mismatch.
+	pub fn replace_primary(
+		&mut self,
+		nostr_dir: &PathBuf,
+		identity: &NostrIdentity,
+	) -> Result<(), HeldError> {
+		let hex = identity.pubkey_hex().ok_or(HeldError::BadPubkey)?;
+		let old = self
+			.identities
+			.iter()
+			.find(|e| e.path == LEGACY_FILE)
+			.map(|e| e.pubkey.clone());
+		// The new key may already be held under its own file; that entry is now
+		// redundant with the primary one, so drop it and keep a single entry.
+		self.identities
+			.retain(|e| e.pubkey != hex || e.path == LEGACY_FILE);
+		self.order.retain(|h| h != &hex);
+		match old {
+			Some(old_hex) => {
+				for e in self.identities.iter_mut() {
+					if e.pubkey == old_hex && e.path == LEGACY_FILE {
+						e.pubkey = hex.clone();
+						e.label = label_for(identity);
+					}
+				}
+				for h in self.order.iter_mut() {
+					if h == &old_hex {
+						*h = hex.clone();
+					}
+				}
+			}
+			None => {
+				self.identities.push(HeldEntry {
+					pubkey: hex.clone(),
+					path: LEGACY_FILE.to_string(),
+					label: label_for(identity),
+				});
+			}
+		}
+		if !self.order.contains(&hex) {
+			self.order.push(hex.clone());
+		}
+		self.active = hex;
+		self.save(nostr_dir)
+			.map_err(|e| HeldError::Io(e.to_string()))
 	}
 
 	/// Move the active pointer to a held identity. The caller is responsible for
@@ -545,6 +634,116 @@ mod tests {
 		// Falls back to identity #1 rather than leaving no running identity.
 		assert_eq!(active.npub, legacy.npub);
 		assert_eq!(repaired.active, legacy_hex);
+		let _ = std::fs::remove_dir_all(&dir);
+	}
+
+	#[test]
+	fn saving_a_non_primary_identity_never_clobbers_identity_one() {
+		// THE identity-loss regression. Saving the ACTIVE identity (e.g. after a
+		// name claim or advertised-relay selection) used to go to the fixed legacy
+		// identity.json, so any save made while identity #2 was active overwrote
+		// identity #1's encrypted key with #2's — #1 unrecoverable, and gone from
+		// the switcher on the next open. `path_for` must route each identity to its
+		// OWN file.
+		let dir = tmpdir("noclobber");
+		let (legacy, _) = NostrIdentity::create_random("pw").unwrap();
+		legacy.save(&dir).unwrap();
+		let legacy_hex = legacy.pubkey_hex().unwrap();
+		let (mut idx, _) = HeldIdentities::load_or_migrate(&dir, &legacy).unwrap();
+		let (second, _) = NostrIdentity::create_random("pw").unwrap();
+		let second_hex = idx.add(&dir, &second).unwrap();
+		idx.set_active(&dir, &second_hex).unwrap();
+
+		// Mutate and save identity #2 exactly as the service does.
+		let mut active = idx.entry(&second_hex).unwrap().load(&dir).unwrap();
+		active.dm_relays = vec!["wss://relay.example".to_string()];
+		active.save_at(&idx.path_for(&dir, &second_hex)).unwrap();
+
+		// identity.json still holds identity #1, untouched.
+		let primary_on_disk = NostrIdentity::load(&dir).unwrap();
+		assert_eq!(
+			primary_on_disk.npub, legacy.npub,
+			"saving identity #2 must not overwrite identity #1's key file"
+		);
+		// Both identities still resolve, each to its own key, and the mutation stuck.
+		let (reidx, _) = HeldIdentities::load_or_migrate(&dir, &legacy).unwrap();
+		assert_eq!(reidx.len(), 2, "both identities must survive the save");
+		assert_eq!(
+			reidx.entry(&legacy_hex).unwrap().load(&dir).unwrap().npub,
+			legacy.npub
+		);
+		let reloaded_second = reidx.entry(&second_hex).unwrap().load(&dir).unwrap();
+		assert_eq!(reloaded_second.npub, second.npub);
+		assert_eq!(reloaded_second.dm_relays, vec!["wss://relay.example"]);
+		// An identity the index does not hold falls back to the legacy path.
+		assert_eq!(
+			idx.path_for(&dir, "not-held"),
+			NostrIdentity::path(&dir),
+			"an unheld identity has no file of its own"
+		);
+		let _ = std::fs::remove_dir_all(&dir);
+	}
+
+	#[test]
+	fn stale_entry_pointing_at_another_key_is_dropped_on_load() {
+		// A wallet already damaged by the old writer: identity.json holds identity
+		// #2's key while the index still claims it holds #1. Loading must not report
+		// identity #2 twice (once per entry) — the entry that lies about disk is
+		// dropped, so the switcher shows only what the wallet can really open.
+		let dir = tmpdir("mismatch");
+		let (legacy, _) = NostrIdentity::create_random("pw").unwrap();
+		legacy.save(&dir).unwrap();
+		let legacy_hex = legacy.pubkey_hex().unwrap();
+		let (mut idx, _) = HeldIdentities::load_or_migrate(&dir, &legacy).unwrap();
+		let (second, _) = NostrIdentity::create_random("pw").unwrap();
+		let second_hex = idx.add(&dir, &second).unwrap();
+		idx.set_active(&dir, &second_hex).unwrap();
+		// The old bug: identity #2 written over identity.json.
+		second.save(&dir).unwrap();
+
+		let damaged = NostrIdentity::load(&dir).unwrap();
+		let (healed, active) = HeldIdentities::load_or_migrate(&dir, &damaged).unwrap();
+		assert_eq!(healed.len(), 1, "the lying entry must be dropped");
+		assert!(
+			!healed.contains(&legacy_hex),
+			"identity #1 is gone from disk and must not be listed as switchable"
+		);
+		assert_eq!(healed.active, second_hex);
+		assert_eq!(active.npub, second.npub);
+		assert!(!healed.order.contains(&legacy_hex));
+		let _ = std::fs::remove_dir_all(&dir);
+	}
+
+	#[test]
+	fn replace_primary_repoints_the_index_at_the_new_key() {
+		// Import-over-primary writes a new key into identity.json; the index must
+		// follow, or the next open drops the now-mismatched entry and the import
+		// silently disappears.
+		let dir = tmpdir("replaceprimary");
+		let (legacy, _) = NostrIdentity::create_random("pw").unwrap();
+		legacy.save(&dir).unwrap();
+		let legacy_hex = legacy.pubkey_hex().unwrap();
+		let (mut idx, _) = HeldIdentities::load_or_migrate(&dir, &legacy).unwrap();
+		let (other, _) = NostrIdentity::create_random("pw").unwrap();
+		let other_hex = idx.add(&dir, &other).unwrap();
+
+		let (imported, _) = NostrIdentity::create_random("pw").unwrap();
+		let imported_hex = imported.pubkey_hex().unwrap();
+		imported.save(&dir).unwrap();
+		idx.replace_primary(&dir, &imported).unwrap();
+
+		assert!(
+			!idx.contains(&legacy_hex),
+			"the replaced key is no longer held"
+		);
+		assert_eq!(idx.active, imported_hex, "the import becomes active");
+		assert_eq!(idx.entry(&imported_hex).unwrap().path, "identity.json");
+		assert!(idx.contains(&other_hex), "other identities are untouched");
+		assert_eq!(idx.order.len(), 2);
+		// Survives a reload with no entry dropped as a mismatch.
+		let (reidx, active) = HeldIdentities::load_or_migrate(&dir, &imported).unwrap();
+		assert_eq!(reidx.len(), 2);
+		assert_eq!(active.npub, imported.npub);
 		let _ = std::fs::remove_dir_all(&dir);
 	}
 
