@@ -565,6 +565,16 @@ impl Wallet {
 				warn!("nostr: identity file unreadable: {}", entry.path);
 				continue;
 			};
+			// The file must hold the key the entry names. A mismatch means some
+			// writer clobbered that file with another identity; loading it anyway
+			// would put the SAME identity in the set twice under two pubkeys.
+			if identity.pubkey_hex().as_deref() != Some(entry.pubkey.as_str()) {
+				warn!(
+					"nostr: identity {} does not match its file {}; skipping",
+					entry.pubkey, entry.path
+				);
+				continue;
+			}
 			match identity.unlock(password) {
 				Ok(keys) => recv.push(HeldIdentityKeys { keys, identity }),
 				Err(e) => warn!("nostr: identity {} failed to unlock: {e}", entry.pubkey),
@@ -697,6 +707,15 @@ impl Wallet {
 		new_identity
 			.save(&nostr_dir)
 			.map_err(|e| format!("identity save failed: {e}"))?;
+		// identity.json now holds a DIFFERENT key than the index records for it.
+		// Repoint the primary entry (and the active pointer) at the imported key so
+		// the index still describes disk; otherwise the next open sees a mismatched
+		// entry, drops it, and the import looks like it never happened.
+		if let Some(mut index) = HeldIdentities::load(&nostr_dir) {
+			index
+				.replace_primary(&nostr_dir, &new_identity)
+				.map_err(|e| format!("identity index update failed: {e}"))?;
+		}
 		svc.stop();
 		for _ in 0..100 {
 			if !svc.is_running() {

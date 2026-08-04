@@ -35,7 +35,7 @@ use crate::nostr::protocol;
 use crate::nostr::relays::MAX_DM_RELAYS;
 use crate::nostr::types::*;
 use crate::nostr::wrapv3;
-use crate::nostr::{NostrConfig, NostrIdentity, NostrStore};
+use crate::nostr::{HeldIdentities, NostrConfig, NostrIdentity, NostrStore};
 use crate::tor::{ClearnetWebSocketTransport, TorWebSocketTransport};
 use crate::wallet::Wallet;
 use crate::wallet::types::WalletTask;
@@ -427,11 +427,34 @@ impl NostrService {
 		self.started.load(Ordering::Relaxed) && !self.shutdown.load(Ordering::Relaxed)
 	}
 
-	/// Save the identity file after mutation (e.g. NIP-05 registration).
+	/// Save the ACTIVE identity's file after mutation (e.g. NIP-05 registration,
+	/// advertised-relay selection).
+	///
+	/// The path comes from the held-identity index, NOT from the fixed legacy
+	/// `identity.json`: while a non-primary identity is active, writing to the
+	/// legacy path overwrites identity #1's encrypted key with this one's, which
+	/// destroys identity #1 permanently (see [`HeldIdentities::path_for`]).
 	pub fn save_identity(&self) {
 		let identity = self.identity.read().clone();
-		if let Err(e) = identity.save(&self.nostr_dir) {
+		let Some(hex) = identity.pubkey_hex() else {
+			error!("nostr: identity save skipped: malformed public key");
+			return;
+		};
+		let path = match HeldIdentities::load(&self.nostr_dir) {
+			Some(index) => index.path_for(&self.nostr_dir, &hex),
+			// No index yet (pre-migration wallet): the only identity is the legacy one.
+			None => NostrIdentity::path(&self.nostr_dir),
+		};
+		if let Err(e) = identity.save_at(&path) {
 			error!("nostr: identity save failed: {e}");
+			return;
+		}
+		// Keep the held copy in step, so switching away and back presents the saved
+		// state instead of the pre-save snapshot taken when the service was built.
+		for h in self.recv.write().iter_mut() {
+			if h.keys.public_key().to_hex() == hex {
+				h.identity = identity.clone();
+			}
 		}
 	}
 
