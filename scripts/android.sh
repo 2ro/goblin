@@ -35,6 +35,23 @@ rustup target add aarch64-linux-android
 rustup target add x86_64-linux-android
 cargo install cargo-ndk
 
+# Android TLS gate. `rustls-platform-verifier` panics on Android outside a full
+# app context ("Expect rustls-platform-verifier to be initialized"), so a build
+# that links it opens the wallet fine and then crash-loops on the first HTTPS
+# call. Build 164 shipped exactly that: a wallet submodule bump pulled reqwest
+# with DEFAULT features, which drags this crate in. It cost a pulled release and
+# was catchable by the one command below, so the build now refuses to produce an
+# APK that contains it. If this fires, find the offender with the same command
+# and disable default features on whatever pulls reqwest.
+for tls_target in aarch64-linux-android armv7-linux-androideabi x86_64-linux-android; do
+  if cargo tree -i rustls-platform-verifier --target "$tls_target" >/dev/null 2>&1; then
+    printf "\nABORT: rustls-platform-verifier is in the dependency tree for %s.\n" "$tls_target"
+    printf "It panics on Android at runtime. Inspect with:\n"
+    printf "  cargo tree -i rustls-platform-verifier --target %s\n\n" "$tls_target"
+    exit 1
+  fi
+done
+
 success=1
 
 ### Build native code
