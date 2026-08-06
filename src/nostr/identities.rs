@@ -204,24 +204,6 @@ impl HeldIdentities {
 		let legacy_hex = legacy.pubkey_hex()?;
 		match Self::load(nostr_dir) {
 			Some(mut idx) => {
-				// Self-heal: drop any entry whose file holds a DIFFERENT key than the
-				// entry claims. Such an entry is a lie about disk — it makes the same
-				// identity load twice (once under its own entry, once under the stale
-				// one) and hides the fact that the key the entry names is gone.
-				// Dropping it is honest: the switcher then shows what the wallet can
-				// actually still open. Only a parsed mismatch prunes; an unreadable
-				// file is left alone (a transient read error must not evict a key).
-				let before = idx.identities.len();
-				idx.identities.retain(|e| match e.load(nostr_dir) {
-					Some(id) => id.pubkey_hex().as_deref() == Some(e.pubkey.as_str()),
-					None => true,
-				});
-				if idx.identities.len() != before {
-					let kept: Vec<&str> =
-						idx.identities.iter().map(|e| e.pubkey.as_str()).collect();
-					idx.order.retain(|h| kept.contains(&h.as_str()));
-					let _ = idx.save(nostr_dir);
-				}
 				// Repair: ensure identity #1 is always represented (it is the
 				// rollback anchor), without disturbing the active pointer.
 				if !idx.contains(&legacy_hex) {
@@ -246,7 +228,22 @@ impl HeldIdentities {
 						let _ = idx.save(nostr_dir);
 						Some(legacy.clone())
 					})?;
-				Some((idx, active))
+				// Everything above persisted the index as it really is on disk. ONLY
+				// NOW hide entries whose file holds a DIFFERENT key than the entry
+				// claims: such an entry is a lie about disk, and loading it would put
+				// the same identity in the set twice (once under its own entry, once
+				// under the stale one) while concealing that the key the entry names
+				// is gone.
+				//
+				// Hiding applies to the RETURNED value only and is never written back.
+				// Persisting it would mean that if this match test is ever wrong (a
+				// format change, a half-written file, anything unforeseen) the user's
+				// identity entries are deleted from disk permanently, turning a
+				// display bug into real data loss. Recomputed per open it costs one
+				// small read per identity (capped at MAX_IDENTITIES) and stays
+				// reversible: the key FILES are never touched, so a wrong verdict is
+				// undone by a later build simply by not hiding the entry.
+				Some((idx.hiding_mismatched_entries(nostr_dir), active))
 			}
 			None => {
 				// Legacy layout: adopt identity.json as the sole, active identity.
@@ -289,6 +286,34 @@ impl HeldIdentities {
 		self.save(nostr_dir)
 			.map_err(|e| HeldError::Io(e.to_string()))?;
 		Ok(hex)
+	}
+
+	/// A copy of this index with any entry hidden whose file holds a different key
+	/// than the entry names. Read-only: it writes nothing, so a wrong verdict here
+	/// can never cost the user a key.
+	///
+	/// An entry whose file cannot be read or parsed is KEPT, so a transient read
+	/// error never makes an identity disappear. If NOTHING matches, the index is
+	/// returned unchanged: presenting a wallet with zero identities would be worse
+	/// than presenting a suspect one, and the caller ([`Self::load_or_migrate`])
+	/// still resolves an active identity from it.
+	fn hiding_mismatched_entries(mut self, nostr_dir: &PathBuf) -> HeldIdentities {
+		let kept: Vec<HeldEntry> = self
+			.identities
+			.iter()
+			.filter(|e| match e.load(nostr_dir) {
+				Some(id) => id.pubkey_hex().as_deref() == Some(e.pubkey.as_str()),
+				None => true,
+			})
+			.cloned()
+			.collect();
+		if kept.is_empty() || kept.len() == self.identities.len() {
+			return self;
+		}
+		let live: Vec<String> = kept.iter().map(|e| e.pubkey.clone()).collect();
+		self.identities = kept;
+		self.order.retain(|h| live.contains(h));
+		self
 	}
 
 	/// The file a given identity MUST be written to: its own entry's path when the
@@ -711,6 +736,80 @@ mod tests {
 		assert_eq!(healed.active, second_hex);
 		assert_eq!(active.npub, second.npub);
 		assert!(!healed.order.contains(&legacy_hex));
+		let _ = std::fs::remove_dir_all(&dir);
+	}
+
+	#[test]
+	fn load_never_shrinks_a_healthy_wallet_and_never_rewrites_the_index() {
+		// The safety property behind the mismatch check. A healthy multi-identity
+		// wallet must come back WHOLE, and opening it must not rewrite
+		// identities.json at all -- the check is a read-only view, so a wrong
+		// verdict can never cost a key.
+		let dir = tmpdir("healthy");
+		let (legacy, _) = NostrIdentity::create_random("pw").unwrap();
+		legacy.save(&dir).unwrap();
+		let (mut idx, _) = HeldIdentities::load_or_migrate(&dir, &legacy).unwrap();
+		let mut added = vec![];
+		for _ in 0..3 {
+			let (extra, _) = NostrIdentity::create_random("pw").unwrap();
+			added.push(idx.add(&dir, &extra).unwrap());
+		}
+		assert_eq!(idx.len(), 4);
+
+		let index_path = HeldIdentities::index_path(&dir);
+		let before = std::fs::read(&index_path).unwrap();
+		let (reloaded, active) = HeldIdentities::load_or_migrate(&dir, &legacy).unwrap();
+		assert_eq!(
+			reloaded.len(),
+			4,
+			"a healthy wallet must keep every identity"
+		);
+		for hex in &added {
+			assert!(
+				reloaded.contains(hex),
+				"identity {hex} must survive a reload"
+			);
+		}
+		assert_eq!(active.npub, legacy.npub);
+		assert_eq!(
+			std::fs::read(&index_path).unwrap(),
+			before,
+			"opening a healthy wallet must not rewrite the index"
+		);
+		let _ = std::fs::remove_dir_all(&dir);
+	}
+
+	#[test]
+	fn a_damaged_entry_is_hidden_but_never_erased_from_disk() {
+		// The non-destructive guarantee: a mismatched entry is hidden from the
+		// returned set, but identities.json still lists it, so a later build can
+		// change its mind. Data loss must never be the cost of a display fix.
+		let dir = tmpdir("nonerase");
+		let (legacy, _) = NostrIdentity::create_random("pw").unwrap();
+		legacy.save(&dir).unwrap();
+		let legacy_hex = legacy.pubkey_hex().unwrap();
+		let (mut idx, _) = HeldIdentities::load_or_migrate(&dir, &legacy).unwrap();
+		let (second, _) = NostrIdentity::create_random("pw").unwrap();
+		let second_hex = idx.add(&dir, &second).unwrap();
+		idx.set_active(&dir, &second_hex).unwrap();
+		// The old bug: identity #2's key written over identity.json.
+		second.save(&dir).unwrap();
+
+		let damaged = NostrIdentity::load(&dir).unwrap();
+		let (view, active) = HeldIdentities::load_or_migrate(&dir, &damaged).unwrap();
+		assert_eq!(view.len(), 1, "the lying entry is hidden from the wallet");
+		assert!(!view.contains(&legacy_hex));
+		assert_eq!(active.npub, second.npub);
+
+		// ...but it is STILL on disk, untouched.
+		let on_disk = HeldIdentities::load(&dir).unwrap();
+		assert!(
+			on_disk.contains(&legacy_hex),
+			"hiding an entry must never delete it from identities.json"
+		);
+		// And the key files themselves are all still there.
+		assert!(HeldIdentities::index_path(&dir).exists());
+		assert!(idx.entry(&second_hex).unwrap().abs_path(&dir).exists());
 		let _ = std::fs::remove_dir_all(&dir);
 	}
 
