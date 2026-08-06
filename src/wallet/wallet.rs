@@ -3989,3 +3989,81 @@ fn repair_wallet(wallet: &Wallet) {
 	// Reset repair progress.
 	wallet.repair_progress.store(0, Ordering::Relaxed);
 }
+
+#[cfg(test)]
+mod open_tests {
+	use super::*;
+	use crate::wallet::Mnemonic;
+
+	/// A wallet can be created and then OPENED, and opening brings its nostr
+	/// identity up.
+	///
+	/// This is the check that was missing when build 164 shipped: every identity
+	/// test ran against the on-disk index in isolation, and nothing ever opened a
+	/// wallet, so "the wallet still loads" was assumed rather than tested.
+	///
+	/// Mutates HOME to sandbox the data directory, so it MUST run alone:
+	///   cargo test --lib open_tests -- --test-threads=1
+	/// It refuses to run at all if the sandbox does not take effect, so it can
+	/// never create a wallet in the real ~/.goblin.
+	#[test]
+	fn wallet_creates_and_opens_with_its_identity() {
+		let sandbox = std::env::temp_dir().join(format!(
+			"goblin-open-test-{}-{}",
+			std::process::id(),
+			std::time::SystemTime::now()
+				.duration_since(std::time::UNIX_EPOCH)
+				.unwrap()
+				.as_nanos()
+		));
+		std::fs::create_dir_all(&sandbox).unwrap();
+		// SAFETY: this test is documented to run single-threaded and alone.
+		unsafe {
+			std::env::set_var("HOME", &sandbox);
+		}
+
+		let password = ZeroingString::from("open-test-password");
+		let mnemonic = Mnemonic::default();
+		let wallet = Wallet::create(
+			&"open-test".to_string(),
+			&password,
+			&mnemonic,
+			&ConnectionMethod::Integrated,
+		)
+		.expect("wallet creation must succeed");
+
+		// Hard guard: if HOME did not take effect we would be writing into the
+		// user's real wallet directory. Refuse rather than continue.
+		let data_path = PathBuf::from(wallet.get_config().get_data_path());
+		assert!(
+			data_path.starts_with(&sandbox),
+			"sandbox did not take effect (wallet at {}); refusing to touch real data",
+			data_path.display()
+		);
+
+		wallet
+			.open(password.clone())
+			.expect("a freshly created wallet must open");
+		assert!(wallet.is_open(), "wallet must report itself open");
+
+		// Opening initialises the identity set: exactly one identity, recorded in
+		// the index, matching the key actually on disk.
+		let nostr_dir = wallet.get_config().get_nostr_path();
+		let legacy = NostrIdentity::load(&nostr_dir).expect("identity.json must exist after open");
+		let index = HeldIdentities::load(&nostr_dir).expect("index must exist after open");
+		assert_eq!(index.len(), 1, "a new wallet holds exactly one identity");
+		assert_eq!(
+			index.active,
+			legacy.pubkey_hex().unwrap(),
+			"the active pointer must name the key that is actually on disk"
+		);
+		assert_eq!(
+			index.path_for(&nostr_dir, &index.active),
+			NostrIdentity::path(&nostr_dir),
+			"the sole identity must resolve to the legacy file"
+		);
+
+		wallet.close();
+		let _ = std::fs::remove_dir_all(&sandbox);
+	}
+}
