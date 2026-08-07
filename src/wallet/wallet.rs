@@ -168,8 +168,10 @@ pub struct Wallet {
 	/// Flag to check if Slatepack message file is opening.
 	message_opening: Arc<AtomicBool>,
 
-	/// Amount requests to calculate fee.
-	fee_calculating: Arc<AtomicU8>,
+	/// Request to calculate fee for amount.
+	amount_to_calculate_fee: Arc<AtomicU64>,
+	/// Calculating fee for amount.
+	amount_fee_calculating: Arc<AtomicU64>,
 	/// Last calculated network fee as `(amount, fee)` so a screen can read the
 	/// fee for the amount it is showing without owning the task-result slot.
 	last_fee: Arc<RwLock<Option<(u64, u64)>>>,
@@ -224,7 +226,8 @@ impl Wallet {
 			files_moving: Arc::new(AtomicBool::new(false)),
 			message_opening: Arc::new(AtomicBool::from(false)),
 			send_creating: Arc::new(AtomicBool::new(false)),
-			fee_calculating: Arc::new(AtomicU8::new(0)),
+			amount_to_calculate_fee: Arc::new(AtomicU64::new(0)),
+			amount_fee_calculating: Arc::new(AtomicU64::new(0)),
 			last_fee: Arc::new(RwLock::new(None)),
 			invoice_creating: Arc::new(AtomicBool::new(false)),
 			proof_verifying: Arc::new(AtomicBool::new(false)),
@@ -1630,10 +1633,8 @@ impl Wallet {
 		let r_tasks = self.tasks_sender.read();
 		if r_tasks.is_some() {
 			match task {
-				WalletTask::CalculateFee(_, _) => {
-					let calculating = self.fee_calculating.load(Ordering::Relaxed);
-					self.fee_calculating
-						.store(calculating + 1, Ordering::Relaxed);
+				WalletTask::CalculateFee(a, _) => {
+					self.amount_to_calculate_fee.store(a, Ordering::Relaxed);
 				}
 				_ => {}
 			}
@@ -2086,7 +2087,7 @@ impl Wallet {
 
 	/// Check if transaction fee is calculating.
 	pub fn fee_calculating(&self) -> bool {
-		self.fee_calculating.load(Ordering::Relaxed) > 0
+		self.amount_to_calculate_fee.load(Ordering::Relaxed) != 0
 	}
 
 	/// Last calculated network fee for `amount`, if one is cached. Returns
@@ -2921,16 +2922,22 @@ async fn handle_task(w: &Wallet, t: WalletTask) {
 				match s.state {
 					SlateState::Standard1 | SlateState::Invoice1 => {
 						if s.state != SlateState::Standard1 {
-							if let Ok(_) = w.pay(&s) {
-								sync_wallet_data(&w, false);
-								let tx = w.retrieve_tx_by_id(None, Some(s.id));
-								w.on_task_result(tx, &t);
+							match w.pay(&s) {
+								Ok(_) => {
+									sync_wallet_data(&w, false);
+									let tx = w.retrieve_tx_by_id(None, Some(s.id));
+									w.on_task_result(tx, &t);
+								}
+								Err(e) => error!("message tx pay error: {:?}", e),
 							}
 						} else {
-							if let Ok(_) = w.receive(&s, dest) {
-								sync_wallet_data(&w, false);
-								let tx = w.retrieve_tx_by_id(None, Some(s.id));
-								w.on_task_result(tx, &t);
+							match w.receive(&s, dest) {
+								Ok(_) => {
+									sync_wallet_data(&w, false);
+									let tx = w.retrieve_tx_by_id(None, Some(s.id));
+									w.on_task_result(tx, &t);
+								}
+								Err(e) => error!("message tx receive error: {:?}", e),
 							}
 						}
 					}
@@ -2959,37 +2966,43 @@ async fn handle_task(w: &Wallet, t: WalletTask) {
 			w.message_opening.store(false, Ordering::Relaxed);
 		}
 		WalletTask::CalculateFee(a, _) => {
-			// Wait if there are no more fee tasks or handle next input value.
-			let calculating = w.fee_calculating.load(Ordering::Relaxed);
-			if calculating == 1 {
-				async_std::task::sleep(Duration::from_millis(100)).await;
-				let calculating = w.fee_calculating.load(Ordering::Relaxed);
-				if calculating > 1 {
-					w.fee_calculating.store(calculating - 1, Ordering::Relaxed);
-					return;
-				}
-			} else {
-				w.fee_calculating.store(calculating - 1, Ordering::Relaxed);
+			// Only one calculation runs at a time. It drains to whatever amount was
+			// requested last, so rapid typing coalesces to the newest value instead
+			// of queueing a calculation per keystroke.
+			let mut amount = w.amount_fee_calculating.load(Ordering::Relaxed);
+			if amount != 0 {
 				return;
 			}
-			// Calculate fee for provided amount.
-			if let Ok(fee) = w.calculate_fee(*a) {
-				*w.last_fee.write() = Some((*a, fee));
-				w.on_task_result(None, &WalletTask::CalculateFee(*a, fee))
+			w.amount_fee_calculating.store(*a, Ordering::Relaxed);
+			amount = *a;
+			loop {
+				if let Ok(fee) = w.calculate_fee(amount) {
+					*w.last_fee.write() = Some((amount, fee));
+					w.on_task_result(None, &WalletTask::CalculateFee(amount, fee));
+				}
+				let amount_to_calculate = w.amount_to_calculate_fee.load(Ordering::Relaxed);
+				if amount_to_calculate == amount {
+					w.amount_fee_calculating.store(0, Ordering::Relaxed);
+					w.amount_to_calculate_fee.store(0, Ordering::Relaxed);
+					break;
+				} else {
+					amount = amount_to_calculate;
+				}
 			}
-			let calculating = w.fee_calculating.load(Ordering::Relaxed);
-			w.fee_calculating.store(calculating - 1, Ordering::Relaxed);
 		}
 		WalletTask::Send(a, r) => {
 			w.send_creating.store(true, Ordering::Relaxed);
-			if let Ok(s) = w.send(*a, r.clone()) {
-				sync_wallet_data(&w, false);
-				let tx = w.retrieve_tx_by_id(None, Some(s.id));
-				if let Some(tx) = tx {
-					// Slatepack send: hand the response slate back to the UI.
-					// (Goblin's online payments go over nostr via NostrSend.)
-					w.on_task_result(Some(tx), &t);
+			match w.send(*a, r.clone()) {
+				Ok(s) => {
+					sync_wallet_data(&w, false);
+					let tx = w.retrieve_tx_by_id(None, Some(s.id));
+					if let Some(tx) = tx {
+						// Slatepack send: hand the response slate back to the UI.
+						// (Goblin's online payments go over nostr via NostrSend.)
+						w.on_task_result(Some(tx), &t);
+					}
 				}
+				Err(e) => error!("send error: {:?}", e),
 			}
 			w.send_creating.store(false, Ordering::Relaxed);
 		}
@@ -4062,6 +4075,98 @@ mod open_tests {
 			index.path_for(&nostr_dir, &index.active),
 			NostrIdentity::path(&nostr_dir),
 			"the sole identity must resolve to the legacy file"
+		);
+
+		wallet.close();
+		let _ = std::fs::remove_dir_all(&sandbox);
+	}
+
+	/// Rapid fee requests coalesce to the newest amount instead of queueing one
+	/// calculation per keystroke.
+	///
+	/// The fee VALUE is not asserted: a sandbox wallet has no funds and no node,
+	/// so `calculate_fee` always errors here. What is asserted is the debounce
+	/// contract itself, which is what changed: `task()` records the latest amount
+	/// rather than incrementing a request counter, and the worker drains the
+	/// request instead of leaving it pending.
+	///
+	/// Mutates HOME, so it MUST run alone:
+	///   cargo test --lib open_tests -- --test-threads=1
+	#[test]
+	fn fee_requests_coalesce_to_the_latest_amount() {
+		let sandbox = std::env::temp_dir().join(format!(
+			"goblin-fee-test-{}-{}",
+			std::process::id(),
+			std::time::SystemTime::now()
+				.duration_since(std::time::UNIX_EPOCH)
+				.unwrap()
+				.as_nanos()
+		));
+		std::fs::create_dir_all(&sandbox).unwrap();
+		// SAFETY: this test is documented to run single-threaded and alone.
+		unsafe {
+			std::env::set_var("HOME", &sandbox);
+		}
+
+		let password = ZeroingString::from("fee-test-password");
+		let mnemonic = Mnemonic::default();
+		let wallet = Wallet::create(
+			&"fee-test".to_string(),
+			&password,
+			&mnemonic,
+			&ConnectionMethod::Integrated,
+		)
+		.expect("wallet creation must succeed");
+
+		// Hard guard: refuse to continue if the sandbox did not take effect.
+		let data_path = PathBuf::from(wallet.get_config().get_data_path());
+		assert!(
+			data_path.starts_with(&sandbox),
+			"sandbox did not take effect (wallet at {}); refusing to touch real data",
+			data_path.display()
+		);
+
+		wallet
+			.open(password.clone())
+			.expect("a freshly created wallet must open");
+
+		// Three amounts typed in quick succession.
+		let stale_a = 100_000_000u64;
+		let stale_b = 200_000_000u64;
+		let latest = 300_000_000u64;
+		wallet.task(WalletTask::CalculateFee(stale_a, 0));
+		wallet.task(WalletTask::CalculateFee(stale_b, 0));
+		wallet.task(WalletTask::CalculateFee(latest, 0));
+
+		// The pending request is the newest amount, or already 0 if the worker
+		// drained it. It is never a superseded amount: the old counter queued a
+		// calculation per request, this keeps only the last one.
+		let pending = wallet.amount_to_calculate_fee.load(Ordering::Relaxed);
+		assert!(
+			pending == latest || pending == 0,
+			"pending fee request must be the latest amount or already drained, got {}",
+			pending
+		);
+
+		// The worker drains the request even when the fee cannot be computed, so
+		// the spinner cannot stick on.
+		let deadline = std::time::Instant::now() + Duration::from_secs(30);
+		while wallet.fee_calculating() && std::time::Instant::now() < deadline {
+			thread::sleep(Duration::from_millis(50));
+		}
+		assert!(
+			!wallet.fee_calculating(),
+			"fee calculation must drain, otherwise the fee spinner sticks on"
+		);
+		assert_eq!(
+			wallet.amount_fee_calculating.load(Ordering::Relaxed),
+			0,
+			"the in-flight amount must be cleared when the loop breaks"
+		);
+		assert_eq!(
+			wallet.amount_to_calculate_fee.load(Ordering::Relaxed),
+			0,
+			"no fee request may be left pending"
 		);
 
 		wallet.close();
