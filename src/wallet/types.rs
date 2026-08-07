@@ -285,9 +285,13 @@ impl WalletTx {
 				|| self.data.tx_type == TxLogEntryType::TxReceived)
 			&& (self.data.tx_slate_state == Some(SlateState::Invoice1)
 				|| self.data.tx_slate_state == Some(SlateState::Standard1))
-			// A payer's Invoice2 response leaves the recorded state at Invoice1 and
-			// nothing updates it, so that transaction is not finalizable here: the
-			// invoice issuer finalizes it.
+			// Defensive guard, unreachable at the current wallet pin: a payer's
+			// record is stamped Invoice2, because `process_invoice_tx` sets that
+			// state on the slate it returns and `pay()` hands that same slate to
+			// `tx_lock_outputs`, which writes the tx log entry. The party that
+			// finalizes an invoice is the issuer, whose TxReceived row carries
+			// Invoice1. Keep the guard so a sent row recorded as Invoice1 could
+			// never offer a finalize action that belongs to the other side.
 			&& !(self.data.tx_type == TxLogEntryType::TxSent
 				&& self.data.tx_slate_state == Some(SlateState::Invoice1))
 	}
@@ -606,9 +610,9 @@ mod tests {
 			)
 			.can_finalize()
 		);
-		// A paid invoice keeps the recorded state at Invoice1 because nothing
-		// updates it when the payer writes the Invoice2 response. The payer does
-		// not finalize, the issuer does, so this must stay false.
+		// Defensive case, not a live flow: a payer's record is stamped Invoice2,
+		// so a sent row recorded as Invoice1 does not occur at the current wallet
+		// pin. Pinned because the payer never finalizes, the issuer does.
 		assert!(
 			!tx_with_state(
 				TxLogEntryType::TxSent,

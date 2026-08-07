@@ -2027,12 +2027,13 @@ impl Wallet {
 	/// database when there is one whose Slatepack file exists, otherwise the
 	/// on-disk probe below.
 	///
-	/// The database field is not maintained for every flow at Goblin's wallet
-	/// submodule pin. `process_invoice_tx` records the incoming Invoice1 state
-	/// and nothing updates it when the payer's Invoice2 response is written, so
-	/// reading the field alone would look for a Slatepack file that was never
-	/// created. GRIM reads the field directly because its release pin also
-	/// updates it from the Owner API.
+	/// Every flow Goblin drives stamps the field: send and pay through
+	/// `tx_lock_outputs`, invoice issuance through the recipient output, receive
+	/// and finalize through the foreign API. The probe is therefore a fallback,
+	/// not a correction: it covers a row whose recorded state has no Slatepack
+	/// file on disk, such as one written by an older build. GRIM reads the field
+	/// directly, and its release pin additionally refreshes it from the Owner
+	/// API, which is private at this pin.
 	pub fn effective_slate_state(&self, tx: &TxLogEntry) -> Option<SlateState> {
 		let slate_id = tx.tx_slate_id?;
 		if let Some(state) = tx.tx_slate_state.as_ref() {
