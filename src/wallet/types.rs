@@ -285,13 +285,15 @@ impl WalletTx {
 				|| self.data.tx_type == TxLogEntryType::TxReceived)
 			&& (self.data.tx_slate_state == Some(SlateState::Invoice1)
 				|| self.data.tx_slate_state == Some(SlateState::Standard1))
-			// Defensive guard, unreachable at the current wallet pin: a payer's
-			// record is stamped Invoice2, because `process_invoice_tx` sets that
-			// state on the slate it returns and `pay()` hands that same slate to
-			// `tx_lock_outputs`, which writes the tx log entry. The party that
-			// finalizes an invoice is the issuer, whose TxReceived row carries
-			// Invoice1. Keep the guard so a sent row recorded as Invoice1 could
-			// never offer a finalize action that belongs to the other side.
+			// Defensive guard, unreachable at the previous wallet pin and still
+			// unreachable at this one: a payer's record is stamped Invoice2,
+			// because `process_invoice_tx` sets that state on the slate it returns
+			// and `pay()` hands that same slate to `tx_lock_outputs`, which writes
+			// the tx log entry. The party that finalizes an invoice is the issuer,
+			// whose TxReceived row carries Invoice1. Keep the guard so a sent row
+			// recorded as Invoice1 could never offer a finalize action that belongs
+			// to the other side. GRIM has no such guard. In its place it carries a
+			// Tor sending check, which Goblin has no equivalent for.
 			&& !(self.data.tx_type == TxLogEntryType::TxSent
 				&& self.data.tx_slate_state == Some(SlateState::Invoice1))
 	}
@@ -734,8 +736,9 @@ mod tests {
 			.can_finalize()
 		);
 		// Defensive case, not a live flow: a payer's record is stamped Invoice2,
-		// so a sent row recorded as Invoice1 does not occur at the current wallet
-		// pin. Pinned because the payer never finalizes, the issuer does.
+		// so a sent row recorded as Invoice1 occurs at neither the previous wallet
+		// pin nor this one. Pinned because the payer never finalizes, the issuer
+		// does.
 		assert!(
 			!tx_with_state(
 				TxLogEntryType::TxSent,

@@ -2081,9 +2081,14 @@ impl Wallet {
 	/// `tx_lock_outputs`, invoice issuance through the recipient output, receive
 	/// and finalize through the foreign API. The probe is therefore a fallback,
 	/// not a correction: it covers a row whose recorded state has no Slatepack
-	/// file on disk, such as one written by an older build. GRIM reads the field
-	/// directly, and its release pin additionally refreshes it from the Owner
-	/// API, which is private at this pin.
+	/// file on disk, such as one written by an older build.
+	///
+	/// GRIM reads the field directly and keeps no fallback. Its Owner API can
+	/// refresh the field at this wallet pin, but only inside the branch that
+	/// `InitTxArgs.send_args` selects, which posts the slate to a peer over Tor
+	/// (`wallet/api/src/owner.rs`, `process_invoice_tx`). Goblin never sets
+	/// `send_args`, because its payments travel over nostr, so the only refresh
+	/// Goblin reaches is still the foreign API's. The fallback stays.
 	pub fn effective_slate_state(&self, tx: &TxLogEntry) -> Option<SlateState> {
 		let slate_id = tx.tx_slate_id?;
 		if let Some(state) = tx.tx_slate_state.as_ref() {
