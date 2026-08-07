@@ -190,7 +190,7 @@ sync_status:
   no_sync: ノードは稼働中です
   awaiting_peers: ピアを待っています
   header_sync: ヘッダーをダウンロード中
-  header_sync_percent: 'ヘッダーをダウンロード中: %{percent}%'
+  header_sync_percent: 'ヘッダーをダウンロード中%{type}: %{percent}%'
   tx_hashset_pibd: 状態をダウンロード中(PIBD)
   tx_hashset_pibd_percent: '状態をダウンロード中(PIBD): %{percent}%'
   tx_hashset_download: 状態をダウンロード中

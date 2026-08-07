@@ -190,7 +190,7 @@ sync_status:
   no_sync: 노드가 실행 중입니다
   awaiting_peers: 피어를 기다리는 중
   header_sync: 헤더 다운로드 중
-  header_sync_percent: '헤더 다운로드 중: %{percent}%'
+  header_sync_percent: '헤더 다운로드 중%{type}: %{percent}%'
   tx_hashset_pibd: 상태 다운로드 중(PIBD)
   tx_hashset_pibd_percent: '상태 다운로드 중(PIBD): %{percent}%'
   tx_hashset_download: 상태 다운로드 중
