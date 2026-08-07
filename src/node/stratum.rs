@@ -679,9 +679,16 @@ fn accept_connections(
 ) {
 	debug!("Start tokio stratum server");
 	let task = async move {
-		let mut listener = TcpListener::bind(&listen_addr).await.unwrap_or_else(|_| {
-			panic!("Stratum: Failed to bind to listen address {}", listen_addr)
-		});
+		let mut listener = match TcpListener::bind(&listen_addr).await {
+			Ok(l) => l,
+			Err(e) => {
+				error!(
+					"Stratum: Failed to bind to listen address {} {}",
+					listen_addr, e
+				);
+				return;
+			}
+		};
 		let server = listener
 			.incoming()
 			.filter_map(|s| async { s.map_err(|e| error!("accept error = {:?}", e)).ok() })

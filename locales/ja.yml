@@ -153,6 +153,7 @@ transport:
   conn_error: 接続エラー
   disconnected: 切断済み
   receiver_address: '受取人のアドレス:'
+  sender_address: '送信者のアドレス:'
   incorrect_addr_err: '入力したアドレスが正しくありません:'
   tor_send_error: Tor経由の送信中にエラーが発生しました。受取人がオンラインか確認してください。取引はキャンセルされました。
   tor_autorun_desc: ウォレットを開いたときにTorサービスを起動し、取引を同期的に受け取るかどうかです。

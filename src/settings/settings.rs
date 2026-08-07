@@ -20,6 +20,7 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 use std::fs::{self, File};
 use std::io::Write;
+use std::net::TcpListener;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -183,5 +184,15 @@ impl Settings {
 		let conf_out = toml::to_string(config).unwrap();
 		let mut file = File::create(path.to_str().unwrap()).unwrap();
 		file.write_all(conf_out.as_bytes()).unwrap();
+	}
+
+	/// Choose random possible open port from OS.
+	pub fn open_port(host: &str) -> Option<u16> {
+		if let Ok(l) = TcpListener::bind(format!("{}:0", host)) {
+			if let Ok(a) = l.local_addr() {
+				return Some(a.port());
+			}
+		}
+		None
 	}
 }

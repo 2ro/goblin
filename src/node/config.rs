@@ -28,7 +28,6 @@ use grin_core::global::ChainTypes;
 use grin_p2p::msg::PeerAddrs;
 use grin_p2p::{PeerAddr, Seeding};
 use grin_servers::common::types::ChainValidationMode;
-use rand::Rng;
 
 use crate::node::Node;
 use crate::{AppConfig, Settings};
@@ -196,17 +195,23 @@ impl NodeConfig {
 		config
 	}
 
-	/// Generate random p2p and api ports in ranges based on [`ChainTypes`].
+	/// Ask the OS for free p2p and api ports, falling back to the well-known
+	/// defaults for the [`ChainTypes`]. Runs on config creation only, so an
+	/// existing config keeps the ports it was created with.
 	fn setup_default_ports(config: &mut ConfigMembers) {
+		// 3414 and 13414 mirror grin_p2p::types::MAINNET_PEER_PORT and
+		// TESTNET_PEER_PORT, which are absent at Goblin's node submodule pin.
 		let (api, p2p) = match config.server.chain_type {
 			ChainTypes::Mainnet => {
-				let api = rand::rng().random_range(30000..33000);
-				let p2p = rand::rng().random_range(33000..37000);
+				let api = Settings::open_port("127.0.0.1")
+					.unwrap_or(Self::default_api_port(config.server.chain_type));
+				let p2p = Settings::open_port("127.0.0.1").unwrap_or(3414);
 				(api, p2p)
 			}
 			_ => {
-				let api = rand::rng().random_range(40000..43000);
-				let p2p = rand::rng().random_range(43000..47000);
+				let api = Settings::open_port("127.0.0.1")
+					.unwrap_or(Self::default_api_port(config.server.chain_type));
+				let p2p = Settings::open_port("127.0.0.1").unwrap_or(13414);
 				(api, p2p)
 			}
 		};
@@ -491,6 +496,14 @@ impl NodeConfig {
 			.unwrap()
 			.enable_stratum_server = Some(!autorun);
 		w_config.save();
+	}
+
+	/// Get default API server port for provided [`ChainTypes`].
+	fn default_api_port(chain_type: ChainTypes) -> u16 {
+		match chain_type {
+			ChainTypes::Mainnet => 3413,
+			_ => 13413,
+		}
 	}
 
 	/// Get API server address.

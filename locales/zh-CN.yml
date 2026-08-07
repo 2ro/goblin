@@ -153,6 +153,7 @@ transport:
   conn_error: 连接错误
   disconnected: 已断开
   receiver_address: '接收方地址：'
+  sender_address: '发件人地址：'
   incorrect_addr_err: '输入的地址不正确：'
   tor_send_error: 通过 Tor 发送时发生错误，请确认接收方在线，交易已取消。
   tor_autorun_desc: 是否在打开钱包时启动 Tor 服务以同步接收交易。

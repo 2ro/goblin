@@ -167,11 +167,14 @@ impl WalletTransactionContent {
 		tx: &WalletTx,
 		cb: &dyn PlatformCallbacks,
 	) {
+		let slate_state = wallet.effective_slate_state(&tx.data);
 		if self.message.is_none() {
-			let slatepack_path = wallet
-				.get_config()
-				.get_slate_path(tx.data.tx_slate_id.unwrap(), &tx.state);
-			self.message = Some(fs::read_to_string(slatepack_path).unwrap_or("".to_string()));
+			if let Some(slate_state) = slate_state.as_ref() {
+				let slatepack_path = wallet
+					.get_config()
+					.get_slate_path(tx.data.tx_slate_id.unwrap(), slate_state);
+				self.message = Some(fs::read_to_string(slatepack_path).unwrap_or("".to_string()));
+			}
 		}
 		if let Some(m) = &self.message {
 			if m.is_empty() {
@@ -269,8 +272,10 @@ impl WalletTransactionContent {
 					Colors::blue(),
 					Colors::white_or_black(false),
 					|| {
-						if let Some(slate_id) = tx.data.tx_slate_id {
-							let name = format!("{}.{}.slatepack", slate_id, tx.state);
+						if let (Some(slate_id), Some(slate_state)) =
+							(tx.data.tx_slate_id, slate_state.as_ref())
+						{
+							let name = format!("{}.{}.slatepack", slate_id, slate_state);
 							let data = m.as_bytes().to_vec();
 							cb.share_data(name, data).unwrap_or_default();
 							// Show message input or close modal.
