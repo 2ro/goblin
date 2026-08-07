@@ -153,6 +153,7 @@ transport:
   conn_error: Error de conexión
   disconnected: Desconectado
   receiver_address: 'Dirección del destinatario:'
+  sender_address: 'Dirección del remitente:'
   incorrect_addr_err: 'La dirección ingresada es incorrecta:'
   tor_send_error: Ocurrió un error al enviar por Tor, asegúrate de que el destinatario esté en línea, la transacción fue cancelada.
   tor_autorun_desc: Si se debe iniciar el servicio Tor al abrir la billetera para recibir transacciones de forma síncrona.

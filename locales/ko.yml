@@ -153,6 +153,7 @@ transport:
   conn_error: 연결 오류
   disconnected: 연결 끊김
   receiver_address: '받는 사람의 주소:'
+  sender_address: '보내는 사람의 주소:'
   incorrect_addr_err: '입력한 주소가 올바르지 않습니다:'
   tor_send_error: Tor로 전송하는 중 오류가 발생했습니다. 받는 사람이 온라인 상태인지 확인하세요. 거래가 취소되었습니다.
   tor_autorun_desc: 지갑을 열 때 Tor 서비스를 실행해 거래를 동기적으로 받을지 여부입니다.

@@ -211,8 +211,6 @@ pub enum WalletTxAction {
 pub struct WalletTx {
 	/// Information from database.
 	pub data: TxLogEntry,
-	/// State of transaction Slate.
-	pub state: SlateState,
 	/// Payment proof.
 	pub(crate) proof: Option<PaymentProof>,
 
@@ -238,7 +236,6 @@ impl WalletTx {
 	pub fn new(
 		tx: TxLogEntry,
 		proof: Option<PaymentProof>,
-		wallet: &Wallet,
 		height: Option<u64>,
 		broadcasting_height: Option<u64>,
 		action: Option<WalletTxAction>,
@@ -266,9 +263,8 @@ impl WalletTx {
 				sender = Some(addr);
 			}
 		}
-		let mut t = Self {
+		let t = Self {
 			data: tx,
-			state: SlateState::Unknown,
 			proof,
 			amount,
 			receiver,
@@ -278,15 +274,6 @@ impl WalletTx {
 			action,
 			action_error,
 		};
-		// Update Slate state for unconfirmed.
-		if !t.data.confirmed
-			&& (t.data.tx_type == TxLogEntryType::TxSent
-				|| t.data.tx_type == TxLogEntryType::TxReceived)
-		{
-			if let Some(slate_id) = t.data.tx_slate_id {
-				t.state = wallet.get_slate_state(slate_id, &t.data.tx_type)
-			}
-		}
 		t
 	}
 
@@ -296,15 +283,21 @@ impl WalletTx {
 			&& !self.data.confirmed
 			&& (self.data.tx_type == TxLogEntryType::TxSent
 				|| self.data.tx_type == TxLogEntryType::TxReceived)
-			&& (self.state == SlateState::Invoice1 || self.state == SlateState::Standard1)
+			&& (self.data.tx_slate_state == Some(SlateState::Invoice1)
+				|| self.data.tx_slate_state == Some(SlateState::Standard1))
+			// A payer's Invoice2 response leaves the recorded state at Invoice1 and
+			// nothing updates it, so that transaction is not finalizable here: the
+			// invoice issuer finalizes it.
+			&& !(self.data.tx_type == TxLogEntryType::TxSent
+				&& self.data.tx_slate_state == Some(SlateState::Invoice1))
 	}
 
 	/// Check if transaction was finalized.
 	pub fn finalized(&self) -> bool {
 		(self.data.tx_type == TxLogEntryType::TxSent
 			|| self.data.tx_type == TxLogEntryType::TxReceived)
-			&& self.state == SlateState::Invoice3
-			|| self.state == SlateState::Standard3
+			&& self.data.tx_slate_state == Some(SlateState::Invoice3)
+			|| self.data.tx_slate_state == Some(SlateState::Standard3)
 	}
 
 	/// Check if transaction is cancelling.
@@ -439,7 +432,8 @@ pub enum WalletTask {
 	Send(u64, Option<SlatepackAddress>),
 	/// Invoice creation.
 	/// * amount
-	Receive(u64),
+	/// * payer to encrypt the Slatepack message to
+	Receive(u64, Option<SlatepackAddress>),
 	/// Transaction finalization.
 	/// * tx id
 	Finalize(u32),
@@ -512,12 +506,22 @@ mod tests {
 
 	/// Build a bare [`WalletTx`] of a given type/confirmation for state tests.
 	fn tx(tx_type: TxLogEntryType, confirmed: bool, action: Option<WalletTxAction>) -> WalletTx {
+		// Standard1: response received, not yet finalized -> not broadcasting.
+		tx_with_state(tx_type, confirmed, action, Some(SlateState::Standard1))
+	}
+
+	/// Build a bare [`WalletTx`] with an explicit recorded Slate state.
+	fn tx_with_state(
+		tx_type: TxLogEntryType,
+		confirmed: bool,
+		action: Option<WalletTxAction>,
+		slate_state: Option<SlateState>,
+	) -> WalletTx {
 		let mut data = TxLogEntry::new(Identifier::zero(), tx_type, 0);
 		data.confirmed = confirmed;
+		data.tx_slate_state = slate_state;
 		WalletTx {
 			data,
-			// Standard1: response received, not yet finalized -> not broadcasting.
-			state: SlateState::Standard1,
 			proof: None,
 			amount: 0,
 			receiver: None,
@@ -560,5 +564,100 @@ mod tests {
 		let confirmed = tx(TxLogEntryType::TxSent, true, None);
 		let c_created = confirmed.data.creation_ts.timestamp();
 		assert!(!confirmed.stale_at(c_created + 10 * WalletTx::STALE_AGE_SECS));
+	}
+
+	/// A transaction with no recorded Slate state is not actionable.
+	///
+	/// Records written before the wallet stored `tx_slate_state` carry `None`.
+	/// Neither predicate may treat that as a finalizable or finalized state.
+	#[test]
+	fn missing_slate_state_is_never_actionable() {
+		for tx_type in [TxLogEntryType::TxSent, TxLogEntryType::TxReceived] {
+			let t = tx_with_state(tx_type, false, None, None);
+			assert!(
+				!t.can_finalize(),
+				"a transaction with no recorded Slate state cannot be finalized"
+			);
+			assert!(
+				!t.finalized(),
+				"a transaction with no recorded Slate state is not finalized"
+			);
+		}
+	}
+
+	#[test]
+	fn can_finalize_reads_the_recorded_slate_state() {
+		// The party holding a Standard1 or Invoice1 response finalizes it.
+		assert!(
+			tx_with_state(
+				TxLogEntryType::TxSent,
+				false,
+				None,
+				Some(SlateState::Standard1)
+			)
+			.can_finalize()
+		);
+		assert!(
+			tx_with_state(
+				TxLogEntryType::TxReceived,
+				false,
+				None,
+				Some(SlateState::Invoice1)
+			)
+			.can_finalize()
+		);
+		// A paid invoice keeps the recorded state at Invoice1 because nothing
+		// updates it when the payer writes the Invoice2 response. The payer does
+		// not finalize, the issuer does, so this must stay false.
+		assert!(
+			!tx_with_state(
+				TxLogEntryType::TxSent,
+				false,
+				None,
+				Some(SlateState::Invoice1)
+			)
+			.can_finalize()
+		);
+		// Later states are past the finalization point.
+		assert!(
+			!tx_with_state(
+				TxLogEntryType::TxSent,
+				false,
+				None,
+				Some(SlateState::Standard3)
+			)
+			.can_finalize()
+		);
+	}
+
+	#[test]
+	fn finalized_reads_the_recorded_slate_state() {
+		assert!(
+			tx_with_state(
+				TxLogEntryType::TxSent,
+				false,
+				None,
+				Some(SlateState::Standard3)
+			)
+			.finalized()
+		);
+		assert!(
+			tx_with_state(
+				TxLogEntryType::TxReceived,
+				false,
+				None,
+				Some(SlateState::Invoice3)
+			)
+			.finalized()
+		);
+		assert!(
+			!tx_with_state(
+				TxLogEntryType::TxSent,
+				false,
+				None,
+				Some(SlateState::Standard1)
+			)
+			.finalized()
+		);
 	}
 }

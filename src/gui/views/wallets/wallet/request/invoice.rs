@@ -14,10 +14,11 @@
 
 use egui::{Id, RichText};
 use grin_core::core::{amount_from_hr_string, amount_to_hr_string};
+use grin_wallet_libwallet::SlatepackAddress;
 
 use crate::gui::Colors;
 use crate::gui::platform::PlatformCallbacks;
-use crate::gui::views::{Modal, TextEdit, View};
+use crate::gui::views::{CameraContent, Modal, TextEdit, View};
 use crate::wallet::Wallet;
 use crate::wallet::types::WalletTask;
 
@@ -25,12 +26,24 @@ use crate::wallet::types::WalletTask;
 pub struct InvoiceRequestContent {
 	/// Amount to receive.
 	amount_edit: String,
+
+	/// Sender address, optional. When given, the request Slatepack is encrypted
+	/// so only that payer can read it.
+	address_edit: String,
+	/// Flag to check if entered address is incorrect.
+	address_error: bool,
+
+	/// Address QR code scanner content.
+	address_scan_content: Option<CameraContent>,
 }
 
 impl Default for InvoiceRequestContent {
 	fn default() -> Self {
 		Self {
 			amount_edit: "".to_string(),
+			address_edit: "".to_string(),
+			address_error: false,
+			address_scan_content: None,
 		}
 	}
 }
@@ -49,14 +62,67 @@ impl InvoiceRequestContent {
 			if m.amount_edit.is_empty() {
 				return;
 			}
+			// An empty address is valid: the request is then readable by anyone.
+			let addr_str = m.address_edit.trim();
+			let addr = if addr_str.is_empty() {
+				None
+			} else {
+				match SlatepackAddress::try_from(addr_str) {
+					Ok(a) => Some(a),
+					Err(_) => {
+						m.address_error = true;
+						return;
+					}
+				}
+			};
 			if let Ok(a) = amount_from_hr_string(m.amount_edit.as_str()) {
 				m.amount_edit = "".to_string();
-				wallet.task(WalletTask::Receive(a));
+				wallet.task(WalletTask::Receive(a, addr));
 				Modal::close();
 			}
 		};
 
 		ui.add_space(6.0);
+
+		// Draw QR code scanner content if requested.
+		if let Some(scanner) = self.address_scan_content.as_mut() {
+			let on_stop = || {
+				cb.stop_camera();
+				modal.enable_closing();
+			};
+
+			if let Some(result) = scanner.qr_scan_result() {
+				self.address_edit = result.text();
+				self.address_error = false;
+				on_stop();
+				self.address_scan_content = None;
+			} else {
+				ui.add_space(6.0);
+				scanner.ui(ui, cb);
+				ui.add_space(6.0);
+
+				// Setup spacing between buttons.
+				ui.spacing_mut().item_spacing = egui::Vec2::new(8.0, 0.0);
+
+				// Show buttons to close modal or come back to request input.
+				ui.columns(2, |cols| {
+					cols[0].vertical_centered_justified(|ui| {
+						View::button(ui, t!("close"), Colors::white_or_black(false), || {
+							on_stop();
+							Modal::close();
+						});
+					});
+					cols[1].vertical_centered_justified(|ui| {
+						View::button(ui, t!("back"), Colors::white_or_black(false), || {
+							on_stop();
+							self.address_scan_content = None;
+						});
+					});
+				});
+				ui.add_space(6.0);
+			}
+			return;
+		}
 
 		// Draw amount input content.
 		ui.vertical_centered(|ui| {
@@ -107,6 +173,50 @@ impl InvoiceRequestContent {
 					}
 				}
 			}
+		}
+
+		ui.add_space(8.0);
+
+		// Show address error or input description.
+		ui.vertical_centered(|ui| {
+			if self.address_error {
+				ui.label(
+					RichText::new(t!("transport.incorrect_addr_err"))
+						.size(17.0)
+						.color(Colors::red()),
+				);
+			} else {
+				ui.label(
+					RichText::new(t!("transport.sender_address"))
+						.size(17.0)
+						.color(Colors::gray()),
+				);
+			}
+		});
+		ui.add_space(6.0);
+
+		// Show optional sender address text edit.
+		let addr_edit_before = self.address_edit.clone();
+		let address_edit_id = Id::from(modal.id)
+			.with("_address")
+			.with(wallet.get_config().id);
+		let mut address_edit = TextEdit::new(address_edit_id)
+			.paste()
+			.focus(false)
+			.scan_qr();
+		address_edit.ui(ui, &mut self.address_edit, cb);
+		// Check if scan button was pressed.
+		if address_edit.scan_pressed {
+			modal.disable_closing();
+			self.address_scan_content = Some(CameraContent::default());
+		}
+		// Check value if input was changed.
+		if addr_edit_before != self.address_edit {
+			self.address_error = false;
+		}
+		// Continue on Enter press.
+		if address_edit.enter_pressed {
+			on_continue(self);
 		}
 
 		ui.add_space(12.0);

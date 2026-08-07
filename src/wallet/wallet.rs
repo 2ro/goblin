@@ -1848,22 +1848,22 @@ impl Wallet {
 	fn create_slatepack_message(
 		&self,
 		slate: &Slate,
-		_: Option<SlatepackAddress>,
+		address: Option<SlatepackAddress>,
 	) -> Result<String, Error> {
 		let mut message = "".to_string();
 		let r_inst = self.instance.as_ref().read();
 		let instance = r_inst.clone().unwrap();
 		let mut api = Owner::new(instance, None);
+		let addrs = match address {
+			Some(a) => vec![a],
+			None => vec![],
+		};
 		controller::owner_single_use(
 			None,
 			self.keychain_mask().as_ref(),
 			Some(&mut api),
 			|api, m| {
-				// let recipients = match dest {
-				// 	Some(a) => vec![a],
-				// 	None => vec![],
-				// };
-				message = api.create_slatepack_message(m, &slate, Some(0), vec![])?;
+				message = api.create_slatepack_message(m, &slate, Some(0), addrs.clone())?;
 				Ok(())
 			},
 		)?;
@@ -1931,7 +1931,7 @@ impl Wallet {
 				Ok(ManualSlatepackOutcome::Response(text))
 			}
 			SlateState::Invoice1 => {
-				let reply = self.pay(&slate)?;
+				let reply = self.pay(&slate, dest)?;
 				let text = self
 					.read_slatepack_text(reply.id, &reply.state)
 					.ok_or_else(|| Error::GenericError("Reply slatepack missing".to_string()))?;
@@ -2016,15 +2016,41 @@ impl Wallet {
 	/// Pay an APPROVED payment request (Invoice1). Only ever called from the
 	/// explicit user approval task — never from the ingest pipeline.
 	pub fn nostr_pay(&self, slate: &Slate) -> Result<(Slate, String), Error> {
-		let reply = self.pay(slate)?;
+		let reply = self.pay(slate, None)?;
 		let text = self
 			.read_slatepack_text(reply.id, &reply.state)
 			.ok_or_else(|| Error::GenericError("response slatepack missing".to_string()))?;
 		Ok((reply, text))
 	}
 
-	/// Get possible state from tx type.
-	pub fn get_slate_state(&self, slate_id: Uuid, tx_type: &TxLogEntryType) -> SlateState {
+	/// Effective Slate state for a transaction: the state recorded in the wallet
+	/// database when there is one whose Slatepack file exists, otherwise the
+	/// on-disk probe below.
+	///
+	/// The database field is not maintained for every flow at Goblin's wallet
+	/// submodule pin. `process_invoice_tx` records the incoming Invoice1 state
+	/// and nothing updates it when the payer's Invoice2 response is written, so
+	/// reading the field alone would look for a Slatepack file that was never
+	/// created. GRIM reads the field directly because its release pin also
+	/// updates it from the Owner API.
+	pub fn effective_slate_state(&self, tx: &TxLogEntry) -> Option<SlateState> {
+		let slate_id = tx.tx_slate_id?;
+		if let Some(state) = tx.tx_slate_state.as_ref() {
+			let mut slate = Slate::blank(1, false);
+			slate.id = slate_id;
+			slate.state = state.clone();
+			if self.slatepack_exists(&slate) {
+				return Some(state.clone());
+			}
+		}
+		match self.get_slate_state(slate_id, &tx.tx_type) {
+			SlateState::Unknown => tx.tx_slate_state.clone(),
+			probed => Some(probed),
+		}
+	}
+
+	/// Get possible state from tx type by probing the Slatepack files on disk.
+	fn get_slate_state(&self, slate_id: Uuid, tx_type: &TxLogEntryType) -> SlateState {
 		let mut slate = Slate::blank(1, false);
 		slate.id = slate_id;
 		slate.state = match tx_type {
@@ -2117,8 +2143,9 @@ impl Wallet {
 		let keychain_mask = self.keychain_mask();
 		controller::owner_single_use(None, keychain_mask.as_ref(), Some(&mut api), |api, m| {
 			let s = api.init_send_tx(m, args)?;
-			// Create Slatepack message response.
-			let _ = self.create_slatepack_message(&s, dest)?;
+			// Create Slatepack message response. The sender's own copy stays
+			// unencrypted so this wallet can re-read it to resend or finalize.
+			let _ = self.create_slatepack_message(&s, None)?;
 			// Lock outputs to for this transaction.
 			api.tx_lock_outputs(m, &s)?;
 			slate = Some(s);
@@ -2137,7 +2164,11 @@ impl Wallet {
 	}
 
 	/// Initialize an invoice transaction to receive amount, return request for funds sender.
-	fn issue_invoice(&self, amount: u64) -> Result<Slate, Error> {
+	fn issue_invoice(
+		&self,
+		amount: u64,
+		address: Option<SlatepackAddress>,
+	) -> Result<Slate, Error> {
 		let args = IssueInvoiceTxArgs {
 			dest_acct_name: None,
 			amount,
@@ -2148,14 +2179,15 @@ impl Wallet {
 		let api = Owner::new(instance, None);
 		let slate = api.issue_invoice_tx(self.keychain_mask().as_ref(), args)?;
 
-		// Create Slatepack message response.
-		let _ = self.create_slatepack_message(&slate, None)?;
+		// Create Slatepack message response, encrypted to the payer when their
+		// address is known.
+		let _ = self.create_slatepack_message(&slate, address)?;
 
 		Ok(slate)
 	}
 
 	/// Handle message from the invoice issuer to send founds, return response for funds receiver.
-	fn pay(&self, slate: &Slate) -> Result<Slate, Error> {
+	fn pay(&self, slate: &Slate, dest: Option<SlatepackAddress>) -> Result<Slate, Error> {
 		let config = self.get_config();
 		let args = InitTxArgs {
 			src_acct_name: None,
@@ -2170,8 +2202,9 @@ impl Wallet {
 		let slate = api.process_invoice_tx(self.keychain_mask().as_ref(), &slate, args)?;
 		api.tx_lock_outputs(self.keychain_mask().as_ref(), &slate)?;
 
-		// Create Slatepack message response.
-		let _ = self.create_slatepack_message(&slate, None)?;
+		// Create Slatepack message response, encrypted to the invoice issuer when
+		// their address is known.
+		let _ = self.create_slatepack_message(&slate, dest)?;
 
 		Ok(slate)
 	}
@@ -2332,11 +2365,12 @@ impl Wallet {
 	fn get_tx_slate(&self, tx_id: u32) -> Option<Slate> {
 		if let Some(tx) = self.retrieve_tx_by_id(Some(tx_id), None) {
 			if let Some(slate_id) = tx.tx_slate_id {
-				let slate_state = self.get_slate_state(slate_id, &tx.tx_type);
-				let slatepack_path = self.get_config().get_slate_path(slate_id, &slate_state);
-				let msg = fs::read_to_string(slatepack_path).unwrap_or("".to_string());
-				if let Ok((slate, _)) = self.parse_slatepack(&msg) {
-					return Some(slate);
+				if let Some(slate_state) = self.effective_slate_state(&tx) {
+					let slatepack_path = self.get_config().get_slate_path(slate_id, &slate_state);
+					let msg = fs::read_to_string(slatepack_path).unwrap_or("".to_string());
+					if let Ok((slate, _)) = self.parse_slatepack(&msg) {
+						return Some(slate);
+					}
 				}
 			}
 		}
@@ -2922,7 +2956,7 @@ async fn handle_task(w: &Wallet, t: WalletTask) {
 				match s.state {
 					SlateState::Standard1 | SlateState::Invoice1 => {
 						if s.state != SlateState::Standard1 {
-							match w.pay(&s) {
+							match w.pay(&s, None) {
 								Ok(_) => {
 									sync_wallet_data(&w, false);
 									let tx = w.retrieve_tx_by_id(None, Some(s.id));
@@ -3006,9 +3040,9 @@ async fn handle_task(w: &Wallet, t: WalletTask) {
 			}
 			w.send_creating.store(false, Ordering::Relaxed);
 		}
-		WalletTask::Receive(a) => {
+		WalletTask::Receive(a, addr) => {
 			w.invoice_creating.store(true, Ordering::Relaxed);
-			if let Ok(s) = w.issue_invoice(*a) {
+			if let Ok(s) = w.issue_invoice(*a, addr.clone()) {
 				sync_wallet_data(&w, false);
 				let tx = w.retrieve_tx_by_id(None, Some(s.id));
 				if let Some(tx) = tx {
@@ -3255,7 +3289,7 @@ async fn handle_task(w: &Wallet, t: WalletTask) {
 			w.invoice_creating.store(true, Ordering::Relaxed);
 			// Issue a grin Invoice1 (receiver-built slate, amount baked in). This
 			// never spends — it only proposes a payment to the contact.
-			match w.issue_invoice(*a) {
+			match w.issue_invoice(*a, None) {
 				Ok(s) => {
 					sync_wallet_data(&w, false);
 					let now = crate::nostr::unix_time();
@@ -3782,7 +3816,6 @@ fn update_txs(wallet: &Wallet, mut txs_limit: u32) -> Result<(), Error> {
 		let mut new = WalletTx::new(
 			tx.clone(),
 			proof.clone(),
-			wallet,
 			height,
 			broadcasting_height,
 			action,
@@ -4009,6 +4042,46 @@ mod open_tests {
 	use super::*;
 	use crate::wallet::Mnemonic;
 
+	/// The one sandbox HOME shared by every test in this module.
+	///
+	/// These tests must set HOME before a wallet is created, and cargo runs them
+	/// in parallel, so they cannot each install their own: the last writer would
+	/// win and the others would build wallets in a directory they did not expect.
+	/// One sandbox, set once, keeps every wallet inside it. The tests use
+	/// distinct wallet names, so they still do not see each other's data.
+	///
+	/// The directory is left behind: removing it would pull the ground out from
+	/// under a test still running. It lives under the system temp dir.
+	/// Serialises the tests in this module.
+	///
+	/// A wallet identifier is a one-second timestamp, so two wallets created in
+	/// the same second share a directory. Cargo runs tests in parallel, so they
+	/// take this lock in turn and create their wallets one after another.
+	fn serialised() -> std::sync::MutexGuard<'static, ()> {
+		static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+		LOCK.lock().unwrap_or_else(|e| e.into_inner())
+	}
+
+	fn sandbox() -> &'static PathBuf {
+		static SANDBOX: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+		SANDBOX.get_or_init(|| {
+			let dir = std::env::temp_dir().join(format!(
+				"goblin-wallet-test-{}-{}",
+				std::process::id(),
+				std::time::SystemTime::now()
+					.duration_since(std::time::UNIX_EPOCH)
+					.unwrap()
+					.as_nanos()
+			));
+			std::fs::create_dir_all(&dir).unwrap();
+			// SAFETY: written once, before any wallet in this module is created.
+			unsafe {
+				std::env::set_var("HOME", &dir);
+			}
+			dir
+		})
+	}
+
 	/// A wallet can be created and then OPENED, and opening brings its nostr
 	/// identity up.
 	///
@@ -4016,25 +4089,14 @@ mod open_tests {
 	/// test ran against the on-disk index in isolation, and nothing ever opened a
 	/// wallet, so "the wallet still loads" was assumed rather than tested.
 	///
-	/// Mutates HOME to sandbox the data directory, so it MUST run alone:
+	/// Builds a real wallet under the module's sandbox HOME. Documented run:
 	///   cargo test --lib open_tests -- --test-threads=1
 	/// It refuses to run at all if the sandbox does not take effect, so it can
 	/// never create a wallet in the real ~/.goblin.
 	#[test]
 	fn wallet_creates_and_opens_with_its_identity() {
-		let sandbox = std::env::temp_dir().join(format!(
-			"goblin-open-test-{}-{}",
-			std::process::id(),
-			std::time::SystemTime::now()
-				.duration_since(std::time::UNIX_EPOCH)
-				.unwrap()
-				.as_nanos()
-		));
-		std::fs::create_dir_all(&sandbox).unwrap();
-		// SAFETY: this test is documented to run single-threaded and alone.
-		unsafe {
-			std::env::set_var("HOME", &sandbox);
-		}
+		let _serialised = serialised();
+		let sandbox = sandbox();
 
 		let password = ZeroingString::from("open-test-password");
 		let mnemonic = Mnemonic::default();
@@ -4078,7 +4140,6 @@ mod open_tests {
 		);
 
 		wallet.close();
-		let _ = std::fs::remove_dir_all(&sandbox);
 	}
 
 	/// Rapid fee requests coalesce to the newest amount instead of queueing one
@@ -4090,23 +4151,12 @@ mod open_tests {
 	/// rather than incrementing a request counter, and the worker drains the
 	/// request instead of leaving it pending.
 	///
-	/// Mutates HOME, so it MUST run alone:
+	/// Builds a real wallet under the module's sandbox HOME. Documented run:
 	///   cargo test --lib open_tests -- --test-threads=1
 	#[test]
 	fn fee_requests_coalesce_to_the_latest_amount() {
-		let sandbox = std::env::temp_dir().join(format!(
-			"goblin-fee-test-{}-{}",
-			std::process::id(),
-			std::time::SystemTime::now()
-				.duration_since(std::time::UNIX_EPOCH)
-				.unwrap()
-				.as_nanos()
-		));
-		std::fs::create_dir_all(&sandbox).unwrap();
-		// SAFETY: this test is documented to run single-threaded and alone.
-		unsafe {
-			std::env::set_var("HOME", &sandbox);
-		}
+		let _serialised = serialised();
+		let sandbox = sandbox();
 
 		let password = ZeroingString::from("fee-test-password");
 		let mnemonic = Mnemonic::default();
@@ -4170,6 +4220,96 @@ mod open_tests {
 		);
 
 		wallet.close();
-		let _ = std::fs::remove_dir_all(&sandbox);
+	}
+
+	/// A Slatepack created WITH an address is encrypted to that recipient: only
+	/// they can decode it. Without an address it stays readable by anyone.
+	///
+	/// This is the behaviour `create_slatepack_message` gained. It previously
+	/// ignored its address argument and always produced a plaintext Slatepack,
+	/// so an invoice exported by paste, QR or file was readable by anyone who
+	/// intercepted it.
+	///
+	/// Builds a real wallet under the module's sandbox HOME. Documented run:
+	///   cargo test --lib open_tests -- --test-threads=1
+	#[test]
+	fn slatepack_is_encrypted_to_the_given_address() {
+		let _serialised = serialised();
+		let sandbox = sandbox();
+
+		let password = ZeroingString::from("slatepack-test-password");
+		let wallet = Wallet::create(
+			&"slatepack-test".to_string(),
+			&password,
+			&Mnemonic::default(),
+			&ConnectionMethod::Integrated,
+		)
+		.expect("wallet creation must succeed");
+
+		// Hard guard: refuse to continue if the sandbox did not take effect.
+		let data_path = PathBuf::from(wallet.get_config().get_data_path());
+		assert!(
+			data_path.starts_with(sandbox),
+			"sandbox did not take effect (wallet at {}); refusing to touch real data",
+			data_path.display()
+		);
+		wallet.open(password.clone()).expect("wallet must open");
+
+		// The wallet's own address, and one it does not decrypt with: reading a
+		// Slatepack only ever uses derivation index 0, and `mint_proof_address`
+		// allocates a later index.
+		let own = SlatepackAddress::try_from(
+			wallet
+				.slatepack_address()
+				.expect("an open wallet has a Slatepack address")
+				.as_str(),
+		)
+		.expect("the wallet's own address must parse");
+		let (_, other) = wallet
+			.mint_proof_address()
+			.expect("a fresh proof address must be minted");
+		let other = SlatepackAddress::try_from(other.as_str()).expect("minted address must parse");
+		assert_ne!(own.to_string(), other.to_string());
+
+		let mut slate = Slate::blank(1, false);
+		slate.state = SlateState::Standard1;
+
+		// No address: a plaintext Slatepack its author can read back. Every
+		// existing caller keeps using this path, so it must not change.
+		let plain = wallet
+			.create_slatepack_message(&slate, None)
+			.expect("a Slatepack without a recipient must be created");
+		assert!(
+			wallet.parse_slatepack(&plain).is_ok(),
+			"an unaddressed Slatepack must stay readable by its author"
+		);
+
+		// Addressed to a party that can read it: the content changes, and that
+		// party decodes it. Before this fix the address was ignored and the two
+		// messages were identical.
+		let to_own = wallet
+			.create_slatepack_message(&slate, Some(own))
+			.expect("a Slatepack for a recipient must be created");
+		assert_ne!(
+			plain, to_own,
+			"naming a recipient must change the Slatepack, otherwise the address is ignored"
+		);
+		assert!(
+			wallet.parse_slatepack(&to_own).is_ok(),
+			"the named recipient must be able to decode the Slatepack"
+		);
+
+		// Addressed elsewhere: this wallet cannot read it, so the payload really
+		// is encrypted to the named party and not merely tagged with it.
+		let to_other = wallet
+			.create_slatepack_message(&slate, Some(other))
+			.expect("a Slatepack for another recipient must be created");
+		assert_ne!(to_own, to_other);
+		assert!(
+			wallet.parse_slatepack(&to_other).is_err(),
+			"nobody but the named recipient may decode the Slatepack"
+		);
+
+		wallet.close();
 	}
 }
