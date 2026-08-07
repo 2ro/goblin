@@ -942,10 +942,8 @@ impl OnboardingContent {
 				// session ran over Tor (seen on Build 168, 3 of 3 runs). (Cohort
 				// rule: only new-wallet onboarding writes an explicit value;
 				// upgraders keep None -> Tor ON.)
-				crate::nostr::NostrConfig::load(std::path::PathBuf::from(
-					w.get_config().get_data_path(),
-				))
-				.set_tor_enabled(self.tor_choice);
+				crate::nostr::NostrConfig::load(w.get_config().get_data_path())
+					.set_tor_enabled(self.tor_choice);
 				match w.open(pass) {
 					Ok(_) => {
 						// Mirror the choice into the service's in-memory config
