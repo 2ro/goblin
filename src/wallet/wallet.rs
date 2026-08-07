@@ -12,7 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::AppConfig;
 use crate::node::{Node, NodeConfig};
 use crate::nostr::{
 	HeldIdentities, HeldIdentityKeys, NostrConfig, NostrIdentity, NostrService, NostrStore,
@@ -24,6 +23,7 @@ use crate::wallet::types::{
 	WalletInstance, WalletTask, WalletTx, WalletTxAction,
 };
 use crate::wallet::{ConnectionsConfig, Mnemonic, WalletConfig};
+use crate::{AppConfig, Settings};
 
 use chrono::Utc;
 use futures::channel::oneshot;
@@ -49,7 +49,6 @@ use grin_wallet_libwallet::{
 use log::{error, info, warn};
 use num_bigint::BigInt;
 use parking_lot::RwLock;
-use rand::Rng;
 use std::fs::File;
 use std::io::Write;
 use std::net::{SocketAddr, TcpListener, ToSocketAddrs};
@@ -2772,7 +2771,7 @@ fn start_sync(wallet: Wallet) -> Thread {
 								let mut api_server_w = wallet.foreign_api_server.write();
 								*api_server_w = Some(api_server);
 							}
-							Err(_) => {}
+							Err(e) => error!("{}", e),
 						}
 					}
 				}
@@ -3844,26 +3843,28 @@ fn start_api_server(wallet: &Wallet) -> Result<(ApiServer, u16), Error> {
 	let port = wallet
 		.get_config()
 		.api_port
-		.unwrap_or(rand::rng().random_range(10000..30000));
-	let free_port = (port..)
-		.find(|port| {
-			return match TcpListener::bind((host, port.to_owned())) {
-				Ok(_) => {
-					let node_p2p_port = NodeConfig::get_p2p_port();
-					let node_api_port = NodeConfig::get_api_ip_port().1;
-					let free =
-						port.to_string() != node_p2p_port && port.to_string() != node_api_port;
-					if free {
-						let mut config = wallet.config.write();
-						config.api_port = Some(*port);
-						config.save();
-					}
-					free
+		.unwrap_or(Settings::open_port(host).unwrap_or(WalletConfig::default_api_port()));
+	let free_port = (port..).find(|port| {
+		return match TcpListener::bind((host, port.to_owned())) {
+			Ok(_) => {
+				let node_p2p_port = NodeConfig::get_p2p_port();
+				let node_api_port = NodeConfig::get_api_ip_port().1;
+				let free = port.to_string() != node_p2p_port && port.to_string() != node_api_port;
+				if free {
+					let mut config = wallet.config.write();
+					config.api_port = Some(*port);
+					config.save();
 				}
-				Err(_) => false,
-			};
-		})
-		.unwrap();
+				free
+			}
+			Err(_) => false,
+		};
+	});
+	if free_port.is_none() {
+		let err_msg = "Can not find free wallet API port".to_string();
+		return Err(Error::GenericError(err_msg));
+	}
+	let free_port = free_port.unwrap();
 
 	// Setup API server address.
 	let api_addr = format!("{}:{}", host, free_port);
