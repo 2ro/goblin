@@ -38,7 +38,7 @@ use grin_wallet_controller::controller;
 use grin_wallet_controller::controller::ForeignAPIHandlerV2;
 use grin_wallet_impls::{DefaultLCProvider, DefaultWalletImpl, HTTPNodeClient};
 use grin_wallet_libwallet::api_impl::owner::{
-	cancel_tx, init_send_tx, retrieve_summary_info, retrieve_txs, verify_payment_proof,
+	cancel_tx, retrieve_summary_info, retrieve_txs, verify_payment_proof,
 };
 use grin_wallet_libwallet::{
 	Error, InitTxArgs, IssueInvoiceTxArgs, NodeClient, PaymentProof, Slate, SlateState,
@@ -174,6 +174,11 @@ pub struct Wallet {
 	/// Last calculated network fee as `(amount, fee)` so a screen can read the
 	/// fee for the amount it is showing without owning the task-result slot.
 	last_fee: Arc<RwLock<Option<(u64, u64)>>>,
+	/// Calculating max amount to send.
+	max_amount_calculating: Arc<AtomicBool>,
+	/// Last calculated max amount to send, zero when the last pricing pass
+	/// built a transaction and no maximum applies.
+	calculated_max_amount: Arc<AtomicU64>,
 
 	/// Flag to check if sending request is creating.
 	send_creating: Arc<AtomicBool>,
@@ -228,6 +233,8 @@ impl Wallet {
 			amount_to_calculate_fee: Arc::new(AtomicU64::new(0)),
 			amount_fee_calculating: Arc::new(AtomicU64::new(0)),
 			last_fee: Arc::new(RwLock::new(None)),
+			max_amount_calculating: Arc::new(AtomicBool::new(false)),
+			calculated_max_amount: Arc::new(AtomicU64::new(0)),
 			invoice_creating: Arc::new(AtomicBool::new(false)),
 			proof_verifying: Arc::new(AtomicBool::new(false)),
 			tasks_sender: Arc::new(RwLock::new(None)),
@@ -2127,12 +2134,12 @@ impl Wallet {
 		}
 	}
 
-	/// Calculate transaction fee for provided amount.
-	fn calculate_fee(&self, a: u64) -> Result<u64, Error> {
+	/// Calculate transaction fee for provided amount. Returns the fee, and the
+	/// largest amount this wallet can actually send when the requested amount
+	/// cannot be built.
+	fn calculate_fee(&self, a: u64) -> Result<(u64, Option<u64>), Error> {
 		let r_inst = self.instance.as_ref().read();
 		let instance = r_inst.clone().unwrap();
-		let mut w_lock = instance.lock();
-		let w = w_lock.lc_provider()?.wallet_inst()?;
 		let config = self.get_config();
 		let args = InitTxArgs {
 			src_acct_name: Some(config.account.clone()),
@@ -2143,16 +2150,45 @@ impl Wallet {
 			estimate_only: Some(true),
 			..Default::default()
 		};
-		let res = init_send_tx(w, self.keychain_mask().as_ref(), args, false);
+		let api = Owner::new(instance, None, config.get_wallet_path());
+		let res = api.init_send_tx(self.keychain_mask().as_ref(), args.clone());
 		match res {
-			Ok(slate) => Ok(slate.fee_fields.fee()),
+			Ok(slate) => Ok((slate.fee_fields.fee(), None)),
 			Err(e) => match e {
-				Error::NotEnoughFunds {
-					available, needed, ..
-				} => Ok(needed - available),
+				Error::BigAmountError(amount, fee, ..) => Ok((fee, Some(amount - fee))),
+				Error::NotEnoughFunds { .. } => {
+					let (amount, fee) = self.calculate_max_amount()?;
+					Ok((fee, Some(amount - fee)))
+				}
 				e => Err(e),
 			},
 		}
+	}
+
+	/// Calculate max amount and fee.
+	fn calculate_max_amount(&self) -> Result<(u64, u64), Error> {
+		let r_inst = self.instance.as_ref().read();
+		let instance = r_inst.clone().unwrap();
+		let config = self.get_config();
+		let api = Owner::new(instance, None, config.get_wallet_path());
+		match api.estimate_max_sendable(
+			self.keychain_mask().as_ref(),
+			false,
+			config.min_confirmations,
+		) {
+			Ok((_, amount, fee, _)) => Ok((amount, fee)),
+			Err(e) => Err(e),
+		}
+	}
+
+	/// Check if max amount to send is calculating.
+	pub fn max_amount_calculating(&self) -> bool {
+		self.max_amount_calculating.load(Ordering::SeqCst)
+	}
+
+	/// Last calculated max amount to send, zero when no maximum applies.
+	pub fn last_calculated_max_amount(&self) -> u64 {
+		self.calculated_max_amount.load(Ordering::SeqCst)
 	}
 
 	/// Check if transaction fee is calculating.
@@ -3112,6 +3148,20 @@ async fn handle_task(w: &Wallet, t: WalletTask) {
 			}
 			w.message_opening.store(false, Ordering::Relaxed);
 		}
+		WalletTask::CalculateMax(_, _) => {
+			if w.max_amount_calculating.load(Ordering::SeqCst) {
+				return;
+			}
+			w.max_amount_calculating.store(true, Ordering::SeqCst);
+			match w.calculate_max_amount() {
+				Ok((a, fee)) => {
+					w.calculated_max_amount.store(a, Ordering::SeqCst);
+					w.on_task_result(None, &WalletTask::CalculateMax(a, fee));
+				}
+				Err(e) => error!("calculate max error: {:?}", e),
+			}
+			w.max_amount_calculating.store(false, Ordering::SeqCst);
+		}
 		WalletTask::CalculateFee(a, _) => {
 			// Only one calculation runs at a time. It drains to whatever amount was
 			// requested last, so rapid typing coalesces to the newest value instead
@@ -3123,12 +3173,24 @@ async fn handle_task(w: &Wallet, t: WalletTask) {
 			w.amount_fee_calculating.store(*a, Ordering::Relaxed);
 			amount = *a;
 			loop {
-				if let Ok(fee) = w.calculate_fee(amount) {
-					*w.last_fee.write() = Some((amount, fee));
-					w.on_task_result(None, &WalletTask::CalculateFee(amount, fee));
+				if let Ok((fee, max_amount)) = w.calculate_fee(amount) {
+					if let Some(max) = max_amount {
+						// The amount cannot be built. Report the largest amount this
+						// wallet can send instead of a fee for a transaction that
+						// would fail at the node.
+						w.calculated_max_amount.store(max, Ordering::SeqCst);
+						w.amount_fee_calculating.store(0, Ordering::Relaxed);
+						w.amount_to_calculate_fee.store(0, Ordering::Relaxed);
+						w.on_task_result(None, &WalletTask::CalculateMax(max, fee));
+						break;
+					} else {
+						*w.last_fee.write() = Some((amount, fee));
+						w.on_task_result(None, &WalletTask::CalculateFee(amount, fee));
+					}
 				}
 				let amount_to_calculate = w.amount_to_calculate_fee.load(Ordering::Relaxed);
 				if amount_to_calculate == amount {
+					w.calculated_max_amount.store(0, Ordering::SeqCst);
 					w.amount_fee_calculating.store(0, Ordering::Relaxed);
 					w.amount_to_calculate_fee.store(0, Ordering::Relaxed);
 					break;

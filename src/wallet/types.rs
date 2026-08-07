@@ -450,6 +450,10 @@ pub enum ManualSlatepackOutcome {
 pub enum WalletTask {
 	/// Open Slatepack message parsing result and making an action.
 	OpenMessage(String),
+	/// Calculate max amount to send.
+	/// * amount
+	/// * fee (to read at result)
+	CalculateMax(u64, u64),
 	/// Calculate fee to send amount.
 	/// * amount
 	/// * fee (to read at result)

@@ -483,16 +483,16 @@ impl WalletContent {
 				match modal_id {
 					SEND_MODAL_ID => {
 						match t {
+							WalletTask::CalculateMax(a, f) => {
+								// Setup the max amount the wallet can send, and its fee.
+								if let Some(m) = self.send_content.as_mut() {
+									m.on_max_amount_calculated(a, f);
+								}
+							}
 							WalletTask::CalculateFee(_, f) => {
 								// Setup calculated tx fee at modal.
 								if let Some(m) = self.send_content.as_mut() {
-									if m.max_calculating {
-										let a = data.info.amount_currently_spendable;
-										let max = if f > a { 0 } else { a - f };
-										m.on_max_amount_calculated(max, f);
-									} else {
-										m.on_fee_calculated(f);
-									}
+									m.on_fee_calculated(f);
 								}
 							}
 							_ => {}
