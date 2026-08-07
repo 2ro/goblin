@@ -105,7 +105,7 @@ hyper-tls = "0.6.0"
 # Version already present transitively (async-socks5 tree) — no new download.
 tokio-socks = "0.5"
 async-std = "1.13.2"
-uuid = { version = "0.8.2", features = ["v4"] }
+uuid = { version = "1.23.4", features = ["serde", "v4"] }
 num-bigint = "0.4.6"
 
 ## nostr
@@ -142,15 +142,21 @@ webpki-roots = "1"
 ## Tor — embedded arti (the DIALING half only: connect OUT to the relay's .onion,
 ## and to clearnet HTTP hosts through a Tor exit). Copied from our sister wallet
 ## GRIM's proven, shipping engine. Two choices inherited VERBATIM from GRIM: arti
-## 0.43 across the family, and the native-tls Tor runtime (TokioNativeTlsRuntime),
+## 0.44 across the family, and the native-tls Tor runtime (TokioNativeTlsRuntime),
 ## NOT rustls — this keeps arti's TLS on native-tls and off the rustls provider
 ## entirely (our relay/HTTP rustls still uses ring, see lib.rs; arti's own TLS is
 ## native-tls and never touches the rustls provider).
+## The version has to match the wallet submodule, which depends on arti 0.44
+## itself (wallet/impls/Cargo.toml). arti is 0.x, so 0.43 and 0.44 are
+## semver-incompatible and cargo would otherwise build two complete Tor stacks.
 ## `static` vendors openssl (self-contained Android/cross builds, as GRIM ships);
-## `onion-service-client` enables dialing .onion. We drop GRIM's `pt-client`
-## (bridges) and `onion-service-service` (hosting) — Goblin only dials.
-arti-client = { version = "0.43.0", features = ["static", "onion-service-client"] }
-tor-rtcompat = { version = "0.43.0", features = ["static"] }
+## `onion-service-client` enables dialing .onion. We keep dropping GRIM's
+## `pt-client` (bridges) and `onion-service-service` (hosting) from OUR entry:
+## Goblin only dials. Cargo unions features across the graph, so the wallet's own
+## arti entry still switches those on for the shared build; no Goblin code calls
+## them, and Goblin hosts no onion service.
+arti-client = { version = "0.44.0", features = ["static", "onion-service-client"] }
+tor-rtcompat = { version = "0.44.0", features = ["static"] }
 
 ## NIP-98 payload hashing
 sha2 = "0.10.8"
