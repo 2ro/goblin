@@ -768,6 +768,7 @@ impl OnboardingContent {
 						.password()
 						.text_color(t.surface_text)
 						.body()
+						.paste()
 						.ui(ui, &mut br.password, cb);
 				});
 				ui.add_space(8.0);
@@ -1437,6 +1438,7 @@ impl OnboardingContent {
 							.password()
 							.text_color(t.surface_text)
 							.body()
+							.paste()
 							.ui(ui, &mut imp.nsec, cb);
 					});
 					ui.add_space(8.0);
@@ -1447,6 +1449,7 @@ impl OnboardingContent {
 							.password()
 							.text_color(t.surface_text)
 							.body()
+							.paste()
 							.ui(ui, &mut imp.backup_password, cb);
 					});
 					if !imp.error.is_empty() {

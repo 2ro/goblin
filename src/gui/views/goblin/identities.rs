@@ -311,6 +311,7 @@ impl GoblinWalletView {
 									.password()
 									.text_color(t.surface_text)
 									.body()
+									.paste()
 									.ui(ui, &mut self.identity_switch.nsec, cb);
 							});
 						}
