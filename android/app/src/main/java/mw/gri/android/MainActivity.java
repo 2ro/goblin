@@ -14,6 +14,7 @@ import android.system.ErrnoException;
 import android.system.Os;
 import android.util.Log;
 import android.view.KeyEvent;
+import android.view.MotionEvent;
 import android.view.View;
 import android.view.WindowManager;
 
@@ -98,6 +99,10 @@ public class MainActivity extends GameActivity {
     // recordings and the Recents thumbnail (a secret is on screen). Static so a
     // recreated activity applies it again. Main thread only.
     private static boolean sSecureScreen = false;
+
+    // The current touch gesture started under another app's window and is
+    // being dropped (see dispatchTouchEvent).
+    private boolean mDropObscuredGesture = false;
 
     @SuppressLint("UnspecifiedRegisterReceiverFlag")
     @Override
@@ -355,6 +360,25 @@ public class MainActivity extends GameActivity {
                 onTextInput(input);
             }
         }
+    }
+
+    // Tapjacking guard: drop touches that pass through another app's window
+    // drawn over ours (an overlay that hides what the user really taps, e.g. a
+    // hold-to-send). This is filterTouchesWhenObscured, applied here because
+    // GameActivity hands every touch to native code from Activity.onTouchEvent
+    // and no view consumes it: a filtering view would return false and the
+    // touch would still reach onTouchEvent. The decision is made per gesture at
+    // ACTION_DOWN, so native code never sees half a gesture (a lost UP would
+    // leave the pointer pressed).
+    @Override
+    public boolean dispatchTouchEvent(MotionEvent event) {
+        if (event.getActionMasked() == MotionEvent.ACTION_DOWN) {
+            mDropObscuredGesture = (event.getFlags() & MotionEvent.FLAG_WINDOW_IS_OBSCURED) != 0;
+        }
+        if (mDropObscuredGesture) {
+            return false;
+        }
+        return super.dispatchTouchEvent(event);
     }
 
     @Override
