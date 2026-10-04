@@ -20,17 +20,13 @@ use std::fs::File;
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 
 use jni::JNIEnv;
 use jni::objects::{JByteArray, JObject, JString, JValue};
 use winit::platform::android::activity::AndroidApp;
 
-use crate::gui::platform::PlatformCallbacks;
-
-/// How long a revealed secret (e.g. an nsec) may sit in the clipboard before it
-/// is auto-cleared, if it is still there. Long enough to paste into another app,
-/// short enough that it does not linger.
-const CLIPBOARD_SECRET_TTL_SECS: u64 = 45;
+use crate::gui::platform::{PlatformCallbacks, SaveResult};
 
 /// Android platform implementation.
 #[derive(Clone)]
@@ -63,10 +59,27 @@ impl Android {
 		let mut env = vm.attach_current_thread().unwrap();
 		let activity =
 			unsafe { JObject::from_raw(self.android_app.activity_as_ptr() as jni::sys::jobject) };
-		if let Ok(result) = env.call_method(activity, name, s, a) {
-			return Some(result.as_jni().clone());
+		match env.call_method(activity, name, s, a) {
+			Ok(result) => Some(result.as_jni().clone()),
+			Err(e) => {
+				log::error!("jni: {name} failed: {e}");
+				clear_java_exception(&env, name);
+				None
+			}
 		}
-		None
+	}
+}
+
+/// Describe, log and clear a Java exception that a failed JNI call left
+/// pending. The native threads that call into Java here never return to Java,
+/// so the exception would never be delivered, and the next JNI call made with
+/// it pending aborts the app under CheckJNI (on in our debuggable APKs).
+fn clear_java_exception(env: &JNIEnv, context: &str) {
+	if env.exception_check().unwrap_or(false) {
+		// Prints the exception and its stack to logcat, then clear it.
+		let _ = env.exception_describe();
+		let _ = env.exception_clear();
+		log::error!("jni: {context}: cleared a pending Java exception");
 	}
 }
 
@@ -83,7 +96,10 @@ impl PlatformCallbacks for Android {
 	fn copy_string_to_buffer(&self, data: String) {
 		let vm = unsafe { jni::JavaVM::from_raw(self.android_app.vm_as_ptr() as _) }.unwrap();
 		let env = vm.attach_current_thread().unwrap();
-		let arg_value = env.new_string(data).unwrap();
+		let Ok(arg_value) = env.new_string(data) else {
+			clear_java_exception(&env, "copyText");
+			return;
+		};
 		let _ = self.call_java_method(
 			"copyText",
 			"(Ljava/lang/String;)V",
@@ -92,32 +108,57 @@ impl PlatformCallbacks for Android {
 	}
 
 	fn copy_secret_to_buffer(&self, data: String) {
-		// Copy now, then clear after a delay if the clipboard still holds exactly
-		// this secret (compare-then-clear), so a revealed nsec does not linger.
-		// Runs on a detached thread that reaches Java via the cloned app handle,
-		// the same non-GUI JNI path as the payment notifications.
-		self.copy_string_to_buffer(data.clone());
-		let platform = self.clone();
-		std::thread::spawn(move || {
-			std::thread::sleep(std::time::Duration::from_secs(CLIPBOARD_SECRET_TTL_SECS));
-			if platform.get_string_from_buffer() == data {
-				platform.copy_string_to_buffer(String::new());
-			}
-		});
+		// Java owns the whole secret copy: a neutral clip label, the sensitive
+		// flag, and the delayed compare-and-clear (main looper, then the next
+		// window focus when the app is in the background). No Rust thread here:
+		// a thread that is not attached to the JVM cannot safely read the
+		// clipboard back through JNI.
+		let Ok(vm) = (unsafe { jni::JavaVM::from_raw(self.android_app.vm_as_ptr() as _) }) else {
+			return;
+		};
+		let Ok(env) = vm.attach_current_thread() else {
+			return;
+		};
+		let Ok(arg_value) = env.new_string(data) else {
+			clear_java_exception(&env, "copySecretText");
+			return;
+		};
+		let _ = self.call_java_method(
+			"copySecretText",
+			"(Ljava/lang/String;)V",
+			&[JValue::Object(&JObject::from(arg_value))],
+		);
 	}
 
 	fn get_string_from_buffer(&self) -> String {
-		let result = self
-			.call_java_method("pasteText", "()Ljava/lang/String;", &[])
-			.unwrap();
-		let vm = unsafe { jni::JavaVM::from_raw(self.android_app.vm_as_ptr() as _) }.unwrap();
-		let mut env = vm.attach_current_thread().unwrap();
-		let j_object: jni::sys::jobject = unsafe { result.l };
-		let paste_data: String = unsafe {
-			env.get_string(JString::from(JObject::from_raw(j_object)).as_ref())
-				.unwrap()
-				.into()
+		// Attach BEFORE the call and hold the guard until the string is read.
+		// `call_java_method` takes its own guard; if that one were the outermost
+		// it would detach the thread on return and free the returned local
+		// reference before we read it.
+		let Ok(vm) = (unsafe { jni::JavaVM::from_raw(self.android_app.vm_as_ptr() as _) }) else {
+			return String::new();
 		};
+		let Ok(mut env) = vm.attach_current_thread() else {
+			return String::new();
+		};
+		let Some(result) = self.call_java_method("pasteText", "()Ljava/lang/String;", &[]) else {
+			return String::new();
+		};
+		let j_object: jni::sys::jobject = unsafe { result.l };
+		if j_object.is_null() {
+			return String::new();
+		}
+		let j_string = unsafe { JString::from(JObject::from_raw(j_object)) };
+		let paste_data: String = match env.get_string(&j_string) {
+			Ok(s) => s.into(),
+			Err(_) => {
+				clear_java_exception(&env, "pasteText");
+				String::new()
+			}
+		};
+		// The UI thread stays attached for the app lifetime, so its local
+		// references are never freed by a detach: drop this one now.
+		let _ = env.delete_local_ref(j_string);
 		paste_data
 	}
 
@@ -175,7 +216,10 @@ impl PlatformCallbacks for Android {
 		// Call share modal at system.
 		let vm = unsafe { jni::JavaVM::from_raw(self.android_app.vm_as_ptr() as _) }.unwrap();
 		let env = vm.attach_current_thread().unwrap();
-		let arg_value = env.new_string(file.to_str().unwrap()).unwrap();
+		let Ok(arg_value) = env.new_string(file.to_str().unwrap()) else {
+			clear_java_exception(&env, "shareData");
+			return Err(std::io::Error::other("jni: new_string failed"));
+		};
 		let _ = self.call_java_method(
 			"shareData",
 			"(Ljava/lang/String;)V",
@@ -184,42 +228,80 @@ impl PlatformCallbacks for Android {
 		Ok(())
 	}
 
-	fn save_file(&self, name: String, data: Vec<u8>) -> Result<(), std::io::Error> {
+	fn save_file(&self, name: String, data: Vec<u8>) -> Option<SaveResult> {
+		// Forget an outcome an earlier save left behind: the picker opened below
+		// reports THIS save's outcome through `onFileSave`.
+		*SAVE_FILE_RESULT.write() = None;
 		// Stage the bytes in the share cache (same dir the FileProvider exposes),
 		// then let Java copy them to the user-chosen Storage Access Framework
 		// document. Mirrors `share_data`, but the Java side uses CREATE_DOCUMENT.
-		let default_cache = OsString::from(dirs::cache_dir().unwrap());
-		let mut file = PathBuf::from(env::var_os("XDG_CACHE_HOME").unwrap_or(default_cache));
-		file.push("share");
-		if !file.exists() {
-			std::fs::create_dir(file.clone())?;
+		let staged = (|| -> std::io::Result<PathBuf> {
+			let default_cache = dirs::cache_dir()
+				.map(OsString::from)
+				.ok_or_else(|| std::io::Error::other("no cache dir"))?;
+			let mut file = PathBuf::from(env::var_os("XDG_CACHE_HOME").unwrap_or(default_cache));
+			file.push("share");
+			if !file.exists() {
+				std::fs::create_dir(file.clone())?;
+			}
+			file.push(&name);
+			if file.exists() {
+				std::fs::remove_file(file.clone())?;
+			}
+			let mut f = File::create_new(file.clone())?;
+			f.write_all(data.as_slice())?;
+			f.sync_all()?;
+			Ok(file)
+		})();
+		let file = match staged {
+			Ok(file) => file,
+			Err(e) => {
+				log::error!("save_file: staging failed: {e}");
+				return Some(SaveResult::Failed);
+			}
+		};
+		let Ok(vm) = (unsafe { jni::JavaVM::from_raw(self.android_app.vm_as_ptr() as _) }) else {
+			return Some(SaveResult::Failed);
+		};
+		let Ok(env) = vm.attach_current_thread() else {
+			return Some(SaveResult::Failed);
+		};
+		// One at a time: a failed new_string leaves an exception pending, and no
+		// further JNI call may run until it is cleared.
+		let Ok(path_arg) = env.new_string(file.to_string_lossy()) else {
+			clear_java_exception(&env, "saveFile");
+			return Some(SaveResult::Failed);
+		};
+		let Ok(name_arg) = env.new_string(&name) else {
+			clear_java_exception(&env, "saveFile");
+			return Some(SaveResult::Failed);
+		};
+		let launched = self
+			.call_java_method(
+				"saveFile",
+				"(Ljava/lang/String;Ljava/lang/String;)V",
+				&[
+					JValue::Object(&JObject::from(path_arg)),
+					JValue::Object(&JObject::from(name_arg)),
+				],
+			)
+			.is_some();
+		if !launched {
+			return Some(SaveResult::Failed);
 		}
-		file.push(&name);
-		if file.exists() {
-			std::fs::remove_file(file.clone())?;
-		}
-		let mut f = File::create_new(file.clone())?;
-		f.write_all(data.as_slice())?;
-		f.sync_all()?;
-		let vm = unsafe { jni::JavaVM::from_raw(self.android_app.vm_as_ptr() as _) }.unwrap();
-		let env = vm.attach_current_thread().unwrap();
-		let path_arg = env.new_string(file.to_str().unwrap()).unwrap();
-		let name_arg = env.new_string(&name).unwrap();
-		let _ = self.call_java_method(
-			"saveFile",
-			"(Ljava/lang/String;Ljava/lang/String;)V",
-			&[
-				JValue::Object(&JObject::from(path_arg)),
-				JValue::Object(&JObject::from(name_arg)),
-			],
-		);
-		Ok(())
+		// The picker is open; Java reports the outcome once it closes.
+		None
+	}
+
+	fn save_file_result(&self) -> Option<SaveResult> {
+		SAVE_FILE_RESULT.write().take()
 	}
 
 	fn share_text(&self, text: String) {
 		let vm = unsafe { jni::JavaVM::from_raw(self.android_app.vm_as_ptr() as _) }.unwrap();
 		let env = vm.attach_current_thread().unwrap();
 		let Ok(arg_value) = env.new_string(text) else {
+			clear_java_exception(&env, "shareText");
 			return;
 		};
 		let _ = self.call_java_method(
@@ -292,13 +374,34 @@ impl PlatformCallbacks for Android {
 		// so the OS brings the app that deep-linked into us back to the front.
 		let _ = self.call_java_method("returnToCaller", "()V", &[]);
 	}
+
+	fn set_secure_screen(&self, secure: bool) {
+		// Views report this every frame; cross into Java only on a change.
+		if crate::gui::platform::flag_changed(&SECURE_SCREEN, secure) {
+			let _ = self.call_java_method("setSecureScreen", "(Z)V", &[JValue::Bool(secure as u8)]);
+		}
+	}
+
+	fn set_touch_filter(&self, on: bool) {
+		// Views report this every frame; cross into Java only on a change.
+		if crate::gui::platform::flag_changed(&TOUCH_FILTER, on) {
+			let _ = self.call_java_method("setTouchFilter", "(Z)V", &[JValue::Bool(on as u8)]);
+		}
+	}
 }
+
+/// Last secure-screen state handed to Java (FLAG_SECURE on the window).
+static SECURE_SCREEN: AtomicBool = AtomicBool::new(false);
+/// Last obscured-touch filter state handed to Java.
+static TOUCH_FILTER: AtomicBool = AtomicBool::new(false);
 
 lazy_static! {
 	/// Last image data from camera.
 	static ref LAST_CAMERA_IMAGE: Arc<RwLock<Option<(Vec<u8>, u32)>>> = Arc::new(RwLock::new(None));
 	/// Picked file path.
 	static ref PICKED_FILE_PATH: Arc<RwLock<Option<String>>> = Arc::new(RwLock::new(None));
+	/// Outcome of the last `saveFile` picker, reported by Java.
+	static ref SAVE_FILE_RESULT: Arc<RwLock<Option<SaveResult>>> = Arc::new(RwLock::new(None));
 	/// App handle for JNI calls from threads without a platform reference.
 	static ref ANDROID_APP: Arc<RwLock<Option<AndroidApp>>> = Arc::new(RwLock::new(None));
 }
@@ -328,9 +431,11 @@ pub fn notify_payment_received(name: &str, amount: &str) {
 		return;
 	};
 	let Ok(j_name) = env.new_string(name) else {
+		clear_java_exception(&env, "notifyPaymentReceived");
 		return;
 	};
 	let Ok(j_amount) = env.new_string(amount) else {
+		clear_java_exception(&env, "notifyPaymentReceived");
 		return;
 	};
 	let _ = platform.call_java_method(
@@ -369,9 +474,11 @@ pub fn notify_payment_requested(name: &str, amount: &str) {
 		return;
 	};
 	let Ok(j_name) = env.new_string(name) else {
+		clear_java_exception(&env, "notifyPaymentRequested");
 		return;
 	};
 	let Ok(j_amount) = env.new_string(amount) else {
+		clear_java_exception(&env, "notifyPaymentRequested");
 		return;
 	};
 	let _ = platform.call_java_method(
@@ -419,4 +526,17 @@ pub extern "C" fn Java_mw_gri_android_MainActivity_onFilePick(
 			Err(_) => {}
 		}
 	}
+}
+
+/// Callback from Java code with the outcome of the last `saveFile` picker, as a
+/// [`SaveResult::from_code`] code (0 cancelled, 1 saved, other failed).
+#[allow(non_snake_case)]
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_mw_gri_android_MainActivity_onFileSave(
+	_env: JNIEnv,
+	_class: JObject,
+	result: jni::sys::jint,
+) {
+	let mut w_result = SAVE_FILE_RESULT.write();
+	*w_result = Some(SaveResult::from_code(result));
 }

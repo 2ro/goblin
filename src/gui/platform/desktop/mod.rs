@@ -22,7 +22,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::thread;
 
-use crate::gui::platform::PlatformCallbacks;
+use crate::gui::platform::{PlatformCallbacks, SaveResult};
 
 /// How long a revealed secret (e.g. an nsec) may sit in the clipboard before it
 /// is auto-cleared, if it is still there. Long enough to paste into another app,
@@ -354,6 +354,29 @@ impl PlatformCallbacks for Desktop {
 			image.sync_all()?;
 		}
 		Ok(())
+	}
+
+	fn save_file(&self, name: String, data: Vec<u8>) -> Option<SaveResult> {
+		// The same dialog as `share_data`, but the caller gets the real outcome:
+		// a closed dialog or a failed write must not read as a saved file.
+		let mut dialog = FileDialog::new().set_title(t!("share")).set_file_name(name);
+		if let Some(home) = dirs::home_dir() {
+			dialog = dialog.set_directory(home);
+		}
+		let Some(path) = dialog.save_file() else {
+			return Some(SaveResult::Cancelled);
+		};
+		let written = File::create(path).and_then(|mut file| {
+			file.write_all(data.as_slice())?;
+			file.sync_all()
+		});
+		Some(match written {
+			Ok(()) => SaveResult::Saved,
+			Err(e) => {
+				log::error!("save_file: write failed: {e}");
+				SaveResult::Failed
+			}
+		})
 	}
 
 	fn pick_file(&self) -> Option<String> {

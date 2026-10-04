@@ -14,6 +14,8 @@
 
 pub use self::platform::*;
 
+use std::sync::atomic::{AtomicBool, Ordering};
+
 #[cfg(target_os = "android")]
 #[path = "android/mod.rs"]
 pub mod platform;
@@ -41,12 +43,17 @@ pub trait PlatformCallbacks {
 	fn switch_camera(&self);
 	fn share_data(&self, name: String, data: Vec<u8>) -> Result<(), std::io::Error>;
 
-	/// Save bytes to a user-chosen location on the device (a "save as" dialog).
-	/// Desktop already does this via `share_data` (rfd save dialog); Android
-	/// overrides to use the Storage Access Framework (ACTION_CREATE_DOCUMENT)
-	/// instead of the share sheet.
-	fn save_file(&self, name: String, data: Vec<u8>) -> Result<(), std::io::Error> {
-		self.share_data(name, data)
+	/// Save bytes to a user-chosen location on the device (a "save as" dialog:
+	/// the rfd save dialog on desktop, the Storage Access Framework
+	/// ACTION_CREATE_DOCUMENT picker on Android). Returns the final outcome, or
+	/// `None` when it is only known later (Android: after the picker closes),
+	/// in which case it arrives through [`Self::save_file_result`]. Only
+	/// [`SaveResult::Saved`] means the file was written.
+	fn save_file(&self, name: String, data: Vec<u8>) -> Option<SaveResult>;
+	/// Take the outcome of a [`Self::save_file`] that returned `None`, once it
+	/// is known. Each outcome is handed out once.
+	fn save_file_result(&self) -> Option<SaveResult> {
+		None
 	}
 	/// Share plain text via the platform's native share sheet (e.g. a payment
 	/// link). Defaults to copying to the clipboard on platforms without a share
@@ -84,4 +91,83 @@ pub trait PlatformCallbacks {
 	/// and a no-op off Android, where there is no clean "return focus" primitive
 	/// (egui/winit); desktop leaves the window where it is.
 	fn return_to_caller(&self) {}
+
+	/// Keep the window out of screenshots, screen recordings and the app
+	/// switcher thumbnail while `secure` is true, i.e. while a secret (seed
+	/// words, nsec, nsec QR) is on screen. Callers may report the state every
+	/// frame; only a change reaches the OS. No-op off Android.
+	fn set_secure_screen(&self, _secure: bool) {}
+
+	/// Drop touches that pass through another app's window drawn over ours
+	/// while `on` is true, i.e. while a money-commit control (a hold-to-send or
+	/// hold-to-accept, the session money prompt) is on screen. Off everywhere
+	/// else, so a full-screen overlay (screen dimmer, blue-light filter) never
+	/// makes the wallet dead to touch. Callers may report the state every frame;
+	/// only a change reaches the OS. No-op off Android.
+	fn set_touch_filter(&self, _on: bool) {}
+}
+
+/// Final outcome of a [`PlatformCallbacks::save_file`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SaveResult {
+	/// The bytes were written to the location the user chose.
+	Saved,
+	/// The user closed the dialog without choosing a location.
+	Cancelled,
+	/// The file could not be written.
+	Failed,
+}
+
+impl SaveResult {
+	/// Map the code Java reports through `MainActivity.onFileSave` (0 cancelled,
+	/// 1 saved). Any other code is a failure: an unknown code never reads as a
+	/// saved file.
+	pub fn from_code(code: i32) -> Self {
+		match code {
+			0 => SaveResult::Cancelled,
+			1 => SaveResult::Saved,
+			_ => SaveResult::Failed,
+		}
+	}
+}
+
+/// Record the wanted state of a platform flag (secure screen, touch filter) in
+/// `last` and return true when it differs from the state recorded before, i.e.
+/// when the OS side must change now. Views report the state every frame; this
+/// keeps the platform call to the frames where it actually changes.
+pub fn flag_changed(last: &AtomicBool, on: bool) -> bool {
+	last.swap(on, Ordering::Relaxed) != on
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	/// Only a change of the wanted state is reported, so a view that reports
+	/// "secret on screen" every frame causes one platform call, not one a frame.
+	#[test]
+	fn platform_flag_reports_only_changes() {
+		let last = AtomicBool::new(false);
+		// Starts off: reporting off again is no change.
+		assert!(!flag_changed(&last, false));
+		// A secret appears: one change, then steady.
+		assert!(flag_changed(&last, true));
+		assert!(!flag_changed(&last, true));
+		assert!(!flag_changed(&last, true));
+		// It leaves the screen: one change, then steady.
+		assert!(flag_changed(&last, false));
+		assert!(!flag_changed(&last, false));
+	}
+
+	/// Java's save outcome codes map to the right result, and nothing but the
+	/// "saved" code reads as a saved file.
+	#[test]
+	fn save_result_from_java_code() {
+		assert_eq!(SaveResult::from_code(0), SaveResult::Cancelled);
+		assert_eq!(SaveResult::from_code(1), SaveResult::Saved);
+		assert_eq!(SaveResult::from_code(2), SaveResult::Failed);
+		for code in [-1, 3, 42, i32::MAX, i32::MIN] {
+			assert_eq!(SaveResult::from_code(code), SaveResult::Failed);
+		}
+	}
 }

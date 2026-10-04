@@ -14,7 +14,9 @@ import android.system.ErrnoException;
 import android.system.Os;
 import android.util.Log;
 import android.view.KeyEvent;
+import android.view.MotionEvent;
 import android.view.View;
+import android.view.WindowManager;
 
 import androidx.activity.result.ActivityResultLauncher;
 import androidx.activity.result.contract.ActivityResultContracts;
@@ -32,6 +34,9 @@ import com.google.androidgamesdk.gametextinput.State;
 import com.google.common.util.concurrent.ListenableFuture;
 
 import java.io.*;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.util.Objects;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -72,6 +77,43 @@ public class MainActivity extends GameActivity {
     private ActivityResultLauncher<Intent> mFileSaveResult = null;
     // Source path (in the share cache) staged by Rust for the next saveFile().
     private String mPendingSavePath = null;
+    // saveFile() outcome codes for onFileSave (Rust SaveResult::from_code).
+    private static final int SAVE_FILE_CANCELLED = 0;
+    private static final int SAVE_FILE_SAVED = 1;
+    private static final int SAVE_FILE_FAILED = 2;
+
+    // A copied secret (seed words, nsec) is cleared from the clipboard after this
+    // delay, but only if the clipboard still holds it.
+    private static final long SECRET_CLIP_TTL_MS = 45_000;
+    // ClipDescription.EXTRA_IS_SENSITIVE (API 33), by value so minSdk 24 builds
+    // compile. Keyboards and the Android 13+ copy preview hide sensitive clips.
+    private static final String EXTRA_IS_SENSITIVE = "android.content.extra.IS_SENSITIVE";
+    private final Handler mMainHandler = new Handler(Looper.getMainLooper());
+    // SHA-256 of the secret whose clear is pending; never the secret itself.
+    // Main thread only.
+    private byte[] mSecretClipHash = null;
+    // The delay has passed, but the clear could not run yet (no window focus).
+    private boolean mSecretClipDue = false;
+    private final Runnable mSecretClipTimer = () -> {
+        mSecretClipDue = true;
+        clearSecretClipIfDue();
+    };
+
+    // Native code asked to keep the window out of screenshots, screen
+    // recordings and the Recents thumbnail (a secret is on screen). Static so a
+    // recreated activity applies it again. Main thread only.
+    private static boolean sSecureScreen = false;
+
+    // Native code says a money-commit control (hold-to-send, hold-to-accept,
+    // the session money prompt) is on screen: only then are touches through
+    // another app's window dropped. Off by default and on every other screen,
+    // so a screen dimmer or other full-screen overlay never makes the wallet
+    // dead to touch. Written from the native thread, read on the main thread.
+    private static volatile boolean sObscuredTouchFilter = false;
+
+    // The current touch gesture started under another app's window while the
+    // filter was on, and is being dropped (see dispatchTouchEvent).
+    private boolean mDropObscuredGesture = false;
 
     @SuppressLint("UnspecifiedRegisterReceiverFlag")
     @Override
@@ -99,6 +141,10 @@ public class MainActivity extends GameActivity {
         }
 
         super.onCreate(null);
+
+        if (sSecureScreen) {
+            applySecureScreen();
+        }
 
         // Register receiver to finish activity from the BackgroundService.
         ContextCompat.registerReceiver(this, mBroadcastReceiver, new IntentFilter(STOP_APP_ACTION), ContextCompat.RECEIVER_NOT_EXPORTED);
@@ -149,29 +195,40 @@ public class MainActivity extends GameActivity {
                 });
 
         // Register file SAVE result (Storage Access Framework CREATE_DOCUMENT):
-        // copy the staged source file into the user-chosen document.
+        // copy the staged source file into the user-chosen document, then tell
+        // native code how it ended, so "saved" is only shown for a written file.
         mFileSaveResult = registerForActivityResult(
                 new ActivityResultContracts.StartActivityForResult(),
                 result -> {
                     String src = mPendingSavePath;
                     mPendingSavePath = null;
-                    if (result.getResultCode() == Activity.RESULT_OK && src != null) {
-                        Intent data = result.getData();
-                        if (data != null && data.getData() != null) {
-                            Uri uri = data.getData();
-                            try (InputStream is = new FileInputStream(new File(src));
-                                 OutputStream os = getContentResolver().openOutputStream(uri)) {
-                                byte[] buffer = new byte[4096];
-                                int length;
-                                while (is != null && (length = is.read(buffer)) > 0) {
-                                    os.write(buffer, 0, length);
-                                }
-                                if (os != null) os.flush();
-                            } catch (Exception e) {
-                                Log.e("grim", e.toString());
+                    if (result.getResultCode() != Activity.RESULT_OK) {
+                        onFileSave(SAVE_FILE_CANCELLED);
+                        return;
+                    }
+                    boolean saved = false;
+                    Intent data = result.getData();
+                    if (src != null && data != null && data.getData() != null) {
+                        Uri uri = data.getData();
+                        try (InputStream is = new FileInputStream(new File(src));
+                             OutputStream os = getContentResolver().openOutputStream(uri)) {
+                            if (os == null) {
+                                throw new IOException("no output stream");
                             }
+                            byte[] buffer = new byte[4096];
+                            int length;
+                            while ((length = is.read(buffer)) > 0) {
+                                os.write(buffer, 0, length);
+                            }
+                            os.flush();
+                            saved = true;
+                        } catch (Exception e) {
+                            // Also a failed close, which can lose buffered bytes.
+                            saved = false;
+                            Log.e("grim", e.toString());
                         }
                     }
+                    onFileSave(saved ? SAVE_FILE_SAVED : SAVE_FILE_FAILED);
                 });
 
         // Listener for display insets (cutouts) to pass values into native code.
@@ -327,6 +384,36 @@ public class MainActivity extends GameActivity {
         }
     }
 
+    // Tapjacking guard: while sObscuredTouchFilter is on, drop touches that pass
+    // through another app's window drawn over ours (an overlay that hides what
+    // the user really holds). This is filterTouchesWhenObscured, applied here
+    // because GameActivity hands every touch to native code from
+    // Activity.onTouchEvent and no view consumes it: a filtering view would
+    // return false and the touch would still reach onTouchEvent. The decision is
+    // made per gesture at ACTION_DOWN, so native code never sees half a gesture
+    // (a lost UP would leave the pointer pressed).
+    @Override
+    public boolean dispatchTouchEvent(MotionEvent event) {
+        if (event.getActionMasked() == MotionEvent.ACTION_DOWN) {
+            mDropObscuredGesture = sObscuredTouchFilter
+                    && (event.getFlags() & MotionEvent.FLAG_WINDOW_IS_OBSCURED) != 0;
+            if (mDropObscuredGesture) {
+                Log.w("grim", "touch dropped: another app's window covers it");
+            }
+        }
+        if (mDropObscuredGesture) {
+            return false;
+        }
+        return super.dispatchTouchEvent(event);
+    }
+
+    // Called from native code when a money-commit control comes on or leaves
+    // the screen.
+    public void setTouchFilter(boolean on) {
+        sObscuredTouchFilter = on;
+        Log.i("grim", "obscured-touch filter " + (on ? "on" : "off"));
+    }
+
     @Override
     public boolean dispatchKeyEvent(KeyEvent event) {
         if (event.getAction() == KeyEvent.ACTION_DOWN) {
@@ -459,6 +546,92 @@ public class MainActivity extends GameActivity {
         clipboard.setPrimaryClip(clip);
     }
 
+    // Called from native code to copy a SECRET (seed words, nsec) to the
+    // clipboard: a neutral label instead of the data, the sensitive flag, and a
+    // clear after SECRET_CLIP_TTL_MS if the clipboard still holds this secret.
+    public void copySecretText(String data) {
+        runOnUiThread(() -> {
+            ClipboardManager clipboard = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
+            if (clipboard == null) {
+                return;
+            }
+            ClipData clip = ClipData.newPlainText("Goblin", data);
+            PersistableBundle extras = new PersistableBundle();
+            extras.putBoolean(EXTRA_IS_SENSITIVE, true);
+            clip.getDescription().setExtras(extras);
+            try {
+                clipboard.setPrimaryClip(clip);
+            } catch (RuntimeException e) {
+                Log.e("grim", e.toString());
+                return;
+            }
+            // A newer secret copy replaces a clear still pending for an older one.
+            mMainHandler.removeCallbacks(mSecretClipTimer);
+            mSecretClipHash = sha256(data);
+            mSecretClipDue = false;
+            mMainHandler.postDelayed(mSecretClipTimer, SECRET_CLIP_TTL_MS);
+        });
+    }
+
+    // Compare-and-clear for a copied secret once its delay has passed. From
+    // Android 10 an app without window focus reads an empty clipboard, which
+    // would look like "the user copied something else". So without focus the
+    // clear stays pending and runs at the next focus gain or resume instead.
+    private void clearSecretClipIfDue() {
+        if (!mSecretClipDue || mSecretClipHash == null) {
+            return;
+        }
+        if (Build.VERSION.SDK_INT >= 29 && !hasWindowFocus()) {
+            return;
+        }
+        ClipboardManager clipboard = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
+        if (clipboard != null) {
+            try {
+                ClipData clip = clipboard.getPrimaryClip();
+                CharSequence text = null;
+                if (clip != null && clip.getItemCount() > 0) {
+                    text = clip.getItemAt(0).getText();
+                }
+                if (text != null && MessageDigest.isEqual(sha256(text.toString()), mSecretClipHash)) {
+                    if (Build.VERSION.SDK_INT >= 28) {
+                        clipboard.clearPrimaryClip();
+                    } else {
+                        clipboard.setPrimaryClip(ClipData.newPlainText("", ""));
+                    }
+                }
+            } catch (RuntimeException e) {
+                // Read not allowed right now: keep the clear pending for the next try.
+                Log.e("grim", e.toString());
+                return;
+            }
+        }
+        mSecretClipHash = null;
+        mSecretClipDue = false;
+    }
+
+    private static byte[] sha256(String s) {
+        try {
+            return MessageDigest.getInstance("SHA-256").digest(s.getBytes(StandardCharsets.UTF_8));
+        } catch (NoSuchAlgorithmException e) {
+            // Every Java platform must provide SHA-256.
+            throw new IllegalStateException(e);
+        }
+    }
+
+    @Override
+    public void onWindowFocusChanged(boolean hasFocus) {
+        super.onWindowFocusChanged(hasFocus);
+        if (hasFocus) {
+            clearSecretClipIfDue();
+        }
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        clearSecretClipIfDue();
+    }
+
     // Called from native code to get text from clipboard.
     public String pasteText() {
         ClipboardManager clipboard = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
@@ -470,9 +643,11 @@ public class MainActivity extends GameActivity {
         } else if (desc != null && (!(desc.hasMimeType(MIMETYPE_TEXT_PLAIN))
                 && !(desc.hasMimeType(MIMETYPE_TEXT_HTML)))) {
             text = "";
-        } else if (data != null) {
-            ClipData.Item item = data.getItemAt(0);
-            text = item.getText().toString();
+        } else if (data != null && data.getItemCount() > 0) {
+            // A text clip item can carry only a URI (e.g. a file copied in a
+            // file manager); getText() is then null.
+            CharSequence item = data.getItemAt(0).getText();
+            text = item != null ? item.toString() : "";
         }
         return text;
     }
@@ -584,8 +759,12 @@ public class MainActivity extends GameActivity {
         } catch (android.content.ActivityNotFoundException ex) {
             Log.e("grim", ex.toString());
             mPendingSavePath = null;
+            onFileSave(SAVE_FILE_FAILED);
         }
     }
+
+    // Pass the outcome of the last saveFile() into native code.
+    public native void onFileSave(int result);
 
     // Called from native code to share plain text (e.g. a payment link) via the
     // system share sheet.
@@ -639,6 +818,24 @@ public class MainActivity extends GameActivity {
             // isAppearanceLightStatusBars == true means DARK icons.
             c.setAppearanceLightStatusBars(!white);
         });
+    }
+
+    // Called from native code when a secret (seed words, nsec, nsec QR) comes on
+    // or leaves the screen: FLAG_SECURE blocks screenshots, screen recording and
+    // the Recents thumbnail while it is set.
+    public void setSecureScreen(boolean secure) {
+        runOnUiThread(() -> {
+            sSecureScreen = secure;
+            applySecureScreen();
+        });
+    }
+
+    private void applySecureScreen() {
+        if (sSecureScreen) {
+            getWindow().addFlags(WindowManager.LayoutParams.FLAG_SECURE);
+        } else {
+            getWindow().clearFlags(WindowManager.LayoutParams.FLAG_SECURE);
+        }
     }
 
     // Called from native code to check if device is using dark theme.

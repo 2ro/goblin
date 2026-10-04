@@ -349,6 +349,11 @@ impl SendFlow {
 		}
 	}
 
+	/// Whether the flow is on the review screen with its hold-to-send button.
+	pub fn in_review(&self) -> bool {
+		self.stage == Stage::Review
+	}
+
 	/// Render the flow. Returns true when the flow is finished (close it).
 	pub fn ui(
 		&mut self,
