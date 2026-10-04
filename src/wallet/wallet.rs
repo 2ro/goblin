@@ -1466,6 +1466,9 @@ impl Wallet {
 				if let Some(service) = w_nostr.take() {
 					service.stop();
 				}
+				// Drop this wallet's Tor setting from the app-level route registry
+				// here too: a service that never started or already died cannot.
+				crate::tor::remove_wallet_route(wallet_close.get_config().id);
 			}
 			// Close the wallet.
 			let r_inst = wallet_close.instance.as_ref().read();

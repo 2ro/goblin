@@ -386,12 +386,16 @@ mod tests {
 		assert_eq!(app_route_of([true, true].into_iter()), Route::Tor);
 	}
 
-	/// The only test that touches the process-wide registry, so parallel tests
-	/// cannot disturb it. Wallet ids are far outside real ones (unix seconds).
+	/// Serializes the tests that touch the process-wide registry, so parallel
+	/// tests cannot disturb each other's answer.
+	static GLOBAL_REGISTRY: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
+
+	/// Wallet ids here are far outside real ones (unix seconds).
 	#[test]
 	fn registry_tracks_open_wallets_and_never_routes_a_wallet_request() {
 		const TOR_ON: i64 = -1_690_001;
 		const TOR_OFF: i64 = -1_690_002;
+		let _registry = GLOBAL_REGISTRY.lock();
 		WALLET_ROUTES.write().clear();
 		assert_eq!(app_route(), Route::Tor);
 
@@ -420,6 +424,32 @@ mod tests {
 		assert_eq!(app_route(), Route::Clearnet);
 		// The last wallet closes: no wallet open, back to Tor.
 		remove_wallet_route(TOR_OFF);
+		assert_eq!(app_route(), Route::Tor);
+	}
+
+	/// V3-1: an entry whose service never ran its exit (onboarding registered it
+	/// and the wallet closed before start(), or the service died) is cleared by
+	/// the removal `Wallet::close` makes, so no leftover Tor-off entry keeps
+	/// app-level requests on clearnet once no wallet is open. A pure registry
+	/// test: it replays the calls; a full `Wallet::close` needs an opened wallet.
+	#[test]
+	fn close_path_removal_clears_an_entry_its_service_never_removed() {
+		const ONBOARDED_TOR_OFF: i64 = -1_690_003;
+		let _registry = GLOBAL_REGISTRY.lock();
+		WALLET_ROUTES.write().clear();
+
+		// Onboarding records the new wallet's Tor-off choice; its service never
+		// starts, so run_service's exit-time removal never runs.
+		set_wallet_route(ONBOARDED_TOR_OFF, false);
+		assert_eq!(app_route(), Route::Clearnet);
+
+		// Wallet::close removes the entry right after taking the service out.
+		remove_wallet_route(ONBOARDED_TOR_OFF);
+		assert!(!WALLET_ROUTES.read().contains_key(&ONBOARDED_TOR_OFF));
+		// No wallet open: app-level requests ride Tor again.
+		assert_eq!(app_route(), Route::Tor);
+		// A second removal (the service exit path running later) is harmless.
+		remove_wallet_route(ONBOARDED_TOR_OFF);
 		assert_eq!(app_route(), Route::Tor);
 	}
 }

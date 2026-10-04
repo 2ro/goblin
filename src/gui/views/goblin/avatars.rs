@@ -18,8 +18,10 @@
 //! thread; workers send raw PNG bytes back over a channel.
 
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender, channel};
 
+use crate::nostr::NostrService;
 use crate::nostr::avatar::AvatarCache;
 use crate::nostr::nip05;
 use crate::settings::Settings;
@@ -78,13 +80,13 @@ fn decode(png: &[u8]) -> Option<egui::ColorImage> {
 
 impl AvatarTextures {
 	/// Texture for a bare username (no `@`), if it has a custom avatar.
-	/// Triggers a background refresh when the cache entry is stale, on the
-	/// `route` of the wallet showing it.
+	/// Triggers a background refresh when the cache entry is stale, on the Tor
+	/// setting of `service`, the wallet showing it.
 	pub fn texture_for(
 		&mut self,
 		ctx: &egui::Context,
 		server: &str,
-		route: Route,
+		service: &Arc<NostrService>,
 		name: &str,
 	) -> Option<egui::TextureHandle> {
 		self.drain(ctx);
@@ -95,7 +97,7 @@ impl AvatarTextures {
 		if let Some(t) = self.textures.get(&name).cloned() {
 			// A known state (texture or confirmed-absent); refresh if stale.
 			if self.cache.stale(&name) {
-				self.spawn_fetch(server, route, &name);
+				self.spawn_fetch(server, service, &name);
 			}
 			return t;
 		}
@@ -105,12 +107,12 @@ impl AvatarTextures {
 				.map(|img| ctx.load_texture(format!("avatar_{name}"), img, Default::default()));
 			self.textures.insert(name.clone(), tex.clone());
 			if self.cache.stale(&name) {
-				self.spawn_fetch(server, route, &name);
+				self.spawn_fetch(server, service, &name);
 			}
 			return tex;
 		}
 		if self.cache.stale(&name) {
-			self.spawn_fetch(server, route, &name);
+			self.spawn_fetch(server, service, &name);
 		} else {
 			// Fresh negative entry: letter fallback without re-probing.
 			self.textures.insert(name.clone(), None);
@@ -148,7 +150,7 @@ impl AvatarTextures {
 		}
 	}
 
-	fn spawn_fetch(&mut self, server: &str, route: Route, name: &str) {
+	fn spawn_fetch(&mut self, server: &str, service: &Arc<NostrService>, name: &str) {
 		if self.inflight.contains(name) {
 			return;
 		}
@@ -156,6 +158,10 @@ impl AvatarTextures {
 		let tx = self.tx.clone();
 		let server = server.to_string();
 		let name = name.to_string();
+		// Each request reads the wallet's Tor setting when it leaves, so a toggle
+		// during the profile probe applies to the avatar download.
+		let service = service.clone();
+		let route = move || -> Route { service.tor_routing().into() };
 		std::thread::spawn(move || {
 			let rt = match tokio::runtime::Builder::new_current_thread()
 				.enable_all()
@@ -165,8 +171,8 @@ impl AvatarTextures {
 				Err(_) => return,
 			};
 			let fetched = rt.block_on(async {
-				match nip05::fetch_profile(route, &server, &name).await {
-					Some(Some(hash)) => match nip05::fetch_avatar(route, &server, &hash).await {
+				match nip05::fetch_profile(route(), &server, &name).await {
+					Some(Some(hash)) => match nip05::fetch_avatar(route(), &server, &hash).await {
 						Some(png) => Fetched::Found(hash, png),
 						None => Fetched::Failed,
 					},

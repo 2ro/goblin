@@ -62,10 +62,9 @@ fn tex_for(
 	if name.is_empty() || name.starts_with("npub1") {
 		return None;
 	}
-	let (server, route) = wallet
-		.nostr_service()
-		.map(|s| (s.config.read().nip05_server(), s.tor_routing().into()))?;
-	avatars.texture_for(ctx, &server, route, name)
+	let service = wallet.nostr_service()?;
+	let server = service.config.read().nip05_server();
+	avatars.texture_for(ctx, &server, &service, name)
 }
 
 /// Stage of the send flow.

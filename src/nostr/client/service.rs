@@ -235,8 +235,11 @@ pub(super) async fn run_service(svc: Arc<NostrService>, wallet: Wallet) {
 	// We are now a relay consumer (API parity with the old transport; inert under
 	// Tor, which manages its own circuit health). Disarmed when the loop exits.
 	crate::tor::set_relay_consumer(true);
-	// Refresh the relay candidate pool cache (gist over Tor) when stale.
-	tokio::spawn(crate::nostr::pool::refresh_if_stale(over_tor.into()));
+	// Refresh the relay candidate pool cache (gist) when stale, on the wallet's
+	// Tor setting as it is now (the Tor wait above can take a while).
+	tokio::spawn(crate::nostr::pool::refresh_if_stale(
+		svc.tor_routing().into(),
+	));
 	// Select this identity's advertised relay set if it hasn't one yet.
 	ensure_advertised_set(&svc).await;
 

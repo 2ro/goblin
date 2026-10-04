@@ -48,10 +48,12 @@ pub(super) fn start_claim_flow(claim: &mut ClaimState, name: &str, wallet: &Wall
 		return;
 	};
 	let server = service.config.read().nip05_server();
-	let route: crate::tor::Route = service.tor_routing().into();
 	// Reuse the service's keys directly — never round-trip the secret through a
 	// plaintext nsec String to rebuild keys the service already holds.
 	let keys = service.keys();
+	// Each request reads the wallet's Tor setting when it leaves, so a toggle
+	// during the availability check applies to the signed register.
+	let route = move || -> crate::tor::Route { service.tor_routing().into() };
 	claim.checking = true;
 	claim.message = None;
 	claim.available = None;
@@ -67,8 +69,8 @@ pub(super) fn start_claim_flow(claim: &mut ClaimState, name: &str, wallet: &Wall
 		};
 		let msg = rt.block_on(async {
 			use crate::nostr::nip05::{Availability, RegisterResult, check_availability, register};
-			match check_availability(route, &server, &name).await {
-				Availability::Available => match register(route, &server, &name, &keys).await {
+			match check_availability(route(), &server, &name).await {
+				Availability::Available => match register(route(), &server, &name, &keys).await {
 					RegisterResult::Ok(nip05) => ClaimMsg::Registered(nip05),
 					RegisterResult::Conflict(_) => {
 						ClaimMsg::Error(t!("goblin.settings.err_just_taken").to_string())
