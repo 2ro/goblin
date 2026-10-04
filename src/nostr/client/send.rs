@@ -605,9 +605,10 @@ enum Push {
 /// rest of it, so a dead network does not spin.
 const RETRY_GAP: Duration = Duration::from_secs(2);
 
-/// Time a whole attempt needs: the pool's own OK wait per relay (relay
-/// constants WAIT_FOR_OK_TIMEOUT). Another attempt starts only while this much
-/// of the budget is left, so an attempt is never cut by the budget.
+/// Least time a whole attempt needs: the pool's own OK wait per relay (relay
+/// constants WAIT_FOR_OK_TIMEOUT). Another attempt starts only while this much,
+/// or as much as the last attempt took if that was longer, is left of the
+/// budget, so an attempt is never cut by the budget.
 const ATTEMPT_WINDOW: Duration = Duration::from_secs(10);
 
 /// Hang guard for one attempt, above the longest the pool takes for one (its
@@ -655,10 +656,10 @@ async fn publish(
 				tokio::time::sleep,
 				|| async move {
 					let filter = Filter::new().id(event.id).limit(1);
-					matches!(
-						client.fetch_events_from(urls, filter, READBACK_WAIT).await,
-						Ok(found) if !found.is_empty()
-					)
+					match client.fetch_events_from(urls, filter, READBACK_WAIT).await {
+						Ok(found) => holds_event(found.iter(), &event.id),
+						Err(_) => false,
+					}
 				},
 			)
 			.await
@@ -688,9 +689,9 @@ fn publish_once(attempt: Attempt) -> Result<(), String> {
 /// same id: a relay that already holds it answers OK (duplicate), which also
 /// collects the acknowledgement of a queued copy that landed meanwhile. The
 /// pool answers an attempt only when its slowest relay is done, so an attempt
-/// in flight is never cut: another one starts only while a whole attempt fits
-/// in the budget. Before any failure verdict the event is read back by id; a
-/// relay that holds it makes it a send. Only the pool refusing the very first
+/// in flight is never cut: another one starts only while an attempt as long as
+/// the last one fits in the budget. Before any failure verdict the event is
+/// read back by id; a relay that returns that exact event makes it a send. Only the pool refusing the very first
 /// attempt outright (no relays, a relay not added) fails at once, as before.
 async fn publish_until_accepted<C, A, AF, P, PF, R, RF>(
 	budget: Duration,
@@ -728,8 +729,11 @@ where
 			},
 		}
 		first = false;
-		let wait = RETRY_GAP.saturating_sub(elapsed().saturating_sub(began));
-		if elapsed() + wait + ATTEMPT_WINDOW > budget {
+		let took = elapsed().saturating_sub(began);
+		let wait = RETRY_GAP.saturating_sub(took);
+		// The next attempt may last as long as this one did (up to 27 s when a
+		// relay asks for NIP-42 auth), never less than the pool's OK wait.
+		if elapsed() + wait + took.max(ATTEMPT_WINDOW) > budget {
 			break;
 		}
 		if !wait.is_zero() {
@@ -740,6 +744,14 @@ where
 		return Ok(());
 	}
 	Err(why)
+}
+
+/// Whether a read-back found the event that was sent. Only that exact id
+/// counts: the pool does not match what a relay returns against the filter
+/// (subscription checks are off by default), so a relay answering with any
+/// other event must not turn a send nobody accepted into "Sent".
+fn holds_event<'a>(found: impl IntoIterator<Item = &'a Event>, id: &nostr_sdk::EventId) -> bool {
+	found.into_iter().any(|e| e.id == *id)
 }
 
 /// Whether a relay publish counts as sent: at least one relay accepted the
@@ -1019,6 +1031,37 @@ mod tests {
 		let run = drive(|_| (ATTEMPT_CAP, Attempt::TimedOut), true).await;
 		assert!(run.result.is_ok());
 		assert_eq!(run.attempts, 1);
+	}
+
+	/// An attempt that took long (a relay asking for NIP-42 auth) gates the
+	/// next one by its own length: no second attempt that would run past the
+	/// budget, so the verdict comes by the budget plus the read-back.
+	#[tokio::test]
+	async fn a_long_attempt_keeps_the_verdict_inside_the_budget() {
+		let run = drive(
+			|_| (Duration::from_secs(29), none_accepted("timeout")),
+			false,
+		)
+		.await;
+		assert!(run.result.is_err());
+		assert_eq!(run.attempts, 1);
+		assert!(run.at <= BUDGET + READBACK_WAIT, "verdict at {:?}", run.at);
+	}
+
+	/// A read-back hit is only the event that was sent: a relay answering the
+	/// id filter with another event is not one.
+	#[test]
+	fn only_the_sent_event_is_a_read_back_hit() {
+		let keys = Keys::generate();
+		let sent = EventBuilder::new(Kind::GiftWrap, "a")
+			.sign_with_keys(&keys)
+			.unwrap();
+		let other = EventBuilder::new(Kind::GiftWrap, "b")
+			.sign_with_keys(&keys)
+			.unwrap();
+		assert!(!holds_event([&other], &sent.id));
+		assert!(!holds_event(std::iter::empty::<&Event>(), &sent.id));
+		assert!(holds_event([&other, &sent], &sent.id));
 	}
 
 	/// The single attempt of a message nobody waits for on screen: no
