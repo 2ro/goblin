@@ -58,18 +58,46 @@ impl NostrService {
 		true
 	}
 
+	/// The keys our identity `from_hex` seals and signs a wallet message with.
+	/// Every outgoing message names its identity: the active one for a payment
+	/// or request the user starts, the one recorded for the tx for a reply, a
+	/// void, a re-send, a receipt or a proof. An identity that is no longer held
+	/// (deleted since) is an error, never another identity: the counterparty
+	/// would drop the message and learn that both identities are one wallet.
+	pub fn sender_keys(&self, from_hex: &str) -> Result<Keys, String> {
+		// A tx row written before identities were recorded on it names none.
+		// Such a row uses the active identity, as every earlier build did.
+		if from_hex.is_empty() {
+			return Ok(self.keys());
+		}
+		held_keys_for(&self.recv.read(), from_hex)
+	}
+
+	/// Our identity (pubkey hex) for an incoming request or surfaced payment:
+	/// the one its wrap was addressed to. A request stored before Build 170
+	/// has no record of it and uses the active identity, as before.
+	pub fn request_identity(&self, request: &PaymentRequest) -> String {
+		request
+			.recipient_pubkey
+			.clone()
+			.unwrap_or_else(|| self.public_key().to_hex())
+	}
+
 	/// Dispatch a payment DM (slatepack + optional note) to a recipient,
 	/// publishing to their DM relays plus our own relay set. `relay_hints`
 	/// are extra recipient relays carried by an nprofile the sender pasted
 	/// or scanned — the only routing info we have for a fresh recipient
-	/// whose kind 10050 isn't discoverable from our relays.
+	/// whose kind 10050 isn't discoverable from our relays. Sealed and signed
+	/// by our identity `from_hex` (see [`Self::sender_keys`]).
 	pub async fn send_payment_dm(
 		&self,
+		from_hex: &str,
 		receiver_hex: &str,
 		slatepack: &str,
 		note: Option<&str>,
 		relay_hints: &[String],
 	) -> Result<String, String> {
+		let from = self.sender_keys(from_hex)?;
 		let client = {
 			let r_client = self.client.read();
 			r_client.clone().ok_or("nostr client is not running")?
@@ -86,19 +114,22 @@ impl NostrService {
 		// inbox (otherwise `send_*_to` errors "relay not found" / never arrives).
 		connect_relays(&client, &urls).await;
 
-		self.dispatch_dm(&client, urls, v3, receiver, content, tags)
-			.await
+		let wrap = build_dm_wrap(&from, &receiver, v3, content, tags).await?;
+		self.dispatch_dm(&client, urls, &wrap, receiver).await
 	}
 
 	/// Dispatch a control DM that voids a pending request (a decline by the payer
-	/// or a cancel by the requester) to `receiver_hex`, referencing `slate_id`.
+	/// or a cancel by the requester) from our identity `from_hex` to
+	/// `receiver_hex`, referencing `slate_id`.
 	/// Same routing as a payment DM, but the message carries no slatepack.
 	pub async fn send_control_dm(
 		&self,
+		from_hex: &str,
 		receiver_hex: &str,
 		slate_id: &str,
 		relay_hints: &[String],
 	) -> Result<String, String> {
+		let from = self.sender_keys(from_hex)?;
 		let client = {
 			let r_client = self.client.read();
 			r_client.clone().ok_or("nostr client is not running")?
@@ -112,8 +143,8 @@ impl NostrService {
 
 		connect_relays(&client, &urls).await;
 
-		self.dispatch_dm(&client, urls, v3, receiver, content, tags)
-			.await
+		let wrap = build_dm_wrap(&from, &receiver, v3, content, tags).await?;
+		self.dispatch_dm(&client, urls, &wrap, receiver).await
 	}
 
 	/// Publish the plain "payment sent" receipt (frozen contract 4.3.1): a
@@ -122,51 +153,42 @@ impl NostrService {
 	/// so the market NEVER treats it as "paid" (only the watcher's 4.4 event
 	/// does). The proof and kernel excess are DELIBERATELY omitted here: a Grin
 	/// payment proof carries the buyer's own slatepack address, and publishing it
-	/// in the clear would leak the buyer's wallet address to the world.
-	pub async fn publish_receipt_sent(&self, order: &str, amount: u64) -> Result<(), String> {
+	/// in the clear would leak the buyer's wallet address to the world. Signed
+	/// by our identity `from_hex`, the one that paid.
+	pub async fn publish_receipt_sent(
+		&self,
+		from_hex: &str,
+		order: &str,
+		amount: u64,
+	) -> Result<(), String> {
+		let from = self.sender_keys(from_hex)?;
 		let client = {
 			let r_client = self.client.read();
 			r_client.clone().ok_or("nostr client is not running")?
 		};
-		let tags = vec![
-			Tag::custom(TagKind::custom("payment-request"), [order.to_string()]),
-			Tag::custom(
-				TagKind::custom("payment"),
-				["grin".to_string(), order.to_string(), String::new()],
-			),
-			Tag::custom(TagKind::custom("amount"), [amount.to_string()]),
-			Tag::custom(TagKind::custom("status"), ["sent".to_string()]),
-			Tag::custom(
-				TagKind::custom(protocol::GOBLIN_TAG),
-				[protocol::PROTOCOL_VERSION.to_string()],
-			),
-		];
-		let builder = EventBuilder::new(Kind::Custom(17), "Payment sent").tags(tags);
-		let event = client
-			.sign_event_builder(builder)
-			.await
-			.map_err(|e| format!("receipt sign failed: {e}"))?;
+		let event = receipt_sent_event(&from, order, amount)?;
 		let urls: Vec<String> = self.relays();
-		match tokio::time::timeout(SEND_TIMEOUT, client.send_event_to(&urls, &event)).await {
-			Ok(Ok(_)) => Ok(()),
-			Ok(Err(e)) => Err(format!("receipt publish failed: {e}")),
-			Err(_) => Err("receipt publish timeout".to_string()),
-		}
+		publish_accepted(&client, &urls, &event)
+			.await
+			.map_err(|e| format!("receipt publish failed: {e}"))
 	}
 
 	/// Gift-wrap the full proof delivery (frozen contract 4.3.2) to the watcher's
 	/// npub: a kind-17 rumor whose content is the Grin payment proof JSON verbatim,
 	/// tagged with the invoice number, the amount, and the kernel excess. Encrypted
 	/// end to end, so the proof (which contains the buyer's sender address) never
-	/// goes out in the clear; only the addressed watcher can read it.
+	/// goes out in the clear; only the addressed watcher can read it. Sealed and
+	/// signed by our identity `from_hex`, the one that paid.
 	pub async fn deliver_proof_wrap(
 		&self,
+		from_hex: &str,
 		notify_npub: &str,
 		order: &str,
 		amount: u64,
 		kernel_hex: &str,
 		proof_json: &str,
 	) -> Result<(), String> {
+		let from = self.sender_keys(from_hex)?;
 		let client = {
 			let r_client = self.client.read();
 			r_client.clone().ok_or("nostr client is not running")?
@@ -184,7 +206,7 @@ impl NostrService {
 			),
 		];
 		let wrap = wrapv3::wrap_kind(
-			&self.keys.read().clone(),
+			&from,
 			&receiver,
 			Kind::Custom(17),
 			proof_json.to_string(),
@@ -192,40 +214,23 @@ impl NostrService {
 		)?;
 		let urls: Vec<String> = self.relays();
 		connect_relays(&client, &urls).await;
-		match tokio::time::timeout(SEND_TIMEOUT, client.send_event_to(&urls, &wrap)).await {
-			Ok(Ok(_)) => Ok(()),
-			Ok(Err(e)) => Err(format!("proof delivery failed: {e}")),
-			Err(_) => Err("proof delivery timeout".to_string()),
-		}
+		publish_accepted(&client, &urls, &wrap)
+			.await
+			.map_err(|e| format!("proof delivery failed: {e}"))
 	}
 
-	/// Dispatch one gift-wrapped DM over the negotiated encryption: when the
-	/// recipient advertises `nip44_v3` the wrap is built by [`wrapv3::wrap`],
-	/// otherwise it goes through the unchanged nostr-sdk v2 path (best mutual
-	/// wins; absent capability = v2, so v2-only peers see no change).
+	/// Dispatch one gift-wrapped DM built by [`build_dm_wrap`] to `urls`.
 	async fn dispatch_dm(
 		&self,
 		client: &Client,
 		urls: Vec<String>,
-		v3: bool,
+		wrap: &Event,
 		receiver: PublicKey,
-		content: String,
-		tags: Vec<Tag>,
 	) -> Result<String, String> {
-		let sent = if v3 {
-			let wrap = wrapv3::wrap(&self.keys.read().clone(), &receiver, content, tags)?;
-			tokio::time::timeout(SEND_TIMEOUT, client.send_event_to(urls.clone(), &wrap)).await
-		} else {
-			tokio::time::timeout(
-				SEND_TIMEOUT,
-				client.send_private_msg_to(urls.clone(), receiver, content, tags),
-			)
+		publish_accepted(client, &urls, wrap)
 			.await
-		};
-		let res = sent
-			.map_err(|_| "send timeout".to_string())?
 			.map_err(|e| format!("send failed: {e}"))?;
-		let event_id = res.val;
+		let event_id = wrap.id;
 
 		// The write already succeeded (a relay accepted the wrap for delivery),
 		// which IS the send-level evidence the UI waits on — so return Sent NOW at
@@ -395,5 +400,737 @@ impl NostrService {
 			self.store.save_contact(&contact);
 		}
 		(out, v3)
+	}
+}
+
+/// The keys of held identity `hex`, or an error when it is no longer held.
+fn held_keys_for(held: &[HeldIdentityKeys], hex: &str) -> Result<Keys, String> {
+	held.iter()
+		.find(|h| h.keys.public_key().to_hex() == hex)
+		.map(|h| h.keys.clone())
+		.ok_or_else(|| {
+			let short: String = hex.chars().take(8).collect();
+			format!("identity {short}... is no longer held")
+		})
+}
+
+/// Build one gift-wrapped wallet DM from our identity `from` to `receiver`, no
+/// network. NIP-44 v3 when the recipient advertises it ([`wrapv3::wrap`]),
+/// otherwise the library's own NIP-17 builder, the same one
+/// `Client::send_private_msg_to` runs with the client signer: same kinds (1059
+/// wrap, 13 seal, 14 rumor), same tags, same randomized created_at on seal and
+/// wrap, same NIP-44 v2. Only the signer differs: the named identity instead of
+/// the one the client was built with at service start.
+pub(super) async fn build_dm_wrap(
+	from: &Keys,
+	receiver: &PublicKey,
+	v3: bool,
+	content: String,
+	tags: Vec<Tag>,
+) -> Result<Event, String> {
+	if v3 {
+		wrapv3::wrap(from, receiver, content, tags)
+	} else {
+		EventBuilder::private_msg(from, *receiver, content, tags)
+			.await
+			.map_err(|e| format!("gift wrap failed: {e}"))
+	}
+}
+
+/// The plain "payment sent" receipt event (frozen contract 4.3.1), signed by
+/// our identity `from`.
+fn receipt_sent_event(from: &Keys, order: &str, amount: u64) -> Result<Event, String> {
+	let tags = vec![
+		Tag::custom(TagKind::custom("payment-request"), [order.to_string()]),
+		Tag::custom(
+			TagKind::custom("payment"),
+			["grin".to_string(), order.to_string(), String::new()],
+		),
+		Tag::custom(TagKind::custom("amount"), [amount.to_string()]),
+		Tag::custom(TagKind::custom("status"), ["sent".to_string()]),
+		Tag::custom(
+			TagKind::custom(protocol::GOBLIN_TAG),
+			[protocol::PROTOCOL_VERSION.to_string()],
+		),
+	];
+	EventBuilder::new(Kind::Custom(17), "Payment sent")
+		.tags(tags)
+		.sign_with_keys(from)
+		.map_err(|e| format!("receipt sign failed: {e}"))
+}
+
+/// Least time between the starts of two publish attempts. An attempt that
+/// comes back at once (no relay could even take the event yet) waits out the
+/// rest of it, so a dead network does not spin.
+const RETRY_GAP: Duration = Duration::from_secs(2);
+
+/// What one publish attempt came back with.
+enum Attempt {
+	/// The pool answered: the relays that accepted, and the others with why.
+	Answered(HashSet<RelayUrl>, HashMap<RelayUrl, String>),
+	/// The pool refused the send outright (no relays, a relay not added).
+	Refused(String),
+	/// The attempt ran into the end of the budget.
+	TimedOut,
+}
+
+/// Publish a finished wallet event (a DM wrap, a receipt, a proof wrap) to
+/// `urls` until a relay accepts it, within SEND_TIMEOUT for the whole publish.
+///
+/// A relay that is not connected yet (cold start, a slow Tor circuit) gets the
+/// event queued by the pool, which waits 10 s for its OK and then reports the
+/// relay as failed; the queued copy still goes out once the relay connects. So
+/// an attempt that no relay accepted is sent again, the same event with the
+/// same id: a relay that already holds it answers OK (duplicate), which also
+/// collects the acknowledgement of a queued copy that landed meanwhile. The
+/// send fails only when the whole budget passed with no relay accepting it, or
+/// at once when the pool refuses it outright, as before.
+async fn publish_accepted(client: &Client, urls: &[String], event: &Event) -> Result<(), String> {
+	let start = tokio::time::Instant::now();
+	publish_until_accepted(
+		SEND_TIMEOUT,
+		|| start.elapsed(),
+		|remaining| async move {
+			match tokio::time::timeout(remaining, client.send_event_to(urls, event)).await {
+				Ok(Ok(out)) => Attempt::Answered(out.success, out.failed),
+				Ok(Err(e)) => Attempt::Refused(e.to_string()),
+				Err(_) => Attempt::TimedOut,
+			}
+		},
+		tokio::time::sleep,
+	)
+	.await
+}
+
+/// The retry rule of [`publish_accepted`], apart from the network and the
+/// clock so a test can drive it. `elapsed` is the time since the publish
+/// began, `attempt` sends once within the time it is given, `pause` waits.
+async fn publish_until_accepted<C, A, AF, P, PF>(
+	budget: Duration,
+	elapsed: C,
+	mut attempt: A,
+	mut pause: P,
+) -> Result<(), String>
+where
+	C: Fn() -> Duration,
+	A: FnMut(Duration) -> AF,
+	AF: std::future::Future<Output = Attempt>,
+	P: FnMut(Duration) -> PF,
+	PF: std::future::Future<Output = ()>,
+{
+	let mut why = "no relay accepted it".to_string();
+	loop {
+		let began = elapsed();
+		let remaining = budget.saturating_sub(began);
+		if remaining.is_zero() {
+			return Err(why);
+		}
+		match attempt(remaining).await {
+			Attempt::Refused(e) => return Err(e),
+			Attempt::TimedOut => return Err(format!("timeout ({why})")),
+			Attempt::Answered(success, failed) => match relay_accepted(&success, &failed) {
+				Ok(()) => return Ok(()),
+				Err(e) => why = e,
+			},
+		}
+		let took = elapsed().saturating_sub(began);
+		if took < RETRY_GAP {
+			pause((RETRY_GAP - took).min(budget.saturating_sub(elapsed()))).await;
+		}
+	}
+}
+
+/// Whether a relay publish counts as sent: at least one relay accepted the
+/// event. The relay pool answers Ok even when no relay took it (a timeout, a
+/// relay that is not connected or a refusal is only listed among the failed
+/// relays), so an empty accepted set is not a send. One accepting relay is
+/// enough, as before.
+///
+/// A relay that already holds the event answers OK true with a "duplicate:"
+/// message (NIP-01), which the pool counts as accepted. A relay that answers
+/// it with false still holds the event, so that counts as accepted too.
+fn relay_accepted(
+	success: &HashSet<RelayUrl>,
+	failed: &HashMap<RelayUrl, String>,
+) -> Result<(), String> {
+	if !success.is_empty() || failed.values().any(|e| e.starts_with("duplicate:")) {
+		return Ok(());
+	}
+	if failed.is_empty() {
+		return Err("no relay accepted it".to_string());
+	}
+	// Sorted so the log line is stable.
+	let mut reasons: Vec<String> = failed.iter().map(|(u, e)| format!("{u}: {e}")).collect();
+	reasons.sort();
+	Err(format!("no relay accepted it ({})", reasons.join("; ")))
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	fn url(s: &str) -> RelayUrl {
+		RelayUrl::parse(s).unwrap()
+	}
+
+	/// H2: the pool's Ok with an empty accepted set (every relay timed out, was
+	/// not connected, or refused) is a failed send; one accepting relay among
+	/// failures is still a send.
+	#[test]
+	fn a_publish_no_relay_accepted_is_a_failed_send() {
+		let a = url("wss://relay.floonet.dev");
+		let b = url("wss://relay.nostr.net");
+
+		// No relay connected or every relay timed out.
+		let mut failed = HashMap::new();
+		failed.insert(a.clone(), "timeout".to_string());
+		failed.insert(b.clone(), "relay not connected".to_string());
+		let err = relay_accepted(&HashSet::new(), &failed).unwrap_err();
+		assert!(
+			err.contains("timeout") && err.contains("not connected"),
+			"{err}"
+		);
+
+		// Nothing tried and nothing accepted.
+		assert!(relay_accepted(&HashSet::new(), &HashMap::new()).is_err());
+
+		// One relay accepted, the other failed: a send.
+		let mut success = HashSet::new();
+		success.insert(a.clone());
+		let mut failed = HashMap::new();
+		failed.insert(b.clone(), "timeout".to_string());
+		assert!(relay_accepted(&success, &failed).is_ok());
+
+		// Every relay accepted.
+		success.insert(b);
+		assert!(relay_accepted(&success, &HashMap::new()).is_ok());
+
+		// A relay that answers a copy it already holds with OK false and a
+		// "duplicate:" message still holds it: accepted.
+		let mut failed = HashMap::new();
+		failed.insert(a, "duplicate: have this event".to_string());
+		assert!(relay_accepted(&HashSet::new(), &failed).is_ok());
+	}
+
+	// --- Retry of a publish no relay accepted yet (fake clock, no network) ---
+
+	use std::cell::Cell;
+	use std::rc::Rc;
+
+	const BUDGET: Duration = Duration::from_secs(40);
+	/// The pool's own OK wait per relay (relay/constants.rs WAIT_FOR_OK_TIMEOUT).
+	const OK_WAIT: Duration = Duration::from_secs(10);
+
+	fn accepted_by(relay: &str) -> Attempt {
+		let mut success = HashSet::new();
+		success.insert(url(relay));
+		Attempt::Answered(success, HashMap::new())
+	}
+
+	fn none_accepted(why: &str) -> Attempt {
+		let mut failed = HashMap::new();
+		failed.insert(url("wss://relay.floonet.dev"), why.to_string());
+		Attempt::Answered(HashSet::new(), failed)
+	}
+
+	/// Run the retry rule on a fake clock. `step` gets the attempt's start time
+	/// and the time it may use, and returns how long it took and its outcome;
+	/// a step that would outlast its time is a timeout at the deadline. Pauses
+	/// only move the clock. Returns the result, the clock at the end, and the
+	/// number of attempts.
+	async fn drive(
+		step: impl Fn(Duration, Duration) -> (Duration, Attempt),
+	) -> (Result<(), String>, Duration, usize) {
+		let clock = Rc::new(Cell::new(Duration::ZERO));
+		let attempts = Rc::new(Cell::new(0usize));
+		let result = publish_until_accepted(
+			BUDGET,
+			|| clock.get(),
+			|remaining| {
+				let (clock, attempts) = (clock.clone(), attempts.clone());
+				attempts.set(attempts.get() + 1);
+				let (took, outcome) = step(clock.get(), remaining);
+				async move {
+					if took >= remaining {
+						clock.set(clock.get() + remaining);
+						return Attempt::TimedOut;
+					}
+					clock.set(clock.get() + took);
+					outcome
+				}
+			},
+			|d| {
+				let clock = clock.clone();
+				async move { clock.set(clock.get() + d) }
+			},
+		)
+		.await;
+		(result, clock.get(), attempts.get())
+	}
+
+	/// Nothing accepted on the first attempt (the relay was still connecting),
+	/// accepted on the second: a send.
+	#[tokio::test]
+	async fn a_publish_accepted_on_a_later_attempt_is_a_send() {
+		let (result, at, attempts) = drive(|start, _| {
+			if start.is_zero() {
+				(OK_WAIT, none_accepted("timeout"))
+			} else {
+				(
+					Duration::from_millis(300),
+					accepted_by("wss://relay.floonet.dev"),
+				)
+			}
+		})
+		.await;
+		assert!(result.is_ok());
+		assert_eq!(attempts, 2);
+		assert_eq!(at, OK_WAIT + Duration::from_millis(300));
+	}
+
+	/// The re-sent copy is answered as a duplicate (the queued first copy has
+	/// landed): a send, whether the relay says OK true (the pool lists it as
+	/// accepted) or OK false with "duplicate:".
+	#[tokio::test]
+	async fn a_duplicate_acknowledgement_is_a_send() {
+		let (result, _, attempts) = drive(|start, _| {
+			if start.is_zero() {
+				(OK_WAIT, none_accepted("timeout"))
+			} else {
+				(
+					Duration::from_millis(300),
+					none_accepted("duplicate: have this event"),
+				)
+			}
+		})
+		.await;
+		assert!(result.is_ok());
+		assert_eq!(attempts, 2);
+	}
+
+	/// Truly offline: every attempt waits out the pool's OK wait, or comes
+	/// back at once and is paced. The send fails only when the budget is used,
+	/// never later than it, and a dead network does not spin.
+	#[tokio::test]
+	async fn no_acceptance_within_the_budget_is_a_failed_send() {
+		let (result, at, attempts) = drive(|_, _| (OK_WAIT, none_accepted("timeout"))).await;
+		let err = result.unwrap_err();
+		assert!(err.contains("no relay accepted it"), "{err}");
+		assert_eq!(at, BUDGET);
+		assert_eq!(attempts, 4);
+
+		let (result, at, attempts) =
+			drive(|_, _| (Duration::ZERO, none_accepted("relay not connected"))).await;
+		assert!(result.is_err());
+		assert_eq!(at, BUDGET);
+		assert_eq!(attempts, (BUDGET.as_secs() / RETRY_GAP.as_secs()) as usize);
+	}
+
+	/// The pool refusing the send outright (no relays, a relay not added) is
+	/// an error at once, as before.
+	#[tokio::test]
+	async fn a_refused_publish_fails_at_once() {
+		let (result, at, attempts) =
+			drive(|_, _| (Duration::ZERO, Attempt::Refused("relay not found".into()))).await;
+		assert_eq!(result.unwrap_err(), "relay not found");
+		assert_eq!(at, Duration::ZERO);
+		assert_eq!(attempts, 1);
+	}
+
+	/// A relay that connects `up` after the publish began: a queued copy goes
+	/// out and is acknowledged while an attempt waits, so the send is reported
+	/// at about that moment; after the budget it is a failed send.
+	#[tokio::test]
+	async fn a_relay_that_connects_late_still_gets_the_send() {
+		for up in [5u64, 15, 30, 39] {
+			let up = Duration::from_secs(up);
+			let (result, at, _) = drive(|start, remaining| {
+				let window = OK_WAIT.min(remaining);
+				if up <= start {
+					(
+						Duration::from_millis(300),
+						accepted_by("wss://relay.floonet.dev"),
+					)
+				} else if up < start + window {
+					(up - start, accepted_by("wss://relay.floonet.dev"))
+				} else {
+					(window, none_accepted("timeout"))
+				}
+			})
+			.await;
+			assert!(result.is_ok(), "relay up at {up:?}");
+			// At the moment it connects, or one round trip later when it
+			// connects right as an attempt ends.
+			assert!(
+				at >= up && at <= up + Duration::from_millis(300),
+				"relay up at {up:?}, sent at {at:?}"
+			);
+		}
+		let up = Duration::from_secs(45);
+		let (result, at, _) = drive(|start, remaining| {
+			let window = OK_WAIT.min(remaining);
+			if up < start + window {
+				(up - start, accepted_by("wss://relay.floonet.dev"))
+			} else {
+				(window, none_accepted("timeout"))
+			}
+		})
+		.await;
+		assert!(result.is_err());
+		assert_eq!(at, BUDGET);
+	}
+
+	// --- H3: every message is sealed and signed by the identity it belongs to ---
+
+	use super::super::service::open_with_held;
+	use crate::nostr::AcceptPolicy;
+	use base64::Engine;
+	use grin_wallet_libwallet::SlateState;
+	use nostr_sdk::{JsonUtil, UnsignedEvent};
+
+	const SLATEPACK: &str = "BEGINSLATEPACK. 4H1qx1wHe668tFW yC2gfL8PPd8kSgv \
+		pcXQhyRkHbyKHZg GN75o7uWoT3dkib R2tj1fFGN2FoRLY oeBPyKizupksgRT. \
+		ENDSLATEPACK.";
+
+	/// A service holding `held` with `active` presented, on a throwaway store.
+	/// No client: nothing here touches a relay.
+	fn service_with(
+		held: &[(NostrIdentity, Keys)],
+		active: &Keys,
+	) -> (Arc<NostrService>, std::path::PathBuf) {
+		static SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+		let dir = std::env::temp_dir().join(format!(
+			"goblin-send-test-{}-{}-{}",
+			std::process::id(),
+			unix_time(),
+			SEQ.fetch_add(1, Ordering::Relaxed)
+		));
+		let recv = held
+			.iter()
+			.map(|(identity, keys)| HeldIdentityKeys {
+				keys: keys.clone(),
+				identity: identity.clone(),
+			})
+			.collect();
+		let svc = NostrService::new(
+			recv,
+			&active.public_key().to_hex(),
+			NostrConfig::default(),
+			NostrStore::new(dir.join("db")),
+			dir.clone(),
+		);
+		(svc, dir)
+	}
+
+	/// The payer's side of a send: its row for a payment made to `counterparty`.
+	fn payer_meta(counterparty: &str) -> TxNostrMeta {
+		TxNostrMeta {
+			ver: 1,
+			slate_id: "s".to_string(),
+			npub: counterparty.to_string(),
+			direction: NostrTxDirection::Sent,
+			note: None,
+			status: NostrSendStatus::AwaitingS2,
+			sent_event_id: None,
+			received_rumor_id: None,
+			created_at: unix_time(),
+			updated_at: unix_time(),
+			proof_mode: false,
+			proof_order: None,
+			proof_notify: None,
+			proof_amount: None,
+			proof_delivered: false,
+			receipt_sent: false,
+			recipient_pubkey: String::new(),
+			proof_address: None,
+		}
+	}
+
+	/// What the payer's ingest decides about an S2 from `sender`.
+	fn payer_decides(sender: &PublicKey, meta: &TxNostrMeta) -> IngestDecision {
+		let sender = sender.to_hex();
+		decide(&IngestContext {
+			state: SlateState::Standard2,
+			amount: 100,
+			sender: &sender,
+			meta: Some(meta),
+			tx_exists: true,
+			is_contact: false,
+			accept: AcceptPolicy::Everyone,
+			allow_requests: true,
+		})
+	}
+
+	fn version_byte(wrap: &Event) -> u8 {
+		base64::engine::general_purpose::STANDARD
+			.decode(&wrap.content)
+			.unwrap()[0]
+	}
+
+	/// Two held identities, A active. A payment addressed to B is opened by B,
+	/// and its S2 reply is sealed and signed by B on both encryption versions,
+	/// so the payer finalizes it. The reply Build 169 sent (as the active A) is
+	/// dropped by the payer.
+	#[tokio::test]
+	async fn reply_is_sealed_by_the_identity_the_payment_was_addressed_to() {
+		let (id_a, a) = NostrIdentity::create_random("pw").unwrap();
+		let (id_b, b) = NostrIdentity::create_random("pw").unwrap();
+		let payer = Keys::generate();
+		let (svc, dir) = service_with(&[(id_a, a.clone()), (id_b, b.clone())], &a);
+		assert_eq!(svc.public_key(), a.public_key());
+
+		for v3 in [false, true] {
+			let s1 = build_dm_wrap(
+				&payer,
+				&b.public_key(),
+				v3,
+				protocol::build_payment_content(SLATEPACK),
+				protocol::build_rumor_tags(None),
+			)
+			.await
+			.unwrap();
+			// Ingest: B's key opens it, so B is what the row records.
+			let (recipient, s1_open) = open_with_held(&svc.recv_snapshot(), &s1).await.unwrap();
+			assert_eq!(recipient, b.public_key());
+			assert_eq!(s1_open.sender, payer.public_key());
+
+			// The S2 reply, sent as the recorded identity.
+			let from = svc.sender_keys(&recipient.to_hex()).unwrap();
+			let s2 = build_dm_wrap(
+				&from,
+				&s1_open.sender,
+				v3,
+				protocol::build_payment_content(SLATEPACK),
+				protocol::build_rumor_tags(None),
+			)
+			.await
+			.unwrap();
+			assert_eq!(version_byte(&s2), if v3 { 3 } else { 2 });
+			let got = wrapv3::unwrap(&payer, &s2).await.unwrap();
+			assert_eq!(got.sender, b.public_key(), "seal signer, v3={v3}");
+			assert_eq!(got.rumor.pubkey, b.public_key(), "rumor author, v3={v3}");
+			let meta = payer_meta(&b.public_key().to_hex());
+			assert_eq!(
+				payer_decides(&got.sender, &meta),
+				IngestDecision::FinalizePost
+			);
+
+			// Build 169 replied as the active identity A: the payer drops it.
+			let old = build_dm_wrap(
+				&svc.keys(),
+				&s1_open.sender,
+				v3,
+				protocol::build_payment_content(SLATEPACK),
+				protocol::build_rumor_tags(None),
+			)
+			.await
+			.unwrap();
+			let got = wrapv3::unwrap(&payer, &old).await.unwrap();
+			assert!(matches!(
+				payer_decides(&got.sender, &meta),
+				IngestDecision::Drop(_)
+			));
+		}
+		let _ = std::fs::remove_dir_all(dir);
+	}
+
+	/// After an instant switch to B, a new payment (which reads the active
+	/// identity once) is a v2 wrap sealed by B. Build 169 built v2 wraps with
+	/// the client signer fixed at service start, which was still A.
+	#[tokio::test]
+	async fn a_new_v2_send_after_a_switch_is_signed_by_the_new_identity() {
+		let (id_a, a) = NostrIdentity::create_random("pw").unwrap();
+		let (id_b, b) = NostrIdentity::create_random("pw").unwrap();
+		let peer = Keys::generate();
+		let (svc, dir) = service_with(&[(id_a, a.clone()), (id_b, b.clone())], &a);
+		let start_client = Client::builder().signer(svc.keys()).build();
+
+		assert!(svc.set_active_by_pubkey(&b.public_key().to_hex()));
+		let from_hex = svc.public_key().to_hex();
+		let from = svc.sender_keys(&from_hex).unwrap();
+		let content = protocol::build_payment_content(SLATEPACK);
+		let tags = protocol::build_rumor_tags(None);
+		let wrap = build_dm_wrap(
+			&from,
+			&peer.public_key(),
+			false,
+			content.clone(),
+			tags.clone(),
+		)
+		.await
+		.unwrap();
+		assert_eq!(version_byte(&wrap), 2);
+		let got = wrapv3::unwrap(&peer, &wrap).await.unwrap();
+		assert_eq!(got.sender, b.public_key());
+		assert_eq!(got.rumor.pubkey, b.public_key());
+
+		// The Build 169 v2 path: `send_private_msg_to` with the client signer.
+		let signer = start_client.signer().await.unwrap();
+		let old = EventBuilder::private_msg(&signer, peer.public_key(), content, tags)
+			.await
+			.unwrap();
+		let got = wrapv3::unwrap(&peer, &old).await.unwrap();
+		assert_eq!(got.sender, a.public_key());
+		let _ = std::fs::remove_dir_all(dir);
+	}
+
+	/// A message for an identity that is no longer held fails before any
+	/// network work, for every message type; it never goes out as another
+	/// identity. A row with no recorded identity (written before identities
+	/// were recorded) and a request stored before Build 170 use the active one.
+	#[tokio::test]
+	async fn a_message_for_an_identity_no_longer_held_fails() {
+		let (id_a, a) = NostrIdentity::create_random("pw").unwrap();
+		let (id_b, b) = NostrIdentity::create_random("pw").unwrap();
+		let (svc, dir) = service_with(&[(id_a, a.clone()), (id_b, b.clone())], &a);
+		let gone = Keys::generate().public_key().to_hex();
+		let peer = Keys::generate().public_key();
+
+		assert!(
+			svc.sender_keys(&gone)
+				.unwrap_err()
+				.contains("no longer held")
+		);
+		let err = svc
+			.send_payment_dm(&gone, &peer.to_hex(), SLATEPACK, None, &[])
+			.await
+			.unwrap_err();
+		assert!(err.contains("no longer held"), "{err}");
+		let err = svc
+			.send_control_dm(&gone, &peer.to_hex(), "slate", &[])
+			.await
+			.unwrap_err();
+		assert!(err.contains("no longer held"), "{err}");
+		let err = svc
+			.publish_receipt_sent(&gone, "MM-ab", 1)
+			.await
+			.unwrap_err();
+		assert!(err.contains("no longer held"), "{err}");
+		let err = svc
+			.deliver_proof_wrap(&gone, &peer.to_bech32().unwrap(), "MM-ab", 1, "00", "{}")
+			.await
+			.unwrap_err();
+		assert!(err.contains("no longer held"), "{err}");
+
+		// Held identities resolve to themselves, whichever is active.
+		let b_hex = b.public_key().to_hex();
+		assert_eq!(
+			svc.sender_keys(&b_hex).unwrap().public_key(),
+			b.public_key()
+		);
+		assert_eq!(
+			svc.sender_keys(&a.public_key().to_hex())
+				.unwrap()
+				.public_key(),
+			a.public_key()
+		);
+		// No recorded identity: the active one, as before.
+		assert_eq!(svc.sender_keys("").unwrap().public_key(), a.public_key());
+
+		// Requests: the addressed identity, or the active one for an old row.
+		let mut req: PaymentRequest = serde_json::from_str(
+			r#"{"ver":1,"rumor_id":"r","slate_id":"s","slatepack":"x","npub":"ab","amount":5,"note":null,"received_at":7,"status":"Pending"}"#,
+		)
+		.unwrap();
+		assert_eq!(svc.request_identity(&req), a.public_key().to_hex());
+		req.recipient_pubkey = Some(b_hex.clone());
+		assert_eq!(svc.request_identity(&req), b_hex);
+		let _ = std::fs::remove_dir_all(dir);
+	}
+
+	/// The v2 wrap built with the named identity's keys is the library's own
+	/// NIP-17 private message, the one `send_private_msg_to` built: same kinds,
+	/// tags, payload version and timestamp window, and it opens through the
+	/// unchanged unwrap with the same rumor.
+	#[tokio::test]
+	async fn v2_wrap_matches_the_library_private_message() {
+		let sender = Keys::generate();
+		let receiver = Keys::generate();
+		let content = protocol::build_payment_content(SLATEPACK);
+		let tags = protocol::build_rumor_tags(Some("lunch"));
+
+		let new = build_dm_wrap(
+			&sender,
+			&receiver.public_key(),
+			false,
+			content.clone(),
+			tags.clone(),
+		)
+		.await
+		.unwrap();
+		let client = Client::builder().signer(sender.clone()).build();
+		let signer = client.signer().await.unwrap();
+		let old = EventBuilder::private_msg(&signer, receiver.public_key(), content.clone(), tags)
+			.await
+			.unwrap();
+
+		let now = Timestamp::now().as_secs();
+		let two_days = 2 * 86_400;
+		let mut rumors = vec![];
+		for wrap in [&new, &old] {
+			assert_eq!(wrap.kind, Kind::GiftWrap);
+			assert!(wrap.verify().is_ok());
+			assert_ne!(wrap.pubkey, sender.public_key(), "one-time wrap key");
+			let wrap_tags: Vec<Vec<String>> =
+				wrap.tags.iter().map(|t| t.as_slice().to_vec()).collect();
+			assert_eq!(
+				wrap_tags,
+				vec![vec!["p".to_string(), receiver.public_key().to_hex()]]
+			);
+			assert_eq!(version_byte(wrap), 2);
+			let at = wrap.created_at.as_secs();
+			assert!(at <= now && now - at <= two_days);
+
+			// The seal: kind 13, signed by the sender, no tags, same window.
+			let seal_json =
+				nostr_sdk::nips::nip44::decrypt(receiver.secret_key(), &wrap.pubkey, &wrap.content)
+					.unwrap();
+			let seal = Event::from_json(seal_json).unwrap();
+			assert_eq!(seal.kind, Kind::Seal);
+			assert_eq!(seal.pubkey, sender.public_key());
+			assert!(seal.verify().is_ok());
+			assert!(seal.tags.is_empty());
+			let at = seal.created_at.as_secs();
+			assert!(at <= now && now - at <= two_days);
+
+			let got = wrapv3::unwrap(&receiver, wrap).await.unwrap();
+			assert_eq!(got.sender, sender.public_key());
+			assert_eq!(got.rumor.kind, Kind::PrivateDirectMessage);
+			assert_eq!(got.rumor.content, content);
+			rumors.push(got.rumor);
+		}
+		// Same rumor tags in the same order: receiver p tag first, then ours.
+		let tags_of = |r: &UnsignedEvent| -> Vec<Vec<String>> {
+			r.tags.iter().map(|t| t.as_slice().to_vec()).collect()
+		};
+		assert_eq!(tags_of(&rumors[0]), tags_of(&rumors[1]));
+		assert_eq!(
+			tags_of(&rumors[0])[0],
+			vec!["p".to_string(), receiver.public_key().to_hex()]
+		);
+	}
+
+	/// The plain receipt is signed by the identity that paid, with the frozen
+	/// contract shape unchanged.
+	#[test]
+	fn receipt_is_signed_by_the_paying_identity() {
+		let paid_as = Keys::generate();
+		let ev = receipt_sent_event(&paid_as, "MM-ab", 1_000).unwrap();
+		assert!(ev.verify().is_ok());
+		assert_eq!(ev.pubkey, paid_as.public_key());
+		assert_eq!(ev.kind, Kind::Custom(17));
+		assert_eq!(ev.content, "Payment sent");
+		let tags: Vec<Vec<String>> = ev.tags.iter().map(|t| t.as_slice().to_vec()).collect();
+		let s = |v: &[&str]| v.iter().map(|x| x.to_string()).collect::<Vec<String>>();
+		assert_eq!(
+			tags,
+			vec![
+				s(&["payment-request", "MM-ab"]),
+				s(&["payment", "grin", "MM-ab", ""]),
+				s(&["amount", "1000"]),
+				s(&["status", "sent"]),
+				s(&[protocol::GOBLIN_TAG, protocol::PROTOCOL_VERSION]),
+			]
+		);
 	}
 }

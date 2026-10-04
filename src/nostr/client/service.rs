@@ -947,7 +947,11 @@ async fn deliver_receipt(svc: &Arc<NostrService>, meta: &TxNostrMeta) {
 		return;
 	};
 	let amount = meta.proof_amount.unwrap_or(0);
-	match svc.publish_receipt_sent(&order, amount).await {
+	// Signed by the identity that paid (recorded on the row).
+	match svc
+		.publish_receipt_sent(&meta.recipient_pubkey, &order, amount)
+		.await
+	{
 		Ok(()) => {
 			let mut updated = meta.clone();
 			updated.receipt_sent = true;
@@ -989,8 +993,16 @@ async fn deliver_proof(svc: &Arc<NostrService>, wallet: &Wallet, meta: &TxNostrM
 	};
 	match wallet.payment_proof_delivery(slate_id) {
 		Some((json, kernel_hex)) => {
+			// Sealed and signed by the identity that paid (recorded on the row).
 			match svc
-				.deliver_proof_wrap(&notify, &order, amount, &kernel_hex, &json)
+				.deliver_proof_wrap(
+					&meta.recipient_pubkey,
+					&notify,
+					&order,
+					amount,
+					&kernel_hex,
+					&json,
+				)
 				.await
 			{
 				Ok(()) => true,
@@ -1110,8 +1122,16 @@ async fn reconcile(svc: &Arc<NostrService>, wallet: &Wallet) {
 			"nostr: reconcile re-dispatch {} ({:?})",
 			meta.slate_id, state
 		);
+		// Re-sent as our identity for this tx, the one the counterparty knows; a
+		// row whose identity is no longer held fails here and is left as is.
 		match svc
-			.send_payment_dm(&meta.npub, &text, meta.note.as_deref(), &[])
+			.send_payment_dm(
+				&meta.recipient_pubkey,
+				&meta.npub,
+				&text,
+				meta.note.as_deref(),
+				&[],
+			)
 			.await
 		{
 			Ok(event_id) => {
@@ -1756,6 +1776,20 @@ fn strip_markdown_inline(s: &str) -> String {
 	out
 }
 
+/// Open a gift wrap with whichever held identity it was addressed to. The key
+/// that opens it is our identity for this message and its reply.
+pub(super) async fn open_with_held(
+	held: &[HeldIdentityKeys],
+	event: &Event,
+) -> Option<(PublicKey, nostr_sdk::nips::nip59::UnwrappedGift)> {
+	for h in held {
+		if let Ok(u) = wrapv3::unwrap(&h.keys, event).await {
+			return Some((h.keys.public_key(), u));
+		}
+	}
+	None
+}
+
 async fn handle_wrap(svc: &Arc<NostrService>, wallet: &Wallet, event: Event) {
 	// 0. Only gift wraps.
 	if event.kind != Kind::GiftWrap {
@@ -1788,14 +1822,7 @@ async fn handle_wrap(svc: &Arc<NostrService>, wallet: &Wallet, event: Event) {
 	// already restricted to our own pubkeys; the global decrypt ceiling above
 	// still bounds total unwrap work against spam.
 	let held = svc.recv_snapshot();
-	let mut opened: Option<(PublicKey, nostr_sdk::nips::nip59::UnwrappedGift)> = None;
-	for h in &held {
-		if let Ok(u) = wrapv3::unwrap(&h.keys, &event).await {
-			opened = Some((h.keys.public_key(), u));
-			break;
-		}
-	}
-	let (recipient_pk, unwrapped) = match opened {
+	let (recipient_pk, unwrapped) = match open_with_held(&held, &event).await {
 		Some(x) => x,
 		None => {
 			// Addressed to one of our identities (the filter names only our
@@ -2020,8 +2047,11 @@ async fn handle_wrap(svc: &Arc<NostrService>, wallet: &Wallet, event: Event) {
 							crate::notify_payment_received(&name, &amount);
 						}
 					}
+					// The S2 is sealed and signed by the identity the payment
+					// was addressed to: the payer accepts a reply only from
+					// the identity they paid.
 					match svc
-						.send_payment_dm(&sender_hex, &reply_text, None, &[])
+						.send_payment_dm(&recipient_hex, &sender_hex, &reply_text, None, &[])
 						.await
 					{
 						Ok(event_id) => {
@@ -2055,6 +2085,9 @@ async fn handle_wrap(svc: &Arc<NostrService>, wallet: &Wallet, event: Event) {
 				note: note.clone(),
 				received_at: unix_time(),
 				status: RequestStatus::Pending,
+				// The identity this request was addressed to: the reply on
+				// approval is sent as it.
+				recipient_pubkey: Some(recipient_hex.clone()),
 			});
 			if !stored {
 				// Disk-DoS backpressure (F1): the request store is at its cap with

@@ -3239,6 +3239,9 @@ async fn handle_task(w: &Wallet, t: WalletTask) {
 				error!("nostr send: service not available");
 				return;
 			};
+			// The identity this payment goes out as: the active one, read once
+			// here and used for the record, the payment and its receipt.
+			let from_hex = service.public_key().to_hex();
 			w.send_creating.store(true, Ordering::Relaxed);
 			service.set_send_phase(crate::nostr::send_phase::WORKING);
 			// Proof-on-request (frozen contract W2): when the payment context
@@ -3276,14 +3279,20 @@ async fn handle_task(w: &Wallet, t: WalletTask) {
 						proof_amount: if proof_mode { Some(*a) } else { None },
 						proof_delivered: false,
 						receipt_sent: false,
-						recipient_pubkey: service.public_key().to_hex(),
+						recipient_pubkey: from_hex.clone(),
 						proof_address: None,
 					});
 					let tx = w.retrieve_tx_by_id(None, Some(s.id));
 					w.send_creating.store(false, Ordering::Relaxed);
 					if let Some(text) = w.read_slatepack_text(s.id, &s.state) {
 						match service
-							.send_payment_dm(receiver, &text, note.as_deref(), relay_hints)
+							.send_payment_dm(
+								&from_hex,
+								receiver,
+								&text,
+								note.as_deref(),
+								relay_hints,
+							)
 							.await
 						{
 							Ok(event_id) => {
@@ -3303,7 +3312,7 @@ async fn handle_task(w: &Wallet, t: WalletTask) {
 									order.as_deref(),
 								) {
 									let ord = order.as_deref().unwrap_or_default();
-									match service.publish_receipt_sent(ord, *a).await {
+									match service.publish_receipt_sent(&from_hex, ord, *a).await {
 										Ok(()) => receipt_sent = true,
 										Err(e) => log::warn!(
 											"nostr: dispatch receipt publish failed for {}: {e}",
@@ -3404,6 +3413,8 @@ async fn handle_task(w: &Wallet, t: WalletTask) {
 				error!("nostr request: service not available");
 				return;
 			};
+			// The identity this request goes out as: the active one, read once.
+			let from_hex = service.public_key().to_hex();
 			service.set_send_phase(crate::nostr::send_phase::WORKING);
 			// Respect the recipient's published opt-out (fail-open: only an
 			// explicit "not accepting" blocks; unknown/unreachable still sends).
@@ -3439,7 +3450,7 @@ async fn handle_task(w: &Wallet, t: WalletTask) {
 						proof_amount: None,
 						proof_delivered: false,
 						receipt_sent: false,
-						recipient_pubkey: service.public_key().to_hex(),
+						recipient_pubkey: from_hex.clone(),
 						// The fresh per-sale address minted for this request (batch
 						// invoicing); None for an ordinary request.
 						proof_address: proof_address.clone(),
@@ -3448,7 +3459,13 @@ async fn handle_task(w: &Wallet, t: WalletTask) {
 					w.invoice_creating.store(false, Ordering::Relaxed);
 					if let Some(text) = w.read_slatepack_text(s.id, &s.state) {
 						match service
-							.send_payment_dm(receiver, &text, note.as_deref(), relay_hints)
+							.send_payment_dm(
+								&from_hex,
+								receiver,
+								&text,
+								note.as_deref(),
+								relay_hints,
+							)
 							.await
 						{
 							Ok(event_id) => {
@@ -3512,8 +3529,15 @@ async fn handle_task(w: &Wallet, t: WalletTask) {
 			// the requester. Requests are messages; payments are final.
 			request.status = crate::nostr::RequestStatus::Declined;
 			service.store.save_request(&request);
+			// Sent as the identity the request was addressed to: the requester
+			// binds a decline to the identity they asked.
 			if let Err(e) = service
-				.send_control_dm(&request.npub, &request.slate_id, &[])
+				.send_control_dm(
+					&service.request_identity(&request),
+					&request.npub,
+					&request.slate_id,
+					&[],
+				)
 				.await
 			{
 				error!("nostr decline: control dispatch failed: {e}");
@@ -3569,7 +3593,10 @@ async fn handle_task(w: &Wallet, t: WalletTask) {
 			service
 				.store
 				.update_tx_status(slate_id, crate::nostr::NostrSendStatus::Cancelled);
-			if let Err(e) = service.send_control_dm(&meta.npub, slate_id, &[]).await {
+			if let Err(e) = service
+				.send_control_dm(&meta.recipient_pubkey, &meta.npub, slate_id, &[])
+				.await
+			{
 				error!("nostr cancel: control dispatch failed: {e}");
 			}
 			sync_wallet_data(&w, false);
@@ -3666,7 +3693,10 @@ async fn handle_task(w: &Wallet, t: WalletTask) {
 			// slate. They're likely offline (that's why the payment stalled), so a
 			// failure here is expected and harmless — the local reclaim stands.
 			if did_cancel {
-				if let Err(e) = service.send_control_dm(&meta.npub, slate_id, &[]).await {
+				if let Err(e) = service
+					.send_control_dm(&meta.recipient_pubkey, &meta.npub, slate_id, &[])
+					.await
+				{
 					info!("nostr cancel send: void dispatch failed (recipient offline?): {e}");
 				}
 			}
@@ -3680,7 +3710,13 @@ async fn handle_task(w: &Wallet, t: WalletTask) {
 				if let Some(meta) = service.store.tx_meta(&slate_id) {
 					if let Some(text) = w.read_slatepack_text(s.id, &s.state) {
 						match service
-							.send_payment_dm(&meta.npub, &text, meta.note.as_deref(), &[])
+							.send_payment_dm(
+								&meta.recipient_pubkey,
+								&meta.npub,
+								&text,
+								meta.note.as_deref(),
+								&[],
+							)
 							.await
 						{
 							Ok(event_id) => {
@@ -3720,6 +3756,16 @@ async fn handle_task(w: &Wallet, t: WalletTask) {
 			// Drive the approve button's busy/failed state so it doesn't stay
 			// greyed forever if the pay can't go through.
 			service.set_send_phase(crate::nostr::send_phase::WORKING);
+			// The reply goes out as the identity this request was addressed to:
+			// the requester accepts a reply only from the identity they asked.
+			// When that identity is no longer held nothing is paid (checked
+			// before any funds are locked).
+			let from_hex = service.request_identity(&request);
+			if let Err(e) = service.sender_keys(&from_hex) {
+				error!("nostr pay: {e}");
+				service.fail_send("This request is no longer payable.".to_string());
+				return;
+			}
 			// Re-parse and re-validate the stored slatepack: it must still be
 			// an Invoice1 (or a Standard1 surfaced under a strict policy).
 			match w.parse_slatepack(&request.slatepack) {
@@ -3743,11 +3789,11 @@ async fn handle_task(w: &Wallet, t: WalletTask) {
 							proof_amount: None,
 							proof_delivered: false,
 							receipt_sent: false,
-							recipient_pubkey: service.public_key().to_hex(),
+							recipient_pubkey: from_hex.clone(),
 							proof_address: None,
 						});
 						match service
-							.send_payment_dm(&request.npub, &text, None, &[])
+							.send_payment_dm(&from_hex, &request.npub, &text, None, &[])
 							.await
 						{
 							Ok(event_id) => {
@@ -3795,11 +3841,11 @@ async fn handle_task(w: &Wallet, t: WalletTask) {
 								proof_amount: None,
 								proof_delivered: false,
 								receipt_sent: false,
-								recipient_pubkey: service.public_key().to_hex(),
+								recipient_pubkey: from_hex.clone(),
 								proof_address: None,
 							});
 							match service
-								.send_payment_dm(&request.npub, &text, None, &[])
+								.send_payment_dm(&from_hex, &request.npub, &text, None, &[])
 								.await
 							{
 								Ok(event_id) => {

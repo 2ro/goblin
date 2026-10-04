@@ -194,6 +194,13 @@ pub struct PaymentRequest {
 	pub note: Option<String>,
 	pub received_at: i64,
 	pub status: RequestStatus,
+	/// Our own identity (pubkey hex) this request was addressed to: the held
+	/// key that opened its wrap. The reply on approval is sealed and signed with
+	/// it, since the requester only accepts a reply from the identity they
+	/// asked. `None` on rows stored by builds before 170 (serde default; older
+	/// builds ignore the field).
+	#[serde(default)]
+	pub recipient_pubkey: Option<String>,
 }
 
 /// A cached news post (kind 30023 long-form) from the Goblin news key, shown
@@ -259,4 +266,27 @@ pub fn unix_time() -> i64 {
 		.duration_since(std::time::UNIX_EPOCH)
 		.map(|d| d.as_secs() as i64)
 		.unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	/// A request row stored by Build 169 or older (no addressed identity)
+	/// still parses, and one stored with it round-trips.
+	#[test]
+	fn payment_request_addressed_identity_is_backward_compatible() {
+		let old = r#"{"ver":1,"rumor_id":"r","slate_id":"s","slatepack":"BEGINSLATEPACK. x. ENDSLATEPACK.","npub":"ab","amount":5,"note":null,"received_at":7,"status":"Pending"}"#;
+		let req: PaymentRequest = serde_json::from_str(old).unwrap();
+		assert_eq!(req.recipient_pubkey, None);
+		assert_eq!(req.status, RequestStatus::Pending);
+
+		let mut req = req;
+		req.recipient_pubkey = Some("cd".to_string());
+		let json = serde_json::to_string(&req).unwrap();
+		let back: PaymentRequest = serde_json::from_str(&json).unwrap();
+		assert_eq!(back.recipient_pubkey.as_deref(), Some("cd"));
+		assert_eq!(back.rumor_id, "r");
+		assert_eq!(back.amount, 5);
+	}
 }
