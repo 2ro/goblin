@@ -163,6 +163,10 @@ pub struct NostrService {
 	/// screen takes a new one, and only the task holding the current turn may
 	/// change `send_phase` (see [`NostrService::begin_send`]).
 	send_turn: Mutex<u64>,
+	/// Approvals that failed, by request id, with the reason: the request card
+	/// takes its own entry to leave its "paying" state, whatever the send turn
+	/// is by then.
+	approve_failures: Mutex<HashMap<String, String>>,
 	/// Human-readable reason the last send/request/approve failed, surfaced on
 	/// the failure screen so the user (and we) can see WHY, not just "couldn't
 	/// send". Cleared when a new attempt starts.
@@ -268,6 +272,7 @@ impl NostrService {
 			rate: Mutex::new(HashMap::new()),
 			send_phase: std::sync::atomic::AtomicU8::new(send_phase::IDLE),
 			send_turn: Mutex::new(0),
+			approve_failures: Mutex::new(HashMap::new()),
 			last_send_error: RwLock::new(None),
 			cancel_notice: RwLock::new(None),
 			cancel_finalize_lock: Mutex::new(()),
@@ -370,6 +375,22 @@ impl NostrService {
 		*self.last_send_error.write() = Some(reason.into());
 		self.send_phase.store(send_phase::FAILED, Ordering::Relaxed);
 		true
+	}
+
+	/// An approval of request `request_id` failed: record the reason for that
+	/// request's card, and show it as the send failure while `turn` is still
+	/// the current turn.
+	pub fn approve_failed(&self, turn: Option<u64>, request_id: &str, reason: String) {
+		self.approve_failures
+			.lock()
+			.insert(request_id.to_string(), reason.clone());
+		self.fail_send_for(turn, reason);
+	}
+
+	/// Take the recorded failure of the approval of `request_id`, if any. Only
+	/// that request's entry is removed.
+	pub fn take_approve_failure(&self, request_id: &str) -> Option<String> {
+		self.approve_failures.lock().remove(request_id)
 	}
 
 	/// The reason the last send failed, if any.

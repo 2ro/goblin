@@ -3795,7 +3795,11 @@ async fn handle_task(w: &Wallet, t: WalletTask) {
 			let from_hex = service.request_identity(&request);
 			if let Err(e) = service.sender_keys(&from_hex) {
 				error!("nostr pay: {e}");
-				service.fail_send_for(turn, "This request is no longer payable.".to_string());
+				service.approve_failed(
+					turn,
+					request_id,
+					"This request is no longer payable.".to_string(),
+				);
 				return;
 			}
 			// Re-parse and re-validate the stored slatepack: it must still be
@@ -3845,7 +3849,7 @@ async fn handle_task(w: &Wallet, t: WalletTask) {
 					}
 					Err(e) => {
 						error!("nostr pay failed: {:?}", e);
-						service.fail_send_for(turn, friendly_send_error(&e));
+						service.approve_failed(turn, request_id, friendly_send_error(&e));
 					}
 				},
 				Ok((s, _)) if s.state == SlateState::Standard1 => {
@@ -3901,13 +3905,17 @@ async fn handle_task(w: &Wallet, t: WalletTask) {
 						}
 						Err(e) => {
 							error!("nostr accept failed: {:?}", e);
-							service.fail_send_for(turn, friendly_send_error(&e));
+							service.approve_failed(turn, request_id, friendly_send_error(&e));
 						}
 					}
 				}
 				_ => {
 					error!("nostr pay: stored slatepack is not payable");
-					service.fail_send_for(turn, "This request is no longer payable.".to_string());
+					service.approve_failed(
+						turn,
+						request_id,
+						"This request is no longer payable.".to_string(),
+					);
 					request.status = crate::nostr::RequestStatus::Expired;
 					service.store.save_request(&request);
 				}

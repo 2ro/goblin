@@ -1554,6 +1554,39 @@ mod tests {
 		let _ = std::fs::remove_dir_all(dir);
 	}
 
+	/// Approve A, then approve B before A's task ends; A fails early. A's
+	/// failure is recorded for A alone: its card takes it and leaves its
+	/// "paying" state with the reason, whatever the send turn is now, and B's
+	/// entry is untouched (`approving` guards B against a second payment).
+	#[tokio::test]
+	async fn an_approval_failure_belongs_to_its_request() {
+		use crate::nostr::send_phase::WORKING;
+		let (id_a, a) = NostrIdentity::create_random("pw").unwrap();
+		let (svc, dir) = service_with(&[(id_a, a.clone())], &a);
+
+		let turn_a = Some(svc.begin_send());
+		let turn_b = Some(svc.begin_send());
+		svc.approve_failed(turn_a, "req-a", "funds still confirming".to_string());
+		// The screen phase belongs to B's turn: A's failure does not show there.
+		assert_eq!(svc.send_phase(), WORKING);
+		// But A's card gets it, once.
+		assert_eq!(svc.take_approve_failure("req-b"), None);
+		assert_eq!(
+			svc.take_approve_failure("req-a").as_deref(),
+			Some("funds still confirming")
+		);
+		assert_eq!(svc.take_approve_failure("req-a"), None);
+
+		// B fails too: recorded for B, and shown as B's turn is current.
+		svc.approve_failed(turn_b, "req-b", "no longer payable".to_string());
+		assert_eq!(svc.last_send_error().as_deref(), Some("no longer payable"));
+		assert_eq!(
+			svc.take_approve_failure("req-b").as_deref(),
+			Some("no longer payable")
+		);
+		let _ = std::fs::remove_dir_all(dir);
+	}
+
 	/// The plain receipt is signed by the identity that paid, with the frozen
 	/// contract shape unchanged.
 	#[test]
