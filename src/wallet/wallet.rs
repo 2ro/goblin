@@ -3347,11 +3347,13 @@ async fn handle_task(w: &Wallet, t: WalletTask) {
 								// so the spinner never waits for it. The encrypted PROOF
 								// stays at finalize (it does not exist before then). On
 								// failure receipt_sent stays false and the reconcile pass
-								// retries it.
+								// retries it. Only for a row that is now AwaitingS2 or
+								// Finalized: one cancelled during the dispatch gets none.
 								if crate::nostr::receipt_due_at_dispatch(
 									proof_mode,
 									order.as_deref(),
-								) {
+								) && service.receipt_owed_now(&s.id.to_string())
+								{
 									let ord = order.as_deref().unwrap_or_default();
 									match service.publish_receipt_sent(&from_hex, ord, *a).await {
 										Ok(()) => service.mark_receipt_sent(&s.id.to_string()),

@@ -148,13 +148,34 @@ impl NostrService {
 		true
 	}
 
-	/// Record that the plain receipt of a send landed. Re-read under the
-	/// finalize lock and only that flag changes, so a status written meanwhile
-	/// (a fast reply finalized it, the user cancelled it) is kept.
+	/// Whether the plain receipt of send `slate_id` may go out now: only once
+	/// its row is AwaitingS2 or Finalized. A row cancelled during the dispatch
+	/// gets no "payment sent" receipt.
+	pub fn receipt_owed_now(&self, slate_id: &str) -> bool {
+		matches!(
+			self.store.tx_meta(slate_id).map(|m| m.status),
+			Some(NostrSendStatus::AwaitingS2) | Some(NostrSendStatus::Finalized)
+		)
+	}
+
+	/// Record that the plain receipt of a send landed.
 	pub fn mark_receipt_sent(&self, slate_id: &str) {
+		self.mark_delivered(slate_id, |m| m.receipt_sent = true);
+	}
+
+	/// Record that the encrypted proof of a send landed.
+	pub fn mark_proof_delivered(&self, slate_id: &str) {
+		self.mark_delivered(slate_id, |m| m.proof_delivered = true);
+	}
+
+	/// Set one delivery flag of a tx row. Re-read under the finalize lock and
+	/// only that flag changes, so a status or the other flag written meanwhile
+	/// (a fast reply finalized it, the user cancelled it, the receipt landed
+	/// while the proof was out) is kept.
+	fn mark_delivered(&self, slate_id: &str, mark: impl FnOnce(&mut TxNostrMeta)) {
 		let _lock = self.lock_finalize();
 		if let Some(mut meta) = self.store.tx_meta(slate_id) {
-			meta.receipt_sent = true;
+			mark(&mut meta);
 			meta.updated_at = unix_time();
 			self.store.save_tx_meta(&meta);
 		}
@@ -1584,6 +1605,43 @@ mod tests {
 			svc.take_approve_failure("req-b").as_deref(),
 			Some("no longer payable")
 		);
+		let _ = std::fs::remove_dir_all(dir);
+	}
+
+	/// A delivery flag is written alone on the row as it is now: the proof
+	/// flag set after an await keeps a receipt flag written meanwhile, and the
+	/// status. The receipt is owed only once the row is AwaitingS2 or
+	/// Finalized, never for a row cancelled during the dispatch.
+	#[tokio::test]
+	async fn delivery_flags_and_the_receipt_follow_the_row_as_it_is_now() {
+		let (id_a, a) = NostrIdentity::create_random("pw").unwrap();
+		let (svc, dir) = service_with(&[(id_a, a.clone())], &a);
+		let mut m = payer_meta("cd");
+		m.slate_id = "s1".to_string();
+		m.status = NostrSendStatus::Finalized;
+		svc.store.save_tx_meta(&m);
+
+		// The finalize path read the row, then awaited the proof; the receipt
+		// landed meanwhile.
+		let read_before = svc.store.tx_meta("s1").unwrap();
+		svc.mark_receipt_sent("s1");
+		assert!(!read_before.receipt_sent);
+		svc.mark_proof_delivered("s1");
+		let now = svc.store.tx_meta("s1").unwrap();
+		assert!(now.receipt_sent && now.proof_delivered);
+		assert_eq!(now.status, NostrSendStatus::Finalized);
+
+		assert!(svc.receipt_owed_now("s1"));
+		for (status, owed) in [
+			(NostrSendStatus::AwaitingS2, true),
+			(NostrSendStatus::Cancelled, false),
+			(NostrSendStatus::Created, false),
+		] {
+			m.status = status;
+			svc.store.save_tx_meta(&m);
+			assert_eq!(svc.receipt_owed_now("s1"), owed, "{status:?}");
+		}
+		assert!(!svc.receipt_owed_now("missing"));
 		let _ = std::fs::remove_dir_all(dir);
 	}
 
