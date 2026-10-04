@@ -952,12 +952,7 @@ async fn deliver_receipt(svc: &Arc<NostrService>, meta: &TxNostrMeta) {
 		.publish_receipt_sent(&meta.recipient_pubkey, &order, amount)
 		.await
 	{
-		Ok(()) => {
-			let mut updated = meta.clone();
-			updated.receipt_sent = true;
-			updated.updated_at = unix_time();
-			svc.store.save_tx_meta(&updated);
-		}
+		Ok(()) => svc.mark_receipt_sent(&meta.slate_id),
 		Err(e) => warn!(
 			"nostr: reconcile receipt publish failed for {}: {e}",
 			meta.slate_id
@@ -1100,10 +1095,7 @@ async fn reconcile(svc: &Arc<NostrService>, wallet: &Wallet) {
 			// Re-read: deliver_receipt above may have flipped receipt_sent on disk.
 			let meta = svc.store.tx_meta(&meta.slate_id).unwrap_or(meta);
 			if deliver_proof(svc, wallet, &meta).await {
-				let mut updated = meta.clone();
-				updated.proof_delivered = true;
-				updated.updated_at = unix_time();
-				svc.store.save_tx_meta(&updated);
+				svc.mark_proof_delivered(&meta.slate_id);
 			}
 			continue;
 		}
@@ -2190,11 +2182,9 @@ async fn handle_wrap(svc: &Arc<NostrService>, wallet: &Wallet, event: Event) {
 					// it already went out at S1 dispatch (4.3.1), gated by receipt_sent,
 					// so there is exactly one receipt per tx. On failure we leave
 					// proof_delivered=false so the reconcile pass retries.
-					if let Some(mut m) = svc.store.tx_meta(&slate.id.to_string()) {
+					if let Some(m) = svc.store.tx_meta(&slate.id.to_string()) {
 						if proof_delivery_due(&m) && deliver_proof(svc, wallet, &m).await {
-							m.proof_delivered = true;
-							m.updated_at = unix_time();
-							svc.store.save_tx_meta(&m);
+							svc.mark_proof_delivered(&m.slate_id);
 						}
 					}
 					wallet.sync();

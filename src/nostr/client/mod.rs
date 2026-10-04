@@ -163,6 +163,10 @@ pub struct NostrService {
 	/// screen takes a new one, and only the task holding the current turn may
 	/// change `send_phase` (see [`NostrService::begin_send`]).
 	send_turn: Mutex<u64>,
+	/// Approvals that failed, by request id, with the reason: the request card
+	/// takes its own entry to leave its "paying" state, whatever the send turn
+	/// is by then.
+	approve_failures: Mutex<HashMap<String, String>>,
 	/// Human-readable reason the last send/request/approve failed, surfaced on
 	/// the failure screen so the user (and we) can see WHY, not just "couldn't
 	/// send". Cleared when a new attempt starts.
@@ -215,6 +219,13 @@ pub enum TransportStatus {
 	ConnectedDirect,
 }
 
+/// Whether a dispatch or screen holding `own` may write or read the send
+/// phase while `current` is the current send turn. A task with no turn (a
+/// batch request) never may.
+fn turn_is_current(own: Option<u64>, current: u64) -> bool {
+	own == Some(current)
+}
+
 /// Phase of the most recent outgoing send, polled by the send UI.
 pub mod send_phase {
 	pub const IDLE: u8 = 0;
@@ -261,6 +272,7 @@ impl NostrService {
 			rate: Mutex::new(HashMap::new()),
 			send_phase: std::sync::atomic::AtomicU8::new(send_phase::IDLE),
 			send_turn: Mutex::new(0),
+			approve_failures: Mutex::new(HashMap::new()),
 			last_send_error: RwLock::new(None),
 			cancel_notice: RwLock::new(None),
 			cancel_finalize_lock: Mutex::new(()),
@@ -331,18 +343,19 @@ impl NostrService {
 		*turn
 	}
 
-	/// The current send turn. A send, request or approval task takes it as its
-	/// first action and writes the phase only with it.
+	/// The current send turn.
 	pub fn send_turn(&self) -> u64 {
 		*self.send_turn.lock()
 	}
 
-	/// Set the outgoing-send phase for the dispatch of `turn`, only while it is
-	/// the current turn; false when a newer send has taken over the screen.
-	/// WORKING clears any prior failure reason.
-	pub fn set_send_phase_for(&self, turn: u64, phase: u8) -> bool {
+	/// Set the outgoing-send phase for the dispatch of `turn` (the turn its
+	/// task carries from `begin_send`), only while it is the current turn; false
+	/// when a newer send has taken over the screen, and always for a task that
+	/// carries no turn (a batch request, which no screen waits on). WORKING
+	/// clears any prior failure reason.
+	pub fn set_send_phase_for(&self, turn: Option<u64>, phase: u8) -> bool {
 		let current = self.send_turn.lock();
-		if *current != turn {
+		if !turn_is_current(turn, *current) {
 			return false;
 		}
 		if phase == send_phase::WORKING {
@@ -354,9 +367,9 @@ impl NostrService {
 
 	/// Record why the dispatch of `turn` failed (shown on the failure screen)
 	/// and flip the phase to FAILED, only while `turn` is the current turn.
-	pub fn fail_send_for(&self, turn: u64, reason: impl Into<String>) -> bool {
+	pub fn fail_send_for(&self, turn: Option<u64>, reason: impl Into<String>) -> bool {
 		let current = self.send_turn.lock();
-		if *current != turn {
+		if !turn_is_current(turn, *current) {
 			return false;
 		}
 		*self.last_send_error.write() = Some(reason.into());
@@ -364,8 +377,42 @@ impl NostrService {
 		true
 	}
 
+	/// An approval of request `request_id` failed: record the reason for that
+	/// request's card, and show it as the send failure while `turn` is still
+	/// the current turn.
+	pub fn approve_failed(&self, turn: Option<u64>, request_id: &str, reason: String) {
+		self.approve_failures
+			.lock()
+			.insert(request_id.to_string(), reason.clone());
+		self.fail_send_for(turn, reason);
+	}
+
+	/// Take the recorded failure of the approval of `request_id`, if any. Only
+	/// that request's entry is removed.
+	pub fn take_approve_failure(&self, request_id: &str) -> Option<String> {
+		self.approve_failures.lock().remove(request_id)
+	}
+
 	/// The reason the last send failed, if any.
 	pub fn last_send_error(&self) -> Option<String> {
+		self.last_send_error.read().clone()
+	}
+
+	/// The phase as the send flow of `turn` may read it: `None` once its turn
+	/// is no longer the current one, so it never shows another payment's
+	/// result.
+	pub fn send_phase_for(&self, turn: u64) -> Option<u8> {
+		let current = self.send_turn.lock();
+		turn_is_current(Some(turn), *current).then(|| self.send_phase.load(Ordering::Relaxed))
+	}
+
+	/// The failure reason as the send flow of `turn` may read it (see
+	/// [`Self::send_phase_for`]).
+	pub fn send_error_for(&self, turn: u64) -> Option<String> {
+		let current = self.send_turn.lock();
+		if !turn_is_current(Some(turn), *current) {
+			return None;
+		}
 		self.last_send_error.read().clone()
 	}
 

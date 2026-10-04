@@ -148,13 +148,34 @@ impl NostrService {
 		true
 	}
 
-	/// Record that the plain receipt of a send landed. Re-read under the
-	/// finalize lock and only that flag changes, so a status written meanwhile
-	/// (a fast reply finalized it, the user cancelled it) is kept.
+	/// Whether the plain receipt of send `slate_id` may go out now: only once
+	/// its row is AwaitingS2 or Finalized. A row cancelled during the dispatch
+	/// gets no "payment sent" receipt.
+	pub fn receipt_owed_now(&self, slate_id: &str) -> bool {
+		matches!(
+			self.store.tx_meta(slate_id).map(|m| m.status),
+			Some(NostrSendStatus::AwaitingS2) | Some(NostrSendStatus::Finalized)
+		)
+	}
+
+	/// Record that the plain receipt of a send landed.
 	pub fn mark_receipt_sent(&self, slate_id: &str) {
+		self.mark_delivered(slate_id, |m| m.receipt_sent = true);
+	}
+
+	/// Record that the encrypted proof of a send landed.
+	pub fn mark_proof_delivered(&self, slate_id: &str) {
+		self.mark_delivered(slate_id, |m| m.proof_delivered = true);
+	}
+
+	/// Set one delivery flag of a tx row. Re-read under the finalize lock and
+	/// only that flag changes, so a status or the other flag written meanwhile
+	/// (a fast reply finalized it, the user cancelled it, the receipt landed
+	/// while the proof was out) is kept.
+	fn mark_delivered(&self, slate_id: &str, mark: impl FnOnce(&mut TxNostrMeta)) {
 		let _lock = self.lock_finalize();
 		if let Some(mut meta) = self.store.tx_meta(slate_id) {
-			meta.receipt_sent = true;
+			mark(&mut meta);
 			meta.updated_at = unix_time();
 			self.store.save_tx_meta(&meta);
 		}
@@ -605,9 +626,10 @@ enum Push {
 /// rest of it, so a dead network does not spin.
 const RETRY_GAP: Duration = Duration::from_secs(2);
 
-/// Time a whole attempt needs: the pool's own OK wait per relay (relay
-/// constants WAIT_FOR_OK_TIMEOUT). Another attempt starts only while this much
-/// of the budget is left, so an attempt is never cut by the budget.
+/// Least time a whole attempt needs: the pool's own OK wait per relay (relay
+/// constants WAIT_FOR_OK_TIMEOUT). Another attempt starts only while this much,
+/// or as much as the last attempt took if that was longer, is left of the
+/// budget, so an attempt is never cut by the budget.
 const ATTEMPT_WINDOW: Duration = Duration::from_secs(10);
 
 /// Hang guard for one attempt, above the longest the pool takes for one (its
@@ -655,10 +677,10 @@ async fn publish(
 				tokio::time::sleep,
 				|| async move {
 					let filter = Filter::new().id(event.id).limit(1);
-					matches!(
-						client.fetch_events_from(urls, filter, READBACK_WAIT).await,
-						Ok(found) if !found.is_empty()
-					)
+					match client.fetch_events_from(urls, filter, READBACK_WAIT).await {
+						Ok(found) => holds_event(found.iter(), &event.id),
+						Err(_) => false,
+					}
 				},
 			)
 			.await
@@ -688,9 +710,9 @@ fn publish_once(attempt: Attempt) -> Result<(), String> {
 /// same id: a relay that already holds it answers OK (duplicate), which also
 /// collects the acknowledgement of a queued copy that landed meanwhile. The
 /// pool answers an attempt only when its slowest relay is done, so an attempt
-/// in flight is never cut: another one starts only while a whole attempt fits
-/// in the budget. Before any failure verdict the event is read back by id; a
-/// relay that holds it makes it a send. Only the pool refusing the very first
+/// in flight is never cut: another one starts only while an attempt as long as
+/// the last one fits in the budget. Before any failure verdict the event is
+/// read back by id; a relay that returns that exact event makes it a send. Only the pool refusing the very first
 /// attempt outright (no relays, a relay not added) fails at once, as before.
 async fn publish_until_accepted<C, A, AF, P, PF, R, RF>(
 	budget: Duration,
@@ -728,8 +750,11 @@ where
 			},
 		}
 		first = false;
-		let wait = RETRY_GAP.saturating_sub(elapsed().saturating_sub(began));
-		if elapsed() + wait + ATTEMPT_WINDOW > budget {
+		let took = elapsed().saturating_sub(began);
+		let wait = RETRY_GAP.saturating_sub(took);
+		// The next attempt may last as long as this one did (up to 27 s when a
+		// relay asks for NIP-42 auth), never less than the pool's OK wait.
+		if elapsed() + wait + took.max(ATTEMPT_WINDOW) > budget {
 			break;
 		}
 		if !wait.is_zero() {
@@ -740,6 +765,14 @@ where
 		return Ok(());
 	}
 	Err(why)
+}
+
+/// Whether a read-back found the event that was sent. Only that exact id
+/// counts: the pool does not match what a relay returns against the filter
+/// (subscription checks are off by default), so a relay answering with any
+/// other event must not turn a send nobody accepted into "Sent".
+fn holds_event<'a>(found: impl IntoIterator<Item = &'a Event>, id: &nostr_sdk::EventId) -> bool {
+	found.into_iter().any(|e| e.id == *id)
 }
 
 /// Whether a relay publish counts as sent: at least one relay accepted the
@@ -1019,6 +1052,37 @@ mod tests {
 		let run = drive(|_| (ATTEMPT_CAP, Attempt::TimedOut), true).await;
 		assert!(run.result.is_ok());
 		assert_eq!(run.attempts, 1);
+	}
+
+	/// An attempt that took long (a relay asking for NIP-42 auth) gates the
+	/// next one by its own length: no second attempt that would run past the
+	/// budget, so the verdict comes by the budget plus the read-back.
+	#[tokio::test]
+	async fn a_long_attempt_keeps_the_verdict_inside_the_budget() {
+		let run = drive(
+			|_| (Duration::from_secs(29), none_accepted("timeout")),
+			false,
+		)
+		.await;
+		assert!(run.result.is_err());
+		assert_eq!(run.attempts, 1);
+		assert!(run.at <= BUDGET + READBACK_WAIT, "verdict at {:?}", run.at);
+	}
+
+	/// A read-back hit is only the event that was sent: a relay answering the
+	/// id filter with another event is not one.
+	#[test]
+	fn only_the_sent_event_is_a_read_back_hit() {
+		let keys = Keys::generate();
+		let sent = EventBuilder::new(Kind::GiftWrap, "a")
+			.sign_with_keys(&keys)
+			.unwrap();
+		let other = EventBuilder::new(Kind::GiftWrap, "b")
+			.sign_with_keys(&keys)
+			.unwrap();
+		assert!(!holds_event([&other], &sent.id));
+		assert!(!holds_event(std::iter::empty::<&Event>(), &sent.id));
+		assert!(holds_event([&other, &sent], &sent.id));
 	}
 
 	/// The single attempt of a message nobody waits for on screen: no
@@ -1437,33 +1501,29 @@ mod tests {
 		let (id_a, a) = NostrIdentity::create_random("pw").unwrap();
 		let (svc, dir) = service_with(&[(id_a, a.clone())], &a);
 
-		// Send #1: the screen begins a turn, the task takes it first thing.
-		let one = svc.begin_send();
-		let task_one = svc.send_turn();
-		assert_eq!(task_one, one);
-		assert!(svc.set_send_phase_for(task_one, WORKING));
+		// Send #1: the screen begins a turn and the task carries it.
+		let one = Some(svc.begin_send());
+		assert!(svc.set_send_phase_for(one, WORKING));
 
 		// Back, then send #2.
-		let two = svc.begin_send();
-		let task_two = svc.send_turn();
-		assert_eq!(task_two, two);
-		assert_ne!(task_one, task_two);
+		let two = Some(svc.begin_send());
+		assert_ne!(one, two);
 		assert_eq!(svc.send_phase(), WORKING);
 
 		// #1 reaches its failure verdict: its money work is its own, the
 		// screen is not.
-		assert!(!svc.fail_send_for(task_one, "no relay accepted it"));
-		assert!(!svc.set_send_phase_for(task_one, FAILED));
+		assert!(!svc.fail_send_for(one, "no relay accepted it"));
+		assert!(!svc.set_send_phase_for(one, FAILED));
 		assert_eq!(svc.send_phase(), WORKING);
 		assert_eq!(svc.last_send_error(), None);
 
 		// #2 completes: shown.
-		assert!(svc.set_send_phase_for(task_two, SENT));
+		assert!(svc.set_send_phase_for(two, SENT));
 		assert_eq!(svc.send_phase(), SENT);
 
 		// The reverse: a stale SENT never shows over a later send.
-		let three = svc.begin_send();
-		assert!(!svc.set_send_phase_for(task_two, SENT));
+		let three = Some(svc.begin_send());
+		assert!(!svc.set_send_phase_for(two, SENT));
 		assert_eq!(svc.send_phase(), WORKING);
 		assert!(svc.fail_send_for(three, "why"));
 		assert_eq!(svc.send_phase(), FAILED);
@@ -1472,6 +1532,116 @@ mod tests {
 		// A new turn clears the reason.
 		svc.begin_send();
 		assert_eq!(svc.last_send_error(), None);
+		let _ = std::fs::remove_dir_all(dir);
+	}
+
+	/// The turn travels inside the task: a task carrying an old turn cannot
+	/// change the phase even when it starts after a newer `begin_send`, a
+	/// batch request (no turn) never does, and a send flow reads the phase and
+	/// its failure text only while its own turn is current.
+	#[tokio::test]
+	async fn a_task_carrying_an_old_turn_never_changes_the_screen() {
+		use super::super::turn_is_current;
+		use crate::nostr::send_phase::{FAILED, SENT, WORKING};
+		let (id_a, a) = NostrIdentity::create_random("pw").unwrap();
+		let (svc, dir) = service_with(&[(id_a, a.clone())], &a);
+
+		// The reader rule.
+		assert!(turn_is_current(Some(3), 3));
+		assert!(!turn_is_current(Some(2), 3));
+		assert!(!turn_is_current(None, 3));
+		assert!(!turn_is_current(None, 0));
+
+		// A batch approve queued requests (no turn), then the user began a
+		// send; the batch tasks start only now.
+		let send = svc.begin_send();
+		assert!(!svc.fail_send_for(None, "batch request failed"));
+		assert!(!svc.set_send_phase_for(None, SENT));
+		assert_eq!(svc.send_phase(), WORKING);
+
+		// An approval queued with turn `old`, then another send began; the
+		// approval's task starts after that and still carries `old`.
+		let old = send;
+		let newer = svc.begin_send();
+		assert!(!svc.fail_send_for(Some(old), "late"));
+		assert_eq!(svc.send_phase(), WORKING);
+		assert!(svc.set_send_phase_for(Some(newer), FAILED));
+
+		// The flow of `old` no longer reads the phase or the text; the flow of
+		// `newer` does.
+		assert_eq!(svc.send_phase_for(old), None);
+		assert_eq!(svc.send_error_for(old), None);
+		assert_eq!(svc.send_phase_for(newer), Some(FAILED));
+		let _ = std::fs::remove_dir_all(dir);
+	}
+
+	/// Approve A, then approve B before A's task ends; A fails early. A's
+	/// failure is recorded for A alone: its card takes it and leaves its
+	/// "paying" state with the reason, whatever the send turn is now, and B's
+	/// entry is untouched (`approving` guards B against a second payment).
+	#[tokio::test]
+	async fn an_approval_failure_belongs_to_its_request() {
+		use crate::nostr::send_phase::WORKING;
+		let (id_a, a) = NostrIdentity::create_random("pw").unwrap();
+		let (svc, dir) = service_with(&[(id_a, a.clone())], &a);
+
+		let turn_a = Some(svc.begin_send());
+		let turn_b = Some(svc.begin_send());
+		svc.approve_failed(turn_a, "req-a", "funds still confirming".to_string());
+		// The screen phase belongs to B's turn: A's failure does not show there.
+		assert_eq!(svc.send_phase(), WORKING);
+		// But A's card gets it, once.
+		assert_eq!(svc.take_approve_failure("req-b"), None);
+		assert_eq!(
+			svc.take_approve_failure("req-a").as_deref(),
+			Some("funds still confirming")
+		);
+		assert_eq!(svc.take_approve_failure("req-a"), None);
+
+		// B fails too: recorded for B, and shown as B's turn is current.
+		svc.approve_failed(turn_b, "req-b", "no longer payable".to_string());
+		assert_eq!(svc.last_send_error().as_deref(), Some("no longer payable"));
+		assert_eq!(
+			svc.take_approve_failure("req-b").as_deref(),
+			Some("no longer payable")
+		);
+		let _ = std::fs::remove_dir_all(dir);
+	}
+
+	/// A delivery flag is written alone on the row as it is now: the proof
+	/// flag set after an await keeps a receipt flag written meanwhile, and the
+	/// status. The receipt is owed only once the row is AwaitingS2 or
+	/// Finalized, never for a row cancelled during the dispatch.
+	#[tokio::test]
+	async fn delivery_flags_and_the_receipt_follow_the_row_as_it_is_now() {
+		let (id_a, a) = NostrIdentity::create_random("pw").unwrap();
+		let (svc, dir) = service_with(&[(id_a, a.clone())], &a);
+		let mut m = payer_meta("cd");
+		m.slate_id = "s1".to_string();
+		m.status = NostrSendStatus::Finalized;
+		svc.store.save_tx_meta(&m);
+
+		// The finalize path read the row, then awaited the proof; the receipt
+		// landed meanwhile.
+		let read_before = svc.store.tx_meta("s1").unwrap();
+		svc.mark_receipt_sent("s1");
+		assert!(!read_before.receipt_sent);
+		svc.mark_proof_delivered("s1");
+		let now = svc.store.tx_meta("s1").unwrap();
+		assert!(now.receipt_sent && now.proof_delivered);
+		assert_eq!(now.status, NostrSendStatus::Finalized);
+
+		assert!(svc.receipt_owed_now("s1"));
+		for (status, owed) in [
+			(NostrSendStatus::AwaitingS2, true),
+			(NostrSendStatus::Cancelled, false),
+			(NostrSendStatus::Created, false),
+		] {
+			m.status = status;
+			svc.store.save_tx_meta(&m);
+			assert_eq!(svc.receipt_owed_now("s1"), owed, "{status:?}");
+		}
+		assert!(!svc.receipt_owed_now("missing"));
 		let _ = std::fs::remove_dir_all(dir);
 	}
 

@@ -167,6 +167,10 @@ pub struct SendFlow {
 	proof: Option<String>,
 	order: Option<String>,
 	notify: Option<String>,
+	/// The send turn this flow's dispatch was given (`NostrService::begin_send`).
+	/// The flow reads the phase and the failure text only while it is the
+	/// current turn.
+	turn: Option<u64>,
 }
 
 impl Default for SendFlow {
@@ -196,6 +200,7 @@ impl Default for SendFlow {
 			proof: None,
 			order: None,
 			notify: None,
+			turn: None,
 		}
 	}
 }
@@ -1449,9 +1454,7 @@ impl SendFlow {
 			// waits for this dispatch's own result: an earlier send still in
 			// flight can no longer flip this screen.
 			self.error = None;
-			if let Some(service) = wallet.nostr_service() {
-				service.begin_send();
-			}
+			self.turn = wallet.nostr_service().map(|s| s.begin_send());
 			if self.request {
 				wallet.task(WalletTask::NostrRequest(
 					amount,
@@ -1459,6 +1462,7 @@ impl SendFlow {
 					note,
 					recipient.relay_hints.clone(),
 					None,
+					self.turn,
 				));
 			} else {
 				wallet.task(WalletTask::NostrSend(
@@ -1469,6 +1473,7 @@ impl SendFlow {
 					self.proof.clone(),
 					self.order.clone(),
 					self.notify.clone(),
+					self.turn,
 				));
 			}
 		}
@@ -1491,11 +1496,17 @@ impl SendFlow {
 			);
 		});
 		// Advance only on the real dispatch result: the payment DM must have
-		// actually been sent (or failed) over the relay, not merely created.
-		let phase = wallet
-			.nostr_service()
-			.map(|s| s.send_phase())
-			.unwrap_or(crate::nostr::send_phase::FAILED);
+		// actually been sent (or failed) over the relay, not merely created. Only
+		// this flow's own turn counts: once another send has taken the turn, the
+		// global phase is that send's, so this flow keeps its spinner (until the
+		// user leaves) rather than showing another payment's result.
+		let phase = match (wallet.nostr_service(), self.turn) {
+			(None, _) => crate::nostr::send_phase::FAILED,
+			(Some(s), Some(turn)) => s
+				.send_phase_for(turn)
+				.unwrap_or(crate::nostr::send_phase::WORKING),
+			(Some(_), None) => crate::nostr::send_phase::WORKING,
+		};
 		match phase {
 			crate::nostr::send_phase::SENT => self.stage = Stage::Success,
 			crate::nostr::send_phase::REQUEST_BLOCKED => {
@@ -1510,7 +1521,10 @@ impl SendFlow {
 			crate::nostr::send_phase::FAILED => {
 				// Surface the real reason (e.g. funds still confirming).
 				if self.error.is_none() {
-					self.error = wallet.nostr_service().and_then(|s| s.last_send_error());
+					self.error = match (wallet.nostr_service(), self.turn) {
+						(Some(s), Some(turn)) => s.send_error_for(turn),
+						_ => None,
+					};
 				}
 				self.stage = Stage::Failed;
 			}

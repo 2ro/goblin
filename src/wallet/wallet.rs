@@ -3250,14 +3250,14 @@ async fn handle_task(w: &Wallet, t: WalletTask) {
 				w.on_tx_error(*id, Some(e));
 			}
 		},
-		WalletTask::NostrSend(a, receiver, note, relay_hints, proof, order, notify) => {
+		WalletTask::NostrSend(a, receiver, note, relay_hints, proof, order, notify, turn) => {
 			let Some(service) = w.nostr_service() else {
 				error!("nostr send: service not available");
 				return;
 			};
-			// The send turn this task writes the screen's phase with (see
-			// `NostrService::begin_send`).
-			let turn = service.send_turn();
+			// The send turn this task writes the screen's phase with, given by
+			// the screen that queued it (see `NostrService::begin_send`).
+			let turn = *turn;
 			// The identity this payment goes out as: the active one, read once
 			// here and used for the record, the payment and its receipt.
 			let from_hex = service.public_key().to_hex();
@@ -3363,11 +3363,13 @@ async fn handle_task(w: &Wallet, t: WalletTask) {
 								// so the spinner never waits for it. The encrypted PROOF
 								// stays at finalize (it does not exist before then). On
 								// failure receipt_sent stays false and the reconcile pass
-								// retries it.
+								// retries it. Only for a row that is now AwaitingS2 or
+								// Finalized: one cancelled during the dispatch gets none.
 								if crate::nostr::receipt_due_at_dispatch(
 									proof_mode,
 									order.as_deref(),
-								) {
+								) && service.receipt_owed_now(&s.id.to_string())
+								{
 									let ord = order.as_deref().unwrap_or_default();
 									match service.publish_receipt_sent(&from_hex, ord, *a).await {
 										Ok(()) => service.mark_receipt_sent(&s.id.to_string()),
@@ -3435,13 +3437,14 @@ async fn handle_task(w: &Wallet, t: WalletTask) {
 				}
 			}
 		}
-		WalletTask::NostrRequest(a, receiver, note, relay_hints, proof_address) => {
+		WalletTask::NostrRequest(a, receiver, note, relay_hints, proof_address, turn) => {
 			let Some(service) = w.nostr_service() else {
 				error!("nostr request: service not available");
 				return;
 			};
-			// The send turn this task writes the screen's phase with.
-			let turn = service.send_turn();
+			// The send turn this task writes the screen's phase with (None for a
+			// batch request: no screen waits on it).
+			let turn = *turn;
 			// The identity this request goes out as: the active one, read once.
 			let from_hex = service.public_key().to_hex();
 			service.set_send_phase_for(turn, crate::nostr::send_phase::WORKING);
@@ -3785,12 +3788,13 @@ async fn handle_task(w: &Wallet, t: WalletTask) {
 				}
 			}
 		}
-		WalletTask::NostrPayRequest(request_id) => {
+		WalletTask::NostrPayRequest(request_id, turn) => {
 			let Some(service) = w.nostr_service() else {
 				return;
 			};
-			// The send turn this task writes the screen's phase with.
-			let turn = service.send_turn();
+			// The send turn this task writes the screen's phase with, given by
+			// the screen that queued it.
+			let turn = *turn;
 			let Some(mut request) = service.store.request(request_id) else {
 				error!("nostr pay: request not found");
 				return;
@@ -3809,7 +3813,11 @@ async fn handle_task(w: &Wallet, t: WalletTask) {
 			let from_hex = service.request_identity(&request);
 			if let Err(e) = service.sender_keys(&from_hex) {
 				error!("nostr pay: {e}");
-				service.fail_send_for(turn, "This request is no longer payable.".to_string());
+				service.approve_failed(
+					turn,
+					request_id,
+					"This request is no longer payable.".to_string(),
+				);
 				return;
 			}
 			// Re-parse and re-validate the stored slatepack: it must still be
@@ -3859,7 +3867,7 @@ async fn handle_task(w: &Wallet, t: WalletTask) {
 					}
 					Err(e) => {
 						error!("nostr pay failed: {:?}", e);
-						service.fail_send_for(turn, friendly_send_error(&e));
+						service.approve_failed(turn, request_id, friendly_send_error(&e));
 					}
 				},
 				Ok((s, _)) if s.state == SlateState::Standard1 => {
@@ -3915,13 +3923,17 @@ async fn handle_task(w: &Wallet, t: WalletTask) {
 						}
 						Err(e) => {
 							error!("nostr accept failed: {:?}", e);
-							service.fail_send_for(turn, friendly_send_error(&e));
+							service.approve_failed(turn, request_id, friendly_send_error(&e));
 						}
 					}
 				}
 				_ => {
 					error!("nostr pay: stored slatepack is not payable");
-					service.fail_send_for(turn, "This request is no longer payable.".to_string());
+					service.approve_failed(
+						turn,
+						request_id,
+						"This request is no longer payable.".to_string(),
+					);
 					request.status = crate::nostr::RequestStatus::Expired;
 					service.store.save_request(&request);
 				}

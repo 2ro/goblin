@@ -86,14 +86,19 @@ impl GoblinWalletView {
 
 		// Pending payment requests pinned on top.
 		if let Some(service) = wallet.nostr_service() {
-			// An approve that failed (e.g. funds still confirming) flips the send
-			// phase to FAILED — un-grey the buttons so the user can retry, and
-			// surface why instead of leaving the card stuck.
-			if service.send_phase() == crate::nostr::send_phase::FAILED
-				&& !self.approving.is_empty()
-			{
-				self.approving.clear();
-				self.request_error = service.last_send_error();
+			// An approval that failed (e.g. funds still confirming) records its
+			// reason for that request: un-grey only that card so the user can
+			// retry, and surface why instead of leaving it stuck. Every other
+			// card stays as it is: `approving` guards each request against
+			// being paid twice, so an entry leaves it only on its own failure.
+			let failed: Vec<(String, String)> = self
+				.approving
+				.iter()
+				.filter_map(|id| service.take_approve_failure(id).map(|r| (id.clone(), r)))
+				.collect();
+			for (id, reason) in failed {
+				self.approving.remove(&id);
+				self.request_error = Some(reason);
 			}
 			let requests = service.store.pending_requests();
 			if !requests.is_empty() {
@@ -487,13 +492,12 @@ impl GoblinWalletView {
 									// request card; dispatch the actual payment.
 									self.approving.insert(req.rumor_id.clone());
 									self.request_error = None;
-									// A new send turn: only this approval's result
-									// may change the phase read here.
-									if let Some(service) = wallet.nostr_service() {
-										service.begin_send();
-									}
+									// A new send turn, carried by the task: only this
+									// approval's result may change the phase.
+									let turn = wallet.nostr_service().map(|s| s.begin_send());
 									wallet.task(crate::wallet::types::WalletTask::NostrPayRequest(
 										req.rumor_id.clone(),
+										turn,
 									));
 									close = true;
 								}
