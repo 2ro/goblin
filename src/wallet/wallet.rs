@@ -3255,11 +3255,14 @@ async fn handle_task(w: &Wallet, t: WalletTask) {
 				error!("nostr send: service not available");
 				return;
 			};
+			// The send turn this task writes the screen's phase with (see
+			// `NostrService::begin_send`).
+			let turn = service.send_turn();
 			// The identity this payment goes out as: the active one, read once
 			// here and used for the record, the payment and its receipt.
 			let from_hex = service.public_key().to_hex();
 			w.send_creating.store(true, Ordering::Relaxed);
-			service.set_send_phase(crate::nostr::send_phase::WORKING);
+			service.set_send_phase_for(turn, crate::nostr::send_phase::WORKING);
 			// Proof-on-request (frozen contract W2): when the payment context
 			// carries a `proof=` slatepack address, re-parse it authoritatively
 			// here (a second, fail-closed gate after the URI parser's shape check)
@@ -3302,7 +3305,7 @@ async fn handle_task(w: &Wallet, t: WalletTask) {
 					w.send_creating.store(false, Ordering::Relaxed);
 					if let Some(text) = w.read_slatepack_text(s.id, &s.state) {
 						match service
-							.send_payment_dm(
+							.send_payment_dm_on_screen(
 								&from_hex,
 								receiver,
 								&text,
@@ -3312,37 +3315,14 @@ async fn handle_task(w: &Wallet, t: WalletTask) {
 							.await
 						{
 							Ok(event_id) => {
-								// Proof-on-request (frozen contract 4.3.1): publish the
-								// plain "payment sent" receipt HERE at S1 dispatch, the
-								// same moment the payment envelope was accepted by a relay
-								// and the wallet UI flips to "sent", not at finalize. This
-								// closes the buyer's double-send window: an offline merchant
-								// leaves finalize hours away, and until this receipt lands
-								// the order page still shows a scannable QR for a payment
-								// already made. The encrypted PROOF stays at finalize (it
-								// does not exist before then). On failure we leave
-								// receipt_sent=false so the reconcile pass retries it.
-								let mut receipt_sent = false;
-								if crate::nostr::receipt_due_at_dispatch(
-									proof_mode,
-									order.as_deref(),
-								) {
-									let ord = order.as_deref().unwrap_or_default();
-									match service.publish_receipt_sent(&from_hex, ord, *a).await {
-										Ok(()) => receipt_sent = true,
-										Err(e) => log::warn!(
-											"nostr: dispatch receipt publish failed for {}: {e}",
-											s.id
-										),
-									}
-								}
-								if let Some(mut meta) = service.store.tx_meta(&s.id.to_string()) {
-									meta.status = crate::nostr::NostrSendStatus::AwaitingS2;
-									meta.sent_event_id = Some(event_id);
-									meta.receipt_sent = receipt_sent;
-									meta.updated_at = crate::nostr::unix_time();
-									service.store.save_tx_meta(&meta);
-								}
+								// Only while the row is still where this task left it: a
+								// fast reply may have finalized it meanwhile.
+								service.advance_after_dispatch(
+									&s.id.to_string(),
+									crate::nostr::NostrSendStatus::Created,
+									crate::nostr::NostrSendStatus::AwaitingS2,
+									event_id,
+								);
 								// Record/refresh the contact so someone you PAY shows up
 								// under Suggested (sends used to create no contact — only
 								// incoming payments did — so a person you paid first never
@@ -3371,7 +3351,32 @@ async fn handle_task(w: &Wallet, t: WalletTask) {
 								// Resolve the recipient's @username so activity + Suggested
 								// show their name, not a bare npub.
 								service.resolve_contact_identity(receiver);
-								service.set_send_phase(crate::nostr::send_phase::SENT);
+								service.set_send_phase_for(turn, crate::nostr::send_phase::SENT);
+								// Proof-on-request (frozen contract 4.3.1): publish the
+								// plain "payment sent" receipt at S1 dispatch, right after
+								// the payment envelope was accepted by a relay and the
+								// wallet UI flipped to "sent", not at finalize. This
+								// closes the buyer's double-send window: an offline merchant
+								// leaves finalize hours away, and until this receipt lands
+								// the order page still shows a scannable QR for a payment
+								// already made. It goes out after the screen shows "sent",
+								// so the spinner never waits for it. The encrypted PROOF
+								// stays at finalize (it does not exist before then). On
+								// failure receipt_sent stays false and the reconcile pass
+								// retries it.
+								if crate::nostr::receipt_due_at_dispatch(
+									proof_mode,
+									order.as_deref(),
+								) {
+									let ord = order.as_deref().unwrap_or_default();
+									match service.publish_receipt_sent(&from_hex, ord, *a).await {
+										Ok(()) => service.mark_receipt_sent(&s.id.to_string()),
+										Err(e) => log::warn!(
+											"nostr: dispatch receipt publish failed for {}: {e}",
+											s.id
+										),
+									}
+								}
 							}
 							Err(e) => {
 								error!("nostr send dispatch failed: {e}");
@@ -3387,7 +3392,10 @@ async fn handle_task(w: &Wallet, t: WalletTask) {
 											"nostr send {} completed despite the dispatch error",
 											s.id
 										);
-										service.set_send_phase(crate::nostr::send_phase::SENT);
+										service.set_send_phase_for(
+											turn,
+											crate::nostr::send_phase::SENT,
+										);
 									}
 									outcome => {
 										// Keep the error marker only on a tx still live.
@@ -3404,7 +3412,10 @@ async fn handle_task(w: &Wallet, t: WalletTask) {
 												))),
 											);
 										}
-										service.set_send_phase(crate::nostr::send_phase::FAILED);
+										service.set_send_phase_for(
+											turn,
+											crate::nostr::send_phase::FAILED,
+										);
 									}
 								}
 							}
@@ -3413,14 +3424,14 @@ async fn handle_task(w: &Wallet, t: WalletTask) {
 						// No slatepack text produced: treat as failure, and failure is
 						// final, so free the inputs this slate locked.
 						nostr_cancel_slate(w, &service, &s.id.to_string(), true);
-						service.set_send_phase(crate::nostr::send_phase::FAILED);
+						service.set_send_phase_for(turn, crate::nostr::send_phase::FAILED);
 					}
 					w.on_task_result(tx, &t);
 				}
 				Err(e) => {
 					error!("nostr send error: {:?}", e);
 					w.send_creating.store(false, Ordering::Relaxed);
-					service.fail_send(friendly_send_error(&e));
+					service.fail_send_for(turn, friendly_send_error(&e));
 				}
 			}
 		}
@@ -3429,13 +3440,15 @@ async fn handle_task(w: &Wallet, t: WalletTask) {
 				error!("nostr request: service not available");
 				return;
 			};
+			// The send turn this task writes the screen's phase with.
+			let turn = service.send_turn();
 			// The identity this request goes out as: the active one, read once.
 			let from_hex = service.public_key().to_hex();
-			service.set_send_phase(crate::nostr::send_phase::WORKING);
+			service.set_send_phase_for(turn, crate::nostr::send_phase::WORKING);
 			// Respect the recipient's published opt-out (fail-open: only an
 			// explicit "not accepting" blocks; unknown/unreachable still sends).
 			if service.accepts_requests(receiver).await == Some(false) {
-				service.set_send_phase(crate::nostr::send_phase::REQUEST_BLOCKED);
+				service.set_send_phase_for(turn, crate::nostr::send_phase::REQUEST_BLOCKED);
 				return;
 			}
 			w.invoice_creating.store(true, Ordering::Relaxed);
@@ -3475,7 +3488,7 @@ async fn handle_task(w: &Wallet, t: WalletTask) {
 					w.invoice_creating.store(false, Ordering::Relaxed);
 					if let Some(text) = w.read_slatepack_text(s.id, &s.state) {
 						match service
-							.send_payment_dm(
+							.send_payment_dm_on_screen(
 								&from_hex,
 								receiver,
 								&text,
@@ -3485,18 +3498,20 @@ async fn handle_task(w: &Wallet, t: WalletTask) {
 							.await
 						{
 							Ok(event_id) => {
-								if let Some(mut meta) = service.store.tx_meta(&s.id.to_string()) {
-									meta.status = crate::nostr::NostrSendStatus::AwaitingI2;
-									meta.sent_event_id = Some(event_id);
-									meta.updated_at = crate::nostr::unix_time();
-									service.store.save_tx_meta(&meta);
-								}
+								// Only while the row is still where this task left it: the
+								// payer may have paid, or the user cancelled, meanwhile.
+								service.advance_after_dispatch(
+									&s.id.to_string(),
+									crate::nostr::NostrSendStatus::Created,
+									crate::nostr::NostrSendStatus::AwaitingI2,
+									event_id,
+								);
 								if let Some(mut contact) = service.store.contact(receiver) {
 									contact.unknown = false;
 									service.store.save_contact(&contact);
 								}
 								service.resolve_contact_identity(receiver);
-								service.set_send_phase(crate::nostr::send_phase::SENT);
+								service.set_send_phase_for(turn, crate::nostr::send_phase::SENT);
 							}
 							Err(e) => {
 								error!("nostr request dispatch failed: {e}");
@@ -3509,22 +3524,30 @@ async fn handle_task(w: &Wallet, t: WalletTask) {
 											"nostr request {} completed despite the dispatch error",
 											s.id
 										);
-										service.set_send_phase(crate::nostr::send_phase::SENT);
+										service.set_send_phase_for(
+											turn,
+											crate::nostr::send_phase::SENT,
+										);
 									}
-									_ => service.set_send_phase(crate::nostr::send_phase::FAILED),
+									_ => {
+										service.set_send_phase_for(
+											turn,
+											crate::nostr::send_phase::FAILED,
+										);
+									}
 								}
 							}
 						}
 					} else {
 						nostr_cancel_slate(w, &service, &s.id.to_string(), true);
-						service.set_send_phase(crate::nostr::send_phase::FAILED);
+						service.set_send_phase_for(turn, crate::nostr::send_phase::FAILED);
 					}
 					w.on_task_result(tx, &t);
 				}
 				Err(e) => {
 					error!("nostr request error: {:?}", e);
 					w.invoice_creating.store(false, Ordering::Relaxed);
-					service.set_send_phase(crate::nostr::send_phase::FAILED);
+					service.set_send_phase_for(turn, crate::nostr::send_phase::FAILED);
 				}
 			}
 		}
@@ -3606,9 +3629,14 @@ async fn handle_task(w: &Wallet, t: WalletTask) {
 					w.on_tx_error(tx_id, Some(e));
 				}
 			}
-			service
-				.store
-				.update_tx_status(slate_id, crate::nostr::NostrSendStatus::Cancelled);
+			// Under the finalize lock, like the dispatch result that may be
+			// written for this row at the same time.
+			{
+				let _lock = service.lock_finalize();
+				service
+					.store
+					.update_tx_status(slate_id, crate::nostr::NostrSendStatus::Cancelled);
+			}
 			if let Err(e) = service
 				.send_control_dm(&meta.recipient_pubkey, &meta.npub, slate_id, &[])
 				.await
@@ -3761,6 +3789,8 @@ async fn handle_task(w: &Wallet, t: WalletTask) {
 			let Some(service) = w.nostr_service() else {
 				return;
 			};
+			// The send turn this task writes the screen's phase with.
+			let turn = service.send_turn();
 			let Some(mut request) = service.store.request(request_id) else {
 				error!("nostr pay: request not found");
 				return;
@@ -3771,7 +3801,7 @@ async fn handle_task(w: &Wallet, t: WalletTask) {
 			}
 			// Drive the approve button's busy/failed state so it doesn't stay
 			// greyed forever if the pay can't go through.
-			service.set_send_phase(crate::nostr::send_phase::WORKING);
+			service.set_send_phase_for(turn, crate::nostr::send_phase::WORKING);
 			// The reply goes out as the identity this request was addressed to:
 			// the requester accepts a reply only from the identity they asked.
 			// When that identity is no longer held nothing is paid (checked
@@ -3779,7 +3809,7 @@ async fn handle_task(w: &Wallet, t: WalletTask) {
 			let from_hex = service.request_identity(&request);
 			if let Err(e) = service.sender_keys(&from_hex) {
 				error!("nostr pay: {e}");
-				service.fail_send("This request is no longer payable.".to_string());
+				service.fail_send_for(turn, "This request is no longer payable.".to_string());
 				return;
 			}
 			// Re-parse and re-validate the stored slatepack: it must still be
@@ -3809,29 +3839,27 @@ async fn handle_task(w: &Wallet, t: WalletTask) {
 							proof_address: None,
 						});
 						match service
-							.send_payment_dm(&from_hex, &request.npub, &text, None, &[])
+							.send_payment_dm_on_screen(&from_hex, &request.npub, &text, None, &[])
 							.await
 						{
 							Ok(event_id) => {
-								if let Some(mut meta) = service.store.tx_meta(&reply.id.to_string())
-								{
-									meta.status =
-										crate::nostr::NostrSendStatus::PaidAwaitingFinalize;
-									meta.sent_event_id = Some(event_id);
-									meta.updated_at = crate::nostr::unix_time();
-									service.store.save_tx_meta(&meta);
-								}
+								service.advance_after_dispatch(
+									&reply.id.to_string(),
+									crate::nostr::NostrSendStatus::ReceivedNoReply,
+									crate::nostr::NostrSendStatus::PaidAwaitingFinalize,
+									event_id,
+								);
 							}
 							Err(e) => error!("nostr pay reply dispatch failed: {e}"),
 						}
 						request.status = crate::nostr::RequestStatus::Approved;
 						service.store.save_request(&request);
-						service.set_send_phase(crate::nostr::send_phase::SENT);
+						service.set_send_phase_for(turn, crate::nostr::send_phase::SENT);
 						sync_wallet_data(&w, false);
 					}
 					Err(e) => {
 						error!("nostr pay failed: {:?}", e);
-						service.fail_send(friendly_send_error(&e));
+						service.fail_send_for(turn, friendly_send_error(&e));
 					}
 				},
 				Ok((s, _)) if s.state == SlateState::Standard1 => {
@@ -3861,35 +3889,39 @@ async fn handle_task(w: &Wallet, t: WalletTask) {
 								proof_address: None,
 							});
 							match service
-								.send_payment_dm(&from_hex, &request.npub, &text, None, &[])
+								.send_payment_dm_on_screen(
+									&from_hex,
+									&request.npub,
+									&text,
+									None,
+									&[],
+								)
 								.await
 							{
 								Ok(event_id) => {
-									if let Some(mut meta) =
-										service.store.tx_meta(&reply.id.to_string())
-									{
-										meta.status = crate::nostr::NostrSendStatus::RepliedS2;
-										meta.sent_event_id = Some(event_id);
-										meta.updated_at = crate::nostr::unix_time();
-										service.store.save_tx_meta(&meta);
-									}
+									service.advance_after_dispatch(
+										&reply.id.to_string(),
+										crate::nostr::NostrSendStatus::ReceivedNoReply,
+										crate::nostr::NostrSendStatus::RepliedS2,
+										event_id,
+									);
 								}
 								Err(e) => error!("nostr accept reply dispatch failed: {e}"),
 							}
 							request.status = crate::nostr::RequestStatus::Approved;
 							service.store.save_request(&request);
-							service.set_send_phase(crate::nostr::send_phase::SENT);
+							service.set_send_phase_for(turn, crate::nostr::send_phase::SENT);
 							sync_wallet_data(&w, false);
 						}
 						Err(e) => {
 							error!("nostr accept failed: {:?}", e);
-							service.fail_send(friendly_send_error(&e));
+							service.fail_send_for(turn, friendly_send_error(&e));
 						}
 					}
 				}
 				_ => {
 					error!("nostr pay: stored slatepack is not payable");
-					service.fail_send("This request is no longer payable.".to_string());
+					service.fail_send_for(turn, "This request is no longer payable.".to_string());
 					request.status = crate::nostr::RequestStatus::Expired;
 					service.store.save_request(&request);
 				}

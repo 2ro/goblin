@@ -1037,10 +1037,23 @@ enum ReconcileAction {
 /// before its dispatch finished and the user never saw a failure, so it is
 /// re-sent. Replies (S2, I2) are re-sent as before. A `SendFailed` row is final:
 /// the UI said "Couldn't send" and "Try again" built a new slate, so re-sending
-/// the old one could pay twice.
-fn reconcile_action(direction: NostrTxDirection, status: NostrSendStatus) -> ReconcileAction {
+/// the old one could pay twice. `identity_held` is whether the identity
+/// recorded for the row is still held: a `Created` row whose identity is gone
+/// can never be sent as it, so it is closed like a failed dispatch and its
+/// coins unlock, instead of staying locked until expiry.
+fn reconcile_action(
+	direction: NostrTxDirection,
+	status: NostrSendStatus,
+	identity_held: bool,
+) -> ReconcileAction {
 	use grin_wallet_libwallet::SlateState;
 	match (direction, status) {
+		(NostrTxDirection::Sent, NostrSendStatus::Created)
+		| (NostrTxDirection::RequestedByUs, NostrSendStatus::Created)
+			if !identity_held =>
+		{
+			ReconcileAction::Heal
+		}
 		// S1 or I1 never dispatched (crash before the dispatch result).
 		(NostrTxDirection::Sent, NostrSendStatus::Created) => {
 			ReconcileAction::Resend(SlateState::Standard1)
@@ -1094,12 +1107,15 @@ async fn reconcile(svc: &Arc<NostrService>, wallet: &Wallet) {
 			}
 			continue;
 		}
-		let state = match reconcile_action(meta.direction, meta.status) {
+		let identity_held = svc.sender_keys(&meta.recipient_pubkey).is_ok();
+		let state = match reconcile_action(meta.direction, meta.status, identity_held) {
 			ReconcileAction::Resend(state) => state,
 			ReconcileAction::Heal => {
 				// Failure is final: a dispatch failure (left by an older build) is
 				// never re-sent or finalized (decide() drops its reply), because
-				// the user saw "Couldn't send" and may have paid again. Close it:
+				// the user saw "Couldn't send" and may have paid again. A row that
+				// never went out and whose identity is gone is closed the same
+				// way, since it can never be sent as that identity. Close it:
 				// the row ends Cancelled even when the grin cancel cannot run yet
 				// (no node sync, unknown state), and the heal pass frees its
 				// inputs later.
@@ -2149,8 +2165,13 @@ async fn handle_wrap(svc: &Arc<NostrService>, wallet: &Wallet, event: Event) {
 			wallet.resume_node_polling();
 			match wallet.nostr_finalize_post(&slate) {
 				Ok(true) => {
-					svc.store
-						.update_tx_status(&slate.id.to_string(), NostrSendStatus::Finalized);
+					// Under the finalize lock, so a send's dispatch result written
+					// at the same time cannot overwrite Finalized.
+					{
+						let _lock = svc.lock_finalize();
+						svc.store
+							.update_tx_status(&slate.id.to_string(), NostrSendStatus::Finalized);
+					}
 					// Finalize+post committed; mark dedup before the sync tail so a
 					// crash can't re-finalize on catch-up (grin rejects a second
 					// finalize and the meta is now Finalized, which decide() drops —
@@ -2489,27 +2510,30 @@ mod tests {
 		use NostrTxDirection::*;
 		// C1: the UI showed "Couldn't send" and "Try again" built a new slate,
 		// so the old S1/I1 is closed, never re-sent (that paid twice).
-		assert_eq!(reconcile_action(Sent, SendFailed), ReconcileAction::Heal);
 		assert_eq!(
-			reconcile_action(RequestedByUs, SendFailed),
+			reconcile_action(Sent, SendFailed, true),
+			ReconcileAction::Heal
+		);
+		assert_eq!(
+			reconcile_action(RequestedByUs, SendFailed, true),
 			ReconcileAction::Heal
 		);
 		// A crash before the dispatch result: the user saw no failure, re-send.
 		assert_eq!(
-			reconcile_action(Sent, Created),
+			reconcile_action(Sent, Created, true),
 			ReconcileAction::Resend(grin_wallet_libwallet::SlateState::Standard1)
 		);
 		assert_eq!(
-			reconcile_action(RequestedByUs, Created),
+			reconcile_action(RequestedByUs, Created, true),
 			ReconcileAction::Resend(grin_wallet_libwallet::SlateState::Invoice1)
 		);
 		// Reply re-sends are unchanged.
 		assert_eq!(
-			reconcile_action(Received, ReceivedNoReply),
+			reconcile_action(Received, ReceivedNoReply, true),
 			ReconcileAction::Resend(grin_wallet_libwallet::SlateState::Standard2)
 		);
 		assert_eq!(
-			reconcile_action(RequestedOfUs, ReceivedNoReply),
+			reconcile_action(RequestedOfUs, ReceivedNoReply, true),
 			ReconcileAction::Resend(grin_wallet_libwallet::SlateState::Invoice2)
 		);
 		// Everything already dispatched or terminal is left alone.
@@ -2521,8 +2545,42 @@ mod tests {
 			(Received, RepliedS2),
 			(RequestedOfUs, PaidAwaitingFinalize),
 		] {
-			assert_eq!(reconcile_action(d, s), ReconcileAction::Skip, "{d:?} {s:?}");
+			assert_eq!(
+				reconcile_action(d, s, true),
+				ReconcileAction::Skip,
+				"{d:?} {s:?}"
+			);
 		}
+	}
+
+	#[test]
+	fn a_created_row_whose_identity_is_gone_is_closed() {
+		use NostrSendStatus::*;
+		use NostrTxDirection::*;
+		// It can never be sent as its identity: closed like a failed
+		// dispatch, so its coins unlock instead of waiting for expiry.
+		assert_eq!(
+			reconcile_action(Sent, Created, false),
+			ReconcileAction::Heal
+		);
+		assert_eq!(
+			reconcile_action(RequestedByUs, Created, false),
+			ReconcileAction::Heal
+		);
+		// Everything else is unchanged by it: a reply whose identity is gone
+		// stays as it was (its send fails and expiry handles it).
+		assert_eq!(
+			reconcile_action(Received, ReceivedNoReply, false),
+			ReconcileAction::Resend(grin_wallet_libwallet::SlateState::Standard2)
+		);
+		assert_eq!(
+			reconcile_action(Sent, SendFailed, false),
+			ReconcileAction::Heal
+		);
+		assert_eq!(
+			reconcile_action(Sent, AwaitingS2, false),
+			ReconcileAction::Skip
+		);
 	}
 
 	/// A proof-mode SEND meta at a given lifecycle status, order context present,

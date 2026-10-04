@@ -73,6 +73,39 @@ impl NostrService {
 		held_keys_for(&self.recv.read(), from_hex)
 	}
 
+	/// The keys a receipt or proof of a payment is signed with: the identity
+	/// that paid, or the active one when that identity is no longer held
+	/// (deleted, or replaced by an import). Unlike a reply, nobody checks their
+	/// sender (the merchant matches the order handle), and without them the
+	/// order is never credited, so they never fail for want of the paying
+	/// identity. The fallback is logged once per identity and order.
+	fn payment_proof_keys(&self, from_hex: &str, order: &str) -> Keys {
+		static LOGGED: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+		match self.sender_keys(from_hex) {
+			Ok(keys) => keys,
+			Err(e) => {
+				let key = format!("{from_hex}:{order}");
+				let first = LOGGED
+					.lock()
+					.map(|mut seen| {
+						let first = !seen.contains(&key);
+						if first && seen.len() < 256 {
+							seen.push(key);
+						}
+						first
+					})
+					.unwrap_or(true);
+				if first {
+					warn!(
+						"nostr: {e}; the receipt and proof for order {order} go out as the \
+						 active identity"
+					);
+				}
+				self.keys()
+			}
+		}
+	}
+
 	/// Our identity (pubkey hex) for an incoming request or surfaced payment:
 	/// the one its wrap was addressed to. A request stored before Build 170
 	/// has no record of it and uses the active identity, as before.
@@ -83,14 +116,105 @@ impl NostrService {
 			.unwrap_or_else(|| self.public_key().to_hex())
 	}
 
+	/// Move a tx row on after its message went out (Created to AwaitingS2 or
+	/// AwaitingI2, ReceivedNoReply to RepliedS2 or PaidAwaitingFinalize), only
+	/// while it is still in `left_at`, the status the sending task left it in.
+	/// The publish can take a while: a fast reply may have finalized the row
+	/// meanwhile, or the user cancelled it, and that must stand (a Finalized row
+	/// still owes its proof; a Cancelled one must not reopen). Re-read under the
+	/// finalize lock, as reconcile does. True when the row moved on.
+	pub fn advance_after_dispatch(
+		&self,
+		slate_id: &str,
+		left_at: NostrSendStatus,
+		next: NostrSendStatus,
+		event_id: String,
+	) -> bool {
+		let _lock = self.lock_finalize();
+		let Some(mut meta) = self.store.tx_meta(slate_id) else {
+			return false;
+		};
+		if meta.status != left_at {
+			info!(
+				"nostr: {slate_id} is {:?} now, not moved to {:?}",
+				meta.status, next
+			);
+			return false;
+		}
+		meta.status = next;
+		meta.sent_event_id = Some(event_id);
+		meta.updated_at = unix_time();
+		self.store.save_tx_meta(&meta);
+		true
+	}
+
+	/// Record that the plain receipt of a send landed. Re-read under the
+	/// finalize lock and only that flag changes, so a status written meanwhile
+	/// (a fast reply finalized it, the user cancelled it) is kept.
+	pub fn mark_receipt_sent(&self, slate_id: &str) {
+		let _lock = self.lock_finalize();
+		if let Some(mut meta) = self.store.tx_meta(slate_id) {
+			meta.receipt_sent = true;
+			meta.updated_at = unix_time();
+			self.store.save_tx_meta(&meta);
+		}
+	}
+
 	/// Dispatch a payment DM (slatepack + optional note) to a recipient,
 	/// publishing to their DM relays plus our own relay set. `relay_hints`
 	/// are extra recipient relays carried by an nprofile the sender pasted
 	/// or scanned — the only routing info we have for a fresh recipient
 	/// whose kind 10050 isn't discoverable from our relays. Sealed and signed
 	/// by our identity `from_hex` (see [`Self::sender_keys`]).
+	///
+	/// One attempt, as Build 169 timed it: for the messages nobody waits for on
+	/// screen (the auto-receive reply, a recovery re-send), which their own
+	/// retry at the next service start covers.
 	pub async fn send_payment_dm(
 		&self,
+		from_hex: &str,
+		receiver_hex: &str,
+		slatepack: &str,
+		note: Option<&str>,
+		relay_hints: &[String],
+	) -> Result<String, String> {
+		self.send_payment(
+			Push::Short,
+			from_hex,
+			receiver_hex,
+			slatepack,
+			note,
+			relay_hints,
+		)
+		.await
+	}
+
+	/// [`Self::send_payment_dm`] for a message the user starts and waits for on
+	/// screen (a payment, a request, the reply of an approval): it is pushed
+	/// until a relay accepts it or the budget is used, then read back before it
+	/// may fail, because that failure cancels the payment.
+	pub async fn send_payment_dm_on_screen(
+		&self,
+		from_hex: &str,
+		receiver_hex: &str,
+		slatepack: &str,
+		note: Option<&str>,
+		relay_hints: &[String],
+	) -> Result<String, String> {
+		self.send_payment(
+			Push::Long,
+			from_hex,
+			receiver_hex,
+			slatepack,
+			note,
+			relay_hints,
+		)
+		.await
+	}
+
+	async fn send_payment(
+		&self,
+		push: Push,
 		from_hex: &str,
 		receiver_hex: &str,
 		slatepack: &str,
@@ -115,7 +239,7 @@ impl NostrService {
 		connect_relays(&client, &urls).await;
 
 		let wrap = build_dm_wrap(&from, &receiver, v3, content, tags).await?;
-		self.dispatch_dm(&client, urls, &wrap, receiver).await
+		self.dispatch_dm(&client, urls, &wrap, receiver, push).await
 	}
 
 	/// Dispatch a control DM that voids a pending request (a decline by the payer
@@ -144,7 +268,8 @@ impl NostrService {
 		connect_relays(&client, &urls).await;
 
 		let wrap = build_dm_wrap(&from, &receiver, v3, content, tags).await?;
-		self.dispatch_dm(&client, urls, &wrap, receiver).await
+		self.dispatch_dm(&client, urls, &wrap, receiver, Push::Short)
+			.await
 	}
 
 	/// Publish the plain "payment sent" receipt (frozen contract 4.3.1): a
@@ -154,21 +279,22 @@ impl NostrService {
 	/// does). The proof and kernel excess are DELIBERATELY omitted here: a Grin
 	/// payment proof carries the buyer's own slatepack address, and publishing it
 	/// in the clear would leak the buyer's wallet address to the world. Signed
-	/// by our identity `from_hex`, the one that paid.
+	/// by our identity `from_hex`, the one that paid (see
+	/// [`Self::payment_proof_keys`]).
 	pub async fn publish_receipt_sent(
 		&self,
 		from_hex: &str,
 		order: &str,
 		amount: u64,
 	) -> Result<(), String> {
-		let from = self.sender_keys(from_hex)?;
+		let from = self.payment_proof_keys(from_hex, order);
 		let client = {
 			let r_client = self.client.read();
 			r_client.clone().ok_or("nostr client is not running")?
 		};
 		let event = receipt_sent_event(&from, order, amount)?;
 		let urls: Vec<String> = self.relays();
-		publish_accepted(&client, &urls, &event)
+		publish(&client, &urls, &event, Push::Short)
 			.await
 			.map_err(|e| format!("receipt publish failed: {e}"))
 	}
@@ -178,7 +304,8 @@ impl NostrService {
 	/// tagged with the invoice number, the amount, and the kernel excess. Encrypted
 	/// end to end, so the proof (which contains the buyer's sender address) never
 	/// goes out in the clear; only the addressed watcher can read it. Sealed and
-	/// signed by our identity `from_hex`, the one that paid.
+	/// signed by our identity `from_hex`, the one that paid (see
+	/// [`Self::payment_proof_keys`]).
 	pub async fn deliver_proof_wrap(
 		&self,
 		from_hex: &str,
@@ -188,7 +315,7 @@ impl NostrService {
 		kernel_hex: &str,
 		proof_json: &str,
 	) -> Result<(), String> {
-		let from = self.sender_keys(from_hex)?;
+		let from = self.payment_proof_keys(from_hex, order);
 		let client = {
 			let r_client = self.client.read();
 			r_client.clone().ok_or("nostr client is not running")?
@@ -214,7 +341,7 @@ impl NostrService {
 		)?;
 		let urls: Vec<String> = self.relays();
 		connect_relays(&client, &urls).await;
-		publish_accepted(&client, &urls, &wrap)
+		publish(&client, &urls, &wrap, Push::Short)
 			.await
 			.map_err(|e| format!("proof delivery failed: {e}"))
 	}
@@ -226,8 +353,9 @@ impl NostrService {
 		urls: Vec<String>,
 		wrap: &Event,
 		receiver: PublicKey,
+		push: Push,
 	) -> Result<String, String> {
-		publish_accepted(client, &urls, wrap)
+		publish(client, &urls, wrap, push)
 			.await
 			.map_err(|e| format!("send failed: {e}"))?;
 		let event_id = wrap.id;
@@ -459,10 +587,36 @@ fn receipt_sent_event(from: &Keys, order: &str, amount: u64) -> Result<Event, St
 		.map_err(|e| format!("receipt sign failed: {e}"))
 }
 
+/// How hard a wallet message is pushed out before it counts as not sent.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Push {
+	/// A message the user starts and waits for on screen: attempts again while
+	/// a whole attempt fits in SEND_TIMEOUT, then a read-back by id before any
+	/// failure verdict (that verdict cancels the payment).
+	Long,
+	/// Any other message: one attempt within SEND_TIMEOUT, as Build 169 timed
+	/// it. Its own retry (next service start, receipt and proof retries) covers
+	/// a miss.
+	Short,
+}
+
 /// Least time between the starts of two publish attempts. An attempt that
 /// comes back at once (no relay could even take the event yet) waits out the
 /// rest of it, so a dead network does not spin.
 const RETRY_GAP: Duration = Duration::from_secs(2);
+
+/// Time a whole attempt needs: the pool's own OK wait per relay (relay
+/// constants WAIT_FOR_OK_TIMEOUT). Another attempt starts only while this much
+/// of the budget is left, so an attempt is never cut by the budget.
+const ATTEMPT_WINDOW: Duration = Duration::from_secs(10);
+
+/// Hang guard for one attempt, above the longest the pool takes for one (its
+/// OK wait, a NIP-42 auth wait, and a second OK wait: 27 s). Reaching it is
+/// not a verdict: the read-back decides.
+const ATTEMPT_CAP: Duration = Duration::from_secs(30);
+
+/// How long the read-back by id waits for the relays.
+const READBACK_WAIT: Duration = Duration::from_secs(5);
 
 /// What one publish attempt came back with.
 enum Attempt {
@@ -470,12 +624,62 @@ enum Attempt {
 	Answered(HashSet<RelayUrl>, HashMap<RelayUrl, String>),
 	/// The pool refused the send outright (no relays, a relay not added).
 	Refused(String),
-	/// The attempt ran into the end of the budget.
+	/// No answer within the time given to the attempt.
 	TimedOut,
 }
 
 /// Publish a finished wallet event (a DM wrap, a receipt, a proof wrap) to
-/// `urls` until a relay accepts it, within SEND_TIMEOUT for the whole publish.
+/// `urls` in the given [`Push`] mode. Ok means a relay accepted it (or, for
+/// [`Push::Long`], that a relay holds it).
+async fn publish(
+	client: &Client,
+	urls: &[String],
+	event: &Event,
+	push: Push,
+) -> Result<(), String> {
+	let send = |cap: Duration| async move {
+		match tokio::time::timeout(cap, client.send_event_to(urls, event)).await {
+			Ok(Ok(out)) => Attempt::Answered(out.success, out.failed),
+			Ok(Err(e)) => Attempt::Refused(e.to_string()),
+			Err(_) => Attempt::TimedOut,
+		}
+	};
+	match push {
+		Push::Short => publish_once(send(SEND_TIMEOUT).await),
+		Push::Long => {
+			let start = tokio::time::Instant::now();
+			publish_until_accepted(
+				SEND_TIMEOUT,
+				|| start.elapsed(),
+				|| send(ATTEMPT_CAP),
+				tokio::time::sleep,
+				|| async move {
+					let filter = Filter::new().id(event.id).limit(1);
+					matches!(
+						client.fetch_events_from(urls, filter, READBACK_WAIT).await,
+						Ok(found) if !found.is_empty()
+					)
+				},
+			)
+			.await
+		}
+	}
+}
+
+/// The [`Push::Short`] verdict on its single attempt: no acceptance is an
+/// error (the message is not marked delivered and its own retry applies).
+fn publish_once(attempt: Attempt) -> Result<(), String> {
+	match attempt {
+		Attempt::Answered(success, failed) => relay_accepted(&success, &failed),
+		Attempt::Refused(e) => Err(e),
+		Attempt::TimedOut => Err("timeout".to_string()),
+	}
+}
+
+/// The [`Push::Long`] rule, apart from the network and the clock so a test
+/// can drive it. `elapsed` is the time since the publish began, `attempt`
+/// sends once (the pool bounds it), `pause` waits, `read_back` asks the relays
+/// whether one holds the event.
 ///
 /// A relay that is not connected yet (cold start, a slow Tor circuit) gets the
 /// event queued by the pool, which waits 10 s for its OK and then reports the
@@ -483,61 +687,59 @@ enum Attempt {
 /// an attempt that no relay accepted is sent again, the same event with the
 /// same id: a relay that already holds it answers OK (duplicate), which also
 /// collects the acknowledgement of a queued copy that landed meanwhile. The
-/// send fails only when the whole budget passed with no relay accepting it, or
-/// at once when the pool refuses it outright, as before.
-async fn publish_accepted(client: &Client, urls: &[String], event: &Event) -> Result<(), String> {
-	let start = tokio::time::Instant::now();
-	publish_until_accepted(
-		SEND_TIMEOUT,
-		|| start.elapsed(),
-		|remaining| async move {
-			match tokio::time::timeout(remaining, client.send_event_to(urls, event)).await {
-				Ok(Ok(out)) => Attempt::Answered(out.success, out.failed),
-				Ok(Err(e)) => Attempt::Refused(e.to_string()),
-				Err(_) => Attempt::TimedOut,
-			}
-		},
-		tokio::time::sleep,
-	)
-	.await
-}
-
-/// The retry rule of [`publish_accepted`], apart from the network and the
-/// clock so a test can drive it. `elapsed` is the time since the publish
-/// began, `attempt` sends once within the time it is given, `pause` waits.
-async fn publish_until_accepted<C, A, AF, P, PF>(
+/// pool answers an attempt only when its slowest relay is done, so an attempt
+/// in flight is never cut: another one starts only while a whole attempt fits
+/// in the budget. Before any failure verdict the event is read back by id; a
+/// relay that holds it makes it a send. Only the pool refusing the very first
+/// attempt outright (no relays, a relay not added) fails at once, as before.
+async fn publish_until_accepted<C, A, AF, P, PF, R, RF>(
 	budget: Duration,
 	elapsed: C,
 	mut attempt: A,
 	mut pause: P,
+	mut read_back: R,
 ) -> Result<(), String>
 where
 	C: Fn() -> Duration,
-	A: FnMut(Duration) -> AF,
+	A: FnMut() -> AF,
 	AF: std::future::Future<Output = Attempt>,
 	P: FnMut(Duration) -> PF,
 	PF: std::future::Future<Output = ()>,
+	R: FnMut() -> RF,
+	RF: std::future::Future<Output = bool>,
 {
-	let mut why = "no relay accepted it".to_string();
+	// Why the last attempt did not count, for the error.
+	let mut why: String;
+	let mut first = true;
 	loop {
 		let began = elapsed();
-		let remaining = budget.saturating_sub(began);
-		if remaining.is_zero() {
-			return Err(why);
-		}
-		match attempt(remaining).await {
-			Attempt::Refused(e) => return Err(e),
-			Attempt::TimedOut => return Err(format!("timeout ({why})")),
+		match attempt().await {
+			Attempt::Refused(e) if first => return Err(e),
+			Attempt::Refused(e) => why = e,
+			// The pool did not answer within the hang guard: retrying a stuck
+			// pool is pointless, the read-back decides.
+			Attempt::TimedOut => {
+				why = "no answer from the relays".to_string();
+				break;
+			}
 			Attempt::Answered(success, failed) => match relay_accepted(&success, &failed) {
 				Ok(()) => return Ok(()),
 				Err(e) => why = e,
 			},
 		}
-		let took = elapsed().saturating_sub(began);
-		if took < RETRY_GAP {
-			pause((RETRY_GAP - took).min(budget.saturating_sub(elapsed()))).await;
+		first = false;
+		let wait = RETRY_GAP.saturating_sub(elapsed().saturating_sub(began));
+		if elapsed() + wait + ATTEMPT_WINDOW > budget {
+			break;
+		}
+		if !wait.is_zero() {
+			pause(wait).await;
 		}
 	}
+	if read_back().await {
+		return Ok(());
+	}
+	Err(why)
 }
 
 /// Whether a relay publish counts as sent: at least one relay accepted the
@@ -620,6 +822,7 @@ mod tests {
 	const BUDGET: Duration = Duration::from_secs(40);
 	/// The pool's own OK wait per relay (relay/constants.rs WAIT_FOR_OK_TIMEOUT).
 	const OK_WAIT: Duration = Duration::from_secs(10);
+	const OURS: &str = "wss://relay.floonet.dev";
 
 	fn accepted_by(relay: &str) -> Attempt {
 		let mut success = HashSet::new();
@@ -629,32 +832,35 @@ mod tests {
 
 	fn none_accepted(why: &str) -> Attempt {
 		let mut failed = HashMap::new();
-		failed.insert(url("wss://relay.floonet.dev"), why.to_string());
+		failed.insert(url(OURS), why.to_string());
 		Attempt::Answered(HashSet::new(), failed)
 	}
 
-	/// Run the retry rule on a fake clock. `step` gets the attempt's start time
-	/// and the time it may use, and returns how long it took and its outcome;
-	/// a step that would outlast its time is a timeout at the deadline. Pauses
-	/// only move the clock. Returns the result, the clock at the end, and the
-	/// number of attempts.
-	async fn drive(
-		step: impl Fn(Duration, Duration) -> (Duration, Attempt),
-	) -> (Result<(), String>, Duration, usize) {
+	/// What the fake run did.
+	struct Run {
+		result: Result<(), String>,
+		/// The fake clock when the verdict was given.
+		at: Duration,
+		attempts: usize,
+		read_backs: usize,
+	}
+
+	/// Run the [`Push::Long`] rule on a fake clock. `step` gets the attempt's
+	/// start time and returns how long the pool took to answer and what it
+	/// answered (the pool answers when its slowest relay is done). `held`
+	/// answers the read-back. Pauses and a read-back only move the clock.
+	async fn drive(step: impl Fn(Duration) -> (Duration, Attempt), held: bool) -> Run {
 		let clock = Rc::new(Cell::new(Duration::ZERO));
 		let attempts = Rc::new(Cell::new(0usize));
+		let read_backs = Rc::new(Cell::new(0usize));
 		let result = publish_until_accepted(
 			BUDGET,
 			|| clock.get(),
-			|remaining| {
-				let (clock, attempts) = (clock.clone(), attempts.clone());
+			|| {
 				attempts.set(attempts.get() + 1);
-				let (took, outcome) = step(clock.get(), remaining);
+				let (took, outcome) = step(clock.get());
+				let clock = clock.clone();
 				async move {
-					if took >= remaining {
-						clock.set(clock.get() + remaining);
-						return Attempt::TimedOut;
-					}
 					clock.set(clock.get() + took);
 					outcome
 				}
@@ -663,29 +869,60 @@ mod tests {
 				let clock = clock.clone();
 				async move { clock.set(clock.get() + d) }
 			},
+			|| {
+				read_backs.set(read_backs.get() + 1);
+				let clock = clock.clone();
+				async move {
+					clock.set(clock.get() + READBACK_WAIT);
+					held
+				}
+			},
 		)
 		.await;
-		(result, clock.get(), attempts.get())
+		Run {
+			result,
+			at: clock.get(),
+			attempts: attempts.get(),
+			read_backs: read_backs.get(),
+		}
+	}
+
+	/// Two relays, as the pool joins them: ours connects at `up` (a copy queued
+	/// before is acknowledged then), the other never connects and holds every
+	/// attempt for the full OK wait. The attempt answers at its start + 10 s.
+	fn ours_up_at(up: Duration) -> impl Fn(Duration) -> (Duration, Attempt) {
+		move |start| {
+			let mut failed = HashMap::new();
+			failed.insert(url("wss://dead.example"), "timeout".to_string());
+			let mut success = HashSet::new();
+			if up < start + OK_WAIT {
+				success.insert(url(OURS));
+			} else {
+				failed.insert(url(OURS), "timeout".to_string());
+			}
+			(OK_WAIT, Attempt::Answered(success, failed))
+		}
 	}
 
 	/// Nothing accepted on the first attempt (the relay was still connecting),
-	/// accepted on the second: a send.
+	/// accepted on the second: a send, no read-back.
 	#[tokio::test]
 	async fn a_publish_accepted_on_a_later_attempt_is_a_send() {
-		let (result, at, attempts) = drive(|start, _| {
-			if start.is_zero() {
-				(OK_WAIT, none_accepted("timeout"))
-			} else {
-				(
-					Duration::from_millis(300),
-					accepted_by("wss://relay.floonet.dev"),
-				)
-			}
-		})
+		let run = drive(
+			|start| {
+				if start.is_zero() {
+					(OK_WAIT, none_accepted("timeout"))
+				} else {
+					(Duration::from_millis(300), accepted_by(OURS))
+				}
+			},
+			false,
+		)
 		.await;
-		assert!(result.is_ok());
-		assert_eq!(attempts, 2);
-		assert_eq!(at, OK_WAIT + Duration::from_millis(300));
+		assert!(run.result.is_ok());
+		assert_eq!(run.attempts, 2);
+		assert_eq!(run.read_backs, 0);
+		assert_eq!(run.at, OK_WAIT + Duration::from_millis(300));
 	}
 
 	/// The re-sent copy is answered as a duplicate (the queued first copy has
@@ -693,91 +930,106 @@ mod tests {
 	/// accepted) or OK false with "duplicate:".
 	#[tokio::test]
 	async fn a_duplicate_acknowledgement_is_a_send() {
-		let (result, _, attempts) = drive(|start, _| {
-			if start.is_zero() {
-				(OK_WAIT, none_accepted("timeout"))
-			} else {
-				(
-					Duration::from_millis(300),
-					none_accepted("duplicate: have this event"),
-				)
-			}
-		})
+		let run = drive(
+			|start| {
+				if start.is_zero() {
+					(OK_WAIT, none_accepted("timeout"))
+				} else {
+					(
+						Duration::from_millis(300),
+						none_accepted("duplicate: have this event"),
+					)
+				}
+			},
+			false,
+		)
 		.await;
-		assert!(result.is_ok());
-		assert_eq!(attempts, 2);
+		assert!(run.result.is_ok());
+		assert_eq!(run.attempts, 2);
 	}
 
 	/// Truly offline: every attempt waits out the pool's OK wait, or comes
-	/// back at once and is paced. The send fails only when the budget is used,
-	/// never later than it, and a dead network does not spin.
+	/// back at once and is paced. Attempts start only while a whole one fits
+	/// in the budget, the read-back finds nothing, and only then is it a
+	/// failed send; a dead network does not spin.
 	#[tokio::test]
 	async fn no_acceptance_within_the_budget_is_a_failed_send() {
-		let (result, at, attempts) = drive(|_, _| (OK_WAIT, none_accepted("timeout"))).await;
-		let err = result.unwrap_err();
+		let run = drive(|_| (OK_WAIT, none_accepted("timeout")), false).await;
+		let err = run.result.unwrap_err();
 		assert!(err.contains("no relay accepted it"), "{err}");
-		assert_eq!(at, BUDGET);
-		assert_eq!(attempts, 4);
+		assert_eq!(run.attempts, 4);
+		assert_eq!(run.read_backs, 1);
+		assert_eq!(run.at, BUDGET + READBACK_WAIT);
 
-		let (result, at, attempts) =
-			drive(|_, _| (Duration::ZERO, none_accepted("relay not connected"))).await;
-		assert!(result.is_err());
-		assert_eq!(at, BUDGET);
-		assert_eq!(attempts, (BUDGET.as_secs() / RETRY_GAP.as_secs()) as usize);
+		let run = drive(
+			|_| (Duration::ZERO, none_accepted("relay not connected")),
+			false,
+		)
+		.await;
+		assert!(run.result.is_err());
+		assert_eq!(run.read_backs, 1);
+		// Attempts at 0, 2, ..., 30 s: the last one that still has a whole
+		// attempt's time before the budget ends.
+		assert_eq!(run.attempts, 16);
+		assert_eq!(run.at, Duration::from_secs(30) + READBACK_WAIT);
 	}
 
-	/// The pool refusing the send outright (no relays, a relay not added) is
-	/// an error at once, as before.
+	/// The pool refusing the first attempt outright (no relays, a relay not
+	/// added) is an error at once, as before: no retry, no read-back.
 	#[tokio::test]
 	async fn a_refused_publish_fails_at_once() {
-		let (result, at, attempts) =
-			drive(|_, _| (Duration::ZERO, Attempt::Refused("relay not found".into()))).await;
-		assert_eq!(result.unwrap_err(), "relay not found");
-		assert_eq!(at, Duration::ZERO);
-		assert_eq!(attempts, 1);
+		let run = drive(
+			|_| (Duration::ZERO, Attempt::Refused("relay not found".into())),
+			true,
+		)
+		.await;
+		assert_eq!(run.result.unwrap_err(), "relay not found");
+		assert_eq!(run.at, Duration::ZERO);
+		assert_eq!(run.attempts, 1);
+		assert_eq!(run.read_backs, 0);
 	}
 
-	/// A relay that connects `up` after the publish began: a queued copy goes
-	/// out and is acknowledged while an attempt waits, so the send is reported
-	/// at about that moment; after the budget it is a failed send.
+	/// The join model: ours connects late while a dead second relay holds every
+	/// attempt for its full OK wait. An acceptance inside the last attempt
+	/// (ours up at 33 s, that attempt ends at 40 s) is kept: no attempt is
+	/// cut. The send is reported when the attempt ends.
 	#[tokio::test]
 	async fn a_relay_that_connects_late_still_gets_the_send() {
-		for up in [5u64, 15, 30, 39] {
-			let up = Duration::from_secs(up);
-			let (result, at, _) = drive(|start, remaining| {
-				let window = OK_WAIT.min(remaining);
-				if up <= start {
-					(
-						Duration::from_millis(300),
-						accepted_by("wss://relay.floonet.dev"),
-					)
-				} else if up < start + window {
-					(up - start, accepted_by("wss://relay.floonet.dev"))
-				} else {
-					(window, none_accepted("timeout"))
-				}
-			})
-			.await;
-			assert!(result.is_ok(), "relay up at {up:?}");
-			// At the moment it connects, or one round trip later when it
-			// connects right as an attempt ends.
-			assert!(
-				at >= up && at <= up + Duration::from_millis(300),
-				"relay up at {up:?}, sent at {at:?}"
-			);
+		for (up, sent_at) in [(5u64, 10u64), (15, 20), (33, 40)] {
+			let run = drive(ours_up_at(Duration::from_secs(up)), false).await;
+			assert!(run.result.is_ok(), "ours up at {up} s");
+			assert_eq!(run.at, Duration::from_secs(sent_at), "ours up at {up} s");
+			assert_eq!(run.read_backs, 0);
 		}
-		let up = Duration::from_secs(45);
-		let (result, at, _) = drive(|start, remaining| {
-			let window = OK_WAIT.min(remaining);
-			if up < start + window {
-				(up - start, accepted_by("wss://relay.floonet.dev"))
-			} else {
-				(window, none_accepted("timeout"))
-			}
-		})
-		.await;
-		assert!(result.is_err());
-		assert_eq!(at, BUDGET);
+		// Up only after the last attempt: the read-back decides.
+		let run = drive(ours_up_at(Duration::from_secs(41)), false).await;
+		assert!(run.result.is_err());
+		assert_eq!(run.at, BUDGET + READBACK_WAIT);
+	}
+
+	/// No relay acknowledged it, but one holds it (an OK that came after the
+	/// pool stopped waiting): the read-back makes it a send, so the payment is
+	/// not cancelled while it is out.
+	#[tokio::test]
+	async fn a_read_back_hit_turns_no_acknowledgement_into_a_send() {
+		let run = drive(|_| (OK_WAIT, none_accepted("timeout")), true).await;
+		assert!(run.result.is_ok());
+		assert_eq!(run.read_backs, 1);
+		// An attempt that got no answer at all goes to the read-back too.
+		let run = drive(|_| (ATTEMPT_CAP, Attempt::TimedOut), true).await;
+		assert!(run.result.is_ok());
+		assert_eq!(run.attempts, 1);
+	}
+
+	/// The single attempt of a message nobody waits for on screen: no
+	/// acceptance is an error (not marked delivered), as in Build 169's timing.
+	#[test]
+	fn a_short_publish_is_one_attempt() {
+		assert!(publish_once(accepted_by(OURS)).is_ok());
+		assert!(publish_once(none_accepted("timeout")).is_err());
+		assert!(publish_once(none_accepted("duplicate: have this event")).is_ok());
+		assert!(publish_once(Attempt::TimedOut).is_err());
+		assert!(publish_once(Attempt::Refused("relay not found".into())).is_err());
 	}
 
 	// --- H3: every message is sealed and signed by the identity it belongs to ---
@@ -1001,16 +1253,28 @@ mod tests {
 			.await
 			.unwrap_err();
 		assert!(err.contains("no longer held"), "{err}");
+		// A receipt and a proof are the exception: nobody checks their sender
+		// and the order is credited only with them, so they go out as the
+		// active identity (here they get as far as the missing client).
 		let err = svc
 			.publish_receipt_sent(&gone, "MM-ab", 1)
 			.await
 			.unwrap_err();
-		assert!(err.contains("no longer held"), "{err}");
+		assert!(err.contains("not running"), "{err}");
 		let err = svc
 			.deliver_proof_wrap(&gone, &peer.to_bech32().unwrap(), "MM-ab", 1, "00", "{}")
 			.await
 			.unwrap_err();
-		assert!(err.contains("no longer held"), "{err}");
+		assert!(err.contains("not running"), "{err}");
+		assert_eq!(
+			svc.payment_proof_keys(&gone, "MM-ab").public_key(),
+			a.public_key()
+		);
+		assert_eq!(
+			svc.payment_proof_keys(&b.public_key().to_hex(), "MM-ab")
+				.public_key(),
+			b.public_key()
+		);
 
 		// Held identities resolve to themselves, whichever is active.
 		let b_hex = b.public_key().to_hex();
@@ -1108,6 +1372,107 @@ mod tests {
 			tags_of(&rumors[0])[0],
 			vec!["p".to_string(), receiver.public_key().to_hex()]
 		);
+	}
+
+	/// A dispatch result moves a row on only from the status its task left it
+	/// in: a row a fast reply finalized, or the user cancelled, during the
+	/// publish stays as it is.
+	#[tokio::test]
+	async fn a_dispatch_result_never_overwrites_a_newer_status() {
+		let (id_a, a) = NostrIdentity::create_random("pw").unwrap();
+		let (svc, dir) = service_with(&[(id_a, a.clone())], &a);
+		let row = |slate: &str, direction, status| {
+			let mut m = payer_meta("cd");
+			m.slate_id = slate.to_string();
+			m.direction = direction;
+			m.status = status;
+			m
+		};
+		use NostrSendStatus::*;
+		use NostrTxDirection::*;
+
+		svc.store.save_tx_meta(&row("finalized", Sent, Finalized));
+		assert!(!svc.advance_after_dispatch("finalized", Created, AwaitingS2, "e1".into()));
+		let m = svc.store.tx_meta("finalized").unwrap();
+		assert_eq!(m.status, Finalized);
+		assert_eq!(m.sent_event_id, None);
+
+		svc.store
+			.save_tx_meta(&row("cancelled", RequestedByUs, Cancelled));
+		assert!(!svc.advance_after_dispatch("cancelled", Created, AwaitingI2, "e2".into()));
+		assert_eq!(svc.store.tx_meta("cancelled").unwrap().status, Cancelled);
+
+		svc.store
+			.save_tx_meta(&row("paid", RequestedOfUs, Cancelled));
+		assert!(!svc.advance_after_dispatch(
+			"paid",
+			ReceivedNoReply,
+			PaidAwaitingFinalize,
+			"e3".into()
+		));
+		assert_eq!(svc.store.tx_meta("paid").unwrap().status, Cancelled);
+
+		// Still where the task left it: moved on, with the event id.
+		svc.store.save_tx_meta(&row("fresh", Sent, Created));
+		assert!(svc.advance_after_dispatch("fresh", Created, AwaitingS2, "e4".into()));
+		let m = svc.store.tx_meta("fresh").unwrap();
+		assert_eq!(m.status, AwaitingS2);
+		assert_eq!(m.sent_event_id.as_deref(), Some("e4"));
+
+		// The receipt flag alone changes; the status written meanwhile stays.
+		svc.mark_receipt_sent("finalized");
+		let m = svc.store.tx_meta("finalized").unwrap();
+		assert!(m.receipt_sent);
+		assert_eq!(m.status, Finalized);
+		let _ = std::fs::remove_dir_all(dir);
+	}
+
+	/// A result belongs to the dispatch that produced it. Send #1 spins, the
+	/// user goes back and starts send #2: #1's late verdict (FAILED, or a late
+	/// SENT) never reaches #2's screen; only the task holding the current turn
+	/// changes the phase.
+	#[tokio::test]
+	async fn only_the_current_send_turn_changes_the_screen() {
+		use crate::nostr::send_phase::{FAILED, SENT, WORKING};
+		let (id_a, a) = NostrIdentity::create_random("pw").unwrap();
+		let (svc, dir) = service_with(&[(id_a, a.clone())], &a);
+
+		// Send #1: the screen begins a turn, the task takes it first thing.
+		let one = svc.begin_send();
+		let task_one = svc.send_turn();
+		assert_eq!(task_one, one);
+		assert!(svc.set_send_phase_for(task_one, WORKING));
+
+		// Back, then send #2.
+		let two = svc.begin_send();
+		let task_two = svc.send_turn();
+		assert_eq!(task_two, two);
+		assert_ne!(task_one, task_two);
+		assert_eq!(svc.send_phase(), WORKING);
+
+		// #1 reaches its failure verdict: its money work is its own, the
+		// screen is not.
+		assert!(!svc.fail_send_for(task_one, "no relay accepted it"));
+		assert!(!svc.set_send_phase_for(task_one, FAILED));
+		assert_eq!(svc.send_phase(), WORKING);
+		assert_eq!(svc.last_send_error(), None);
+
+		// #2 completes: shown.
+		assert!(svc.set_send_phase_for(task_two, SENT));
+		assert_eq!(svc.send_phase(), SENT);
+
+		// The reverse: a stale SENT never shows over a later send.
+		let three = svc.begin_send();
+		assert!(!svc.set_send_phase_for(task_two, SENT));
+		assert_eq!(svc.send_phase(), WORKING);
+		assert!(svc.fail_send_for(three, "why"));
+		assert_eq!(svc.send_phase(), FAILED);
+		assert_eq!(svc.last_send_error().as_deref(), Some("why"));
+
+		// A new turn clears the reason.
+		svc.begin_send();
+		assert_eq!(svc.last_send_error(), None);
+		let _ = std::fs::remove_dir_all(dir);
 	}
 
 	/// The plain receipt is signed by the identity that paid, with the frozen

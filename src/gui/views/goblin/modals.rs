@@ -154,7 +154,7 @@ impl GoblinWalletView {
 		if approve {
 			if let Some(b) = self.batch_invoice.take() {
 				if let Some(service) = wallet.nostr_service() {
-					service.set_send_phase(crate::nostr::send_phase::WORKING);
+					service.begin_send();
 				}
 				let w = wallet.clone();
 				std::thread::spawn(move || {
