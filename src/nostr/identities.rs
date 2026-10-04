@@ -399,6 +399,24 @@ impl HeldIdentities {
 			.map_err(|e| HeldError::Io(e.to_string()))
 	}
 
+	/// Check, writing nothing, that every held identity file can be read and
+	/// unlocks with `old`: the checks that make [`Self::reencrypt_all`] fail in
+	/// its first phase. The wallet runs this BEFORE it moves the seed to a new
+	/// password, so a change the identities could not follow is refused while
+	/// the seed and every identity are still on the old password.
+	pub fn verify_all_unlock(&self, nostr_dir: &PathBuf, old: &str) -> Result<(), HeldError> {
+		for entry in &self.identities {
+			let Some(id) = NostrIdentity::load_at(&entry.abs_path(nostr_dir)) else {
+				return Err(HeldError::Io(format!(
+					"identity file unreadable: {}",
+					entry.path
+				)));
+			};
+			id.unlock(old).map_err(|e| HeldError::Io(e.to_string()))?;
+		}
+		Ok(())
+	}
+
 	/// Re-encrypt every held identity's ncryptsec from `old` to `new`, in place
 	/// on disk, ALL-OR-NOTHING. Used by the wallet-password change so all front
 	/// doors follow the one password. A partial move (some identities on the new
@@ -406,7 +424,9 @@ impl HeldIdentities {
 	/// recover with a single password, so this stages every re-encryption to a
 	/// sibling temp file first and only commits (renames into place) once EVERY
 	/// identity has re-encrypted cleanly. Any phase-1 failure deletes the temps
-	/// and leaves every identity untouched on the old password.
+	/// and leaves every identity untouched on the old password. A file named by
+	/// two entries is staged once: a second staging would reuse the same temp
+	/// path, and its rename would then fail after the first one committed.
 	pub fn reencrypt_all(
 		&self,
 		nostr_dir: &PathBuf,
@@ -429,6 +449,9 @@ impl HeldIdentities {
 		};
 		for entry in &self.identities {
 			let abs = entry.abs_path(nostr_dir);
+			if staged.iter().any(|(_, done)| done == &abs) {
+				continue;
+			}
 			let Some(mut id) = NostrIdentity::load_at(&abs) else {
 				cleanup(&staged);
 				return Err(HeldError::Io(format!(
@@ -909,6 +932,98 @@ mod tests {
 			leftovers.is_empty(),
 			"aborted batch must clean up its temps"
 		);
+		let _ = std::fs::remove_dir_all(&dir);
+	}
+
+	/// Every identity file's bytes, in index order (`None` when unreadable).
+	fn identity_files(idx: &HeldIdentities, dir: &PathBuf) -> Vec<Option<String>> {
+		idx.identities
+			.iter()
+			.map(|e| std::fs::read_to_string(e.abs_path(dir)).ok())
+			.collect()
+	}
+
+	#[test]
+	fn verify_all_unlock_refuses_a_corrupt_identity_and_writes_nothing() {
+		// The dry run the wallet runs before it moves the seed. A held identity
+		// that cannot be decrypted, or whose file is gone, must fail it, and the
+		// check must leave every file as it was. The second identity is a copy of
+		// the first under its own path (a fresh key would cost another scrypt).
+		let dir = tmpdir("verify");
+		let (legacy, _) = NostrIdentity::create_random("old").unwrap();
+		legacy.save(&dir).unwrap();
+		let (mut idx, _) = HeldIdentities::load_or_migrate(&dir, &legacy).unwrap();
+		let second_rel = HeldIdentities::rel_path_for("second");
+		let second = HeldEntry {
+			pubkey: "second".to_string(),
+			path: second_rel.clone(),
+			label: String::new(),
+		};
+		let second_abs = second.abs_path(&dir);
+		legacy.save_at(&second_abs).unwrap();
+		idx.identities.push(second);
+
+		assert!(
+			idx.verify_all_unlock(&dir, "old").is_ok(),
+			"identities that unlock with the old password must pass"
+		);
+
+		let mut broken = legacy.clone();
+		broken.ncryptsec = "ncryptsec1qqqqqbroken".to_string();
+		broken.save_at(&second_abs).unwrap();
+		let before = identity_files(&idx, &dir);
+		assert!(
+			idx.verify_all_unlock(&dir, "old").is_err(),
+			"an identity that does not unlock must fail the check"
+		);
+		assert_eq!(
+			identity_files(&idx, &dir),
+			before,
+			"the check must not write any identity file"
+		);
+		let leftovers: Vec<_> = std::fs::read_dir(&dir)
+			.unwrap()
+			.filter_map(|e| e.ok())
+			.filter(|e| e.file_name().to_string_lossy().contains("reencrypt-tmp"))
+			.collect();
+		assert!(leftovers.is_empty(), "the check must not stage temp files");
+
+		std::fs::remove_file(&second_abs).unwrap();
+		assert!(
+			idx.verify_all_unlock(&dir, "old").is_err(),
+			"an unreadable identity file must fail the check"
+		);
+		let _ = std::fs::remove_dir_all(&dir);
+	}
+
+	#[test]
+	fn reencrypt_all_moves_a_file_named_by_two_entries_once() {
+		// An older index can hold two entries for one file (identity.json). Both
+		// staged to the same temp path, so the second rename failed after the
+		// first had committed the file to the new password: a half-done change.
+		let dir = tmpdir("sharedfile");
+		let (legacy, _) = NostrIdentity::create_random("old").unwrap();
+		legacy.save(&dir).unwrap();
+		let (mut idx, _) = HeldIdentities::load_or_migrate(&dir, &legacy).unwrap();
+		idx.identities.push(HeldEntry {
+			pubkey: "stale".to_string(),
+			path: LEGACY_FILE.to_string(),
+			label: String::new(),
+		});
+
+		idx.reencrypt_all(&dir, "old", "new")
+			.expect("a file named twice must re-encrypt once and commit");
+		let moved = NostrIdentity::load(&dir).unwrap();
+		assert!(
+			moved.unlock("new").is_ok(),
+			"the shared file must open under the new password"
+		);
+		let leftovers: Vec<_> = std::fs::read_dir(&dir)
+			.unwrap()
+			.filter_map(|e| e.ok())
+			.filter(|e| e.file_name().to_string_lossy().contains("reencrypt-tmp"))
+			.collect();
+		assert!(leftovers.is_empty(), "no temp file may be left behind");
 		let _ = std::fs::remove_dir_all(&dir);
 	}
 
