@@ -27,14 +27,12 @@ pub const FLOONET_RELAY: &str = "wss://relay.floonet.dev";
 /// be relays that accept Tor-exit connections. `relay.damus.io` and `nos.lol`
 /// throttle/block Tor exits — a wallet left on the raw defaults (e.g. when pool
 /// selection hasn't run or found nothing) then had NO working fallback whenever
-/// the Floonet onion flapped, so its payments stopped flowing. `relay.0xchat.com`
+/// the Floonet onion flapped, so its payments stopped flowing. `relay.nostr.net`
 /// and `offchain.pub` are Tor-friendly (and are also probe-vetted pool `dm`
 /// candidates), giving a real fallback that survives an onion drop.
-pub const DEFAULT_RELAYS: &[&str] = &[
-	FLOONET_RELAY,
-	"wss://relay.0xchat.com",
-	"wss://offchain.pub",
-];
+/// (`relay.nostr.net` replaced `relay.0xchat.com`, whose host no longer
+/// resolves.)
+pub const DEFAULT_RELAYS: &[&str] = &[FLOONET_RELAY, "wss://relay.nostr.net", "wss://offchain.pub"];
 
 /// FIXED default relay set used by EVERY identity when the wallet routes over Tor.
 ///

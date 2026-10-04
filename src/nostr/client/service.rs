@@ -2482,7 +2482,7 @@ mod tests {
 		// a phantom second relay (which would be a cold dial and break confirm).
 		let base = vec![
 			"wss://relay.floonet.dev".to_string(),
-			"wss://relay.0xchat.com".to_string(),
+			"wss://relay.nostr.net".to_string(),
 		];
 		let hints = vec!["wss://relay.floonet.dev/".to_string()];
 		let out = dedup_relay_union(base.clone(), hints);
@@ -2501,7 +2501,7 @@ mod tests {
 	fn announce_confirmed_requires_the_site_hint_relay() {
 		let hint = "wss://relay.floonet.dev".to_string();
 		let floonet = RelayUrl::parse("wss://relay.floonet.dev").unwrap();
-		let other = RelayUrl::parse("wss://relay.0xchat.com").unwrap();
+		let other = RelayUrl::parse("wss://relay.nostr.net").unwrap();
 
 		// Accept on the hint relay confirms (even spelled with a trailing slash).
 		let mut ok = HashSet::new();

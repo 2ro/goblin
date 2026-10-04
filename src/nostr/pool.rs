@@ -60,16 +60,16 @@ pub const MIN_MESSAGE_LENGTH: u64 = 131_072;
 /// `created_at_lower_limit` is tighter than this rejects our wraps.
 const MIN_BACKDATE_SECS: u64 = 172_800;
 
-/// Pinned fallback pool, byte-for-byte the gist contents, so first-run and
-/// offline behave exactly like a fresh fetch.
+/// Pinned fallback pool for first run and offline: a core subset of the gist
+/// (the Floonet relay plus Tor-friendly public relays), in the gist's schema.
 const PINNED_POOL: &str = r#"{
   "version": 1,
-  "updated": "2026-07-04",
+  "updated": "2026-10-04",
   "notes": "Goblin wallet relay candidate pool. Clients verify each entry locally (NIP-11 probe) before use. Requirements: max_message_length >= 131072, no payment or auth required for writes, tolerates NIP-59 backdating. Every relay is reached over a Tor exit to its clearnet host, so the wallet's IP stays hidden behind Tor.",
   "min_message_length": 131072,
   "relays": [
     { "url": "wss://relay.floonet.dev", "roles": ["dm", "discovery"], "vetted": "2026-07-04" },
-    { "url": "wss://relay.0xchat.com",  "roles": ["dm", "discovery"], "vetted": "2026-07-04" },
+    { "url": "wss://relay.nostr.net",   "roles": ["dm", "discovery"], "vetted": "2026-10-04" },
     { "url": "wss://offchain.pub",      "roles": ["dm"],              "vetted": "2026-07-04" }
   ]
 }"#;
@@ -310,19 +310,21 @@ mod tests {
 		let pool = RelayPool::parse(PINNED_POOL).expect("pinned pool must parse");
 		assert_eq!(pool.version, 1);
 		assert_eq!(pool.min_message_length, MIN_MESSAGE_LENGTH);
-		// Three Tor-friendly relays matching the live gist; no relay pins an onion
-		// any more (the onion money path was dropped in build134 — every relay is
-		// reached over a Tor exit to its clearnet host).
+		// Three Tor-friendly relays, a subset of the live gist; no relay pins an
+		// onion any more (the onion money path was dropped in build134; every relay
+		// is reached over a Tor exit to its clearnet host).
 		assert_eq!(pool.relays.len(), 3);
 		let dm = pool.dm_relays();
 		assert_eq!(dm.len(), 3);
 		assert!(dm.iter().any(|r| r.url == "wss://relay.floonet.dev"));
 		assert!(dm.iter().all(|r| r.vetted.is_some()));
 		let disc = pool.discovery_relays();
-		// relay.floonet.dev and relay.0xchat.com carry the discovery role too.
+		// relay.floonet.dev and relay.nostr.net carry the discovery role too.
 		assert_eq!(disc.len(), 2);
 		assert!(disc.contains(&"wss://relay.floonet.dev".to_string()));
-		assert!(disc.contains(&"wss://relay.0xchat.com".to_string()));
+		assert!(disc.contains(&"wss://relay.nostr.net".to_string()));
+		// relay.0xchat.com is gone: its host no longer resolves.
+		assert!(pool.relays.iter().all(|r| !r.url.contains("0xchat")));
 	}
 
 	#[test]
@@ -386,6 +388,23 @@ mod tests {
 			&doc(r#"{"max_message_length":1000000,"payment_required":true}"#),
 			min
 		));
+	}
+
+	#[test]
+	fn relay_nostr_net_passes_the_nip11_gate() {
+		// relay.nostr.net's NIP-11 answer as probed on 2026-10-04 (before it
+		// replaced relay.0xchat.com): a 256 KiB message cap, open writes.
+		let nip11 = serde_json::json!({
+			"name": "relay.nostr.net",
+			"software": "git+https://github.com/hoytech/strfry.git",
+			"supported_nips": [1, 2, 4, 9, 11, 28, 40, 45, 59, 70, 77],
+			"limitation": {
+				"max_limit": 100,
+				"max_message_length": 262144,
+				"max_subscriptions": 100
+			}
+		});
+		assert!(nip11_pass(&nip11, MIN_MESSAGE_LENGTH));
 	}
 
 	fn candidates() -> Vec<PoolRelay> {
