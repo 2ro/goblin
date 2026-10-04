@@ -3483,6 +3483,8 @@ async fn handle_task(w: &Wallet, t: WalletTask) {
 			if let Some((tx_id, false)) = found {
 				if let Err(e) = w.cancel(tx_id) {
 					error!("nostr cancel: wallet cancel failed: {e}");
+					// Mark the failed cancel as over (not running) on the tx.
+					w.on_tx_error(tx_id, Some(e));
 				}
 			}
 			service
@@ -3572,6 +3574,9 @@ async fn handle_task(w: &Wallet, t: WalletTask) {
 						.update_tx_status(slate_id, crate::nostr::NostrSendStatus::Cancelled);
 					if let Err(e) = w.cancel(tx.id) {
 						error!("nostr cancel send: wallet cancel failed: {e}");
+						// The meta is Cancelled: marking the failed cancel as over
+						// lets the heal pass retry it once the node answers.
+						w.on_tx_error(tx.id, Some(e));
 					}
 					service.set_cancel_notice(crate::nostr::CancelOutcome::Cancelled);
 					did_cancel = true;
@@ -3897,6 +3902,10 @@ pub fn nostr_cancel_slate(
 								error!(
 									"nostr cancel: wallet cancel failed for slate {slate_id}: {e}"
 								);
+								// `cancel` leaves the tx marked Cancelling; the error
+								// tells the heal pass this cancel is over, not running,
+								// and the tx list shows "Error: Cancelling".
+								w.on_tx_error(tx.id, Some(e));
 								NostrCancelResult::CancelFailed
 							}
 						}
@@ -3909,6 +3918,13 @@ pub fn nostr_cancel_slate(
 		sync_wallet_data(w, false);
 	}
 	result
+}
+
+/// Whether the last node sync succeeded. `cancel_tx` refreshes from the node
+/// first and refuses to cancel when it cannot reach it, so the heal pass only
+/// retries a cancel then, instead of blocking on a dead node every cycle.
+pub fn nostr_cancel_node_ready(w: &Wallet) -> bool {
+	w.synced_from_node() && !w.sync_error() && w.get_sync_attempts() == 0
 }
 
 #[cfg(test)]

@@ -49,12 +49,16 @@ impl NostrService {
 		// older build expired it before the wallet data loaded, or a cancel
 		// failed). Candidates come from the loaded tx list, so a cycle with
 		// nothing stuck costs no extra lookup; the helper re-checks each one
-		// authoritatively under the finalize lock.
-		if let Some(txs) = data.and_then(|d| d.txs) {
+		// authoritatively under the finalize lock. A grin cancel needs the node
+		// (`cancel_tx` refreshes first), so the pass waits for a good node sync;
+		// a cancel that failed is then retried on later cycles.
+		if let Some(txs) = data.and_then(|d| d.txs)
+			&& crate::wallet::nostr_cancel_node_ready(wallet)
+		{
 			let synced = wallet.synced_from_node();
 			let live: HashMap<String, _> = txs
 				.iter()
-				.filter(|t| t.action.is_none())
+				.filter(|t| heal_candidate(t))
 				.filter_map(|t| t.data.tx_slate_id.map(|u| (u.to_string(), t)))
 				.collect();
 			for meta in &metas {
@@ -853,6 +857,15 @@ fn cancel_deferred(outcome: NostrCancelResult) -> bool {
 			| NostrCancelResult::Unavailable
 			| NostrCancelResult::Finalized
 	)
+}
+
+/// Whether the heal pass may try a tx, judged by its in-memory action. A tx
+/// with no action is idle. A cancel that failed leaves the action at
+/// Cancelling with an error (`Wallet::cancel` returns early, every cancel path
+/// records the error), so it is retried. A cancel still running has no error
+/// yet and is never entered twice; finalize and post are left alone.
+fn heal_candidate(tx: &crate::wallet::types::WalletTx) -> bool {
+	tx.action.is_none() || (tx.cancelling() && tx.action_error.is_some())
 }
 
 /// Heal predicate: a row marked Cancelled whose grin tx still locks our
@@ -2234,6 +2247,70 @@ mod tests {
 		for outcome in [Cancelled, NothingLocked, CancelFailed] {
 			assert!(!cancel_deferred(outcome), "{outcome:?}");
 			assert!(!expire_marks_after(outcome), "{outcome:?}");
+		}
+	}
+
+	/// V1-1: a grin cancel that failed (no node) is retried by the heal pass in
+	/// the same session, while a cancel still running is never entered twice.
+	/// Drives the real `WalletData` action bookkeeping the cancel paths use.
+	#[test]
+	fn heal_retries_a_failed_cancel_but_never_a_running_one() {
+		use crate::wallet::types::{WalletData, WalletTx, WalletTxAction};
+		use grin_wallet_libwallet::{Error, TxLogEntry, TxLogEntryType, WalletInfo};
+		let mut entry =
+			TxLogEntry::new(grin_keychain::Identifier::zero(), TxLogEntryType::TxSent, 7);
+		entry.tx_slate_state = Some(grin_wallet_libwallet::SlateState::Standard1);
+		let tx = WalletTx {
+			data: entry,
+			proof: None,
+			amount: 1,
+			receiver: None,
+			sender: None,
+			height: None,
+			broadcasting_height: None,
+			action: None,
+			action_error: None,
+		};
+		let mut data = WalletData {
+			info: WalletInfo {
+				last_confirmed_height: 0,
+				minimum_confirmations: 10,
+				total: 0,
+				amount_awaiting_finalization: 0,
+				amount_awaiting_confirmation: 0,
+				amount_immature: 0,
+				amount_currently_spendable: 0,
+				amount_locked: 0,
+				amount_reverted: 0,
+			},
+			txs: Some(vec![tx]),
+			txs_limit: 30,
+		};
+		let row = |d: &WalletData| d.txs.as_ref().unwrap()[0].clone();
+		// Idle tx: a candidate.
+		assert!(heal_candidate(&row(&data)));
+		// `Wallet::cancel` starts: Cancelling, no error. Running: not entered.
+		data.on_tx_action(7, Some(WalletTxAction::Cancelling));
+		assert!(!heal_candidate(&row(&data)));
+		// `cancel_tx` refused (node unreachable): the cancel path records the
+		// error while the action stays Cancelling. Over: retried next cycle.
+		data.on_tx_error(
+			7,
+			Some(Error::GenericError(
+				"Can't contact running Grin node".into(),
+			)),
+		);
+		assert!(row(&data).cancelling());
+		assert!(heal_candidate(&row(&data)));
+		// The retry starts: the error clears, so it is running again.
+		data.on_tx_action(7, Some(WalletTxAction::Cancelling));
+		assert!(!heal_candidate(&row(&data)));
+		// A finalize or post in progress (or failed) is never a heal candidate.
+		for action in [WalletTxAction::Finalizing, WalletTxAction::Posting] {
+			data.on_tx_action(7, Some(action));
+			assert!(!heal_candidate(&row(&data)));
+			data.on_tx_error(7, Some(Error::GenericError("x".into())));
+			assert!(!heal_candidate(&row(&data)));
 		}
 	}
 
