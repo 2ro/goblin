@@ -4699,6 +4699,71 @@ mod open_tests {
 		wallet.close();
 	}
 
+	/// A damaged held-identity index never stops the wallet from opening and is
+	/// never written over: it is moved aside with its bytes unchanged, a fresh
+	/// index is built from identity #1, and nostr comes up on identity #1.
+	///
+	/// Builds a real wallet under the module's sandbox HOME, like the test above.
+	#[test]
+	fn a_damaged_identity_index_is_set_aside_and_the_wallet_still_opens() {
+		let _serialised = serialised();
+		let sandbox = sandbox();
+
+		let password = ZeroingString::from("damaged-index-password");
+		let wallet = Wallet::create(
+			&"damaged-index-test".to_string(),
+			&password,
+			&Mnemonic::default(),
+			&ConnectionMethod::Integrated,
+		)
+		.expect("wallet creation must succeed");
+		let data_path = PathBuf::from(wallet.get_config().get_data_path());
+		assert!(
+			data_path.starts_with(sandbox),
+			"sandbox did not take effect (wallet at {}); refusing to touch real data",
+			data_path.display()
+		);
+
+		// A good identity #1, and an index torn in half by an in-place write.
+		let nostr_dir = wallet.get_config().get_nostr_path();
+		let (first, _) = NostrIdentity::create_random(&password).unwrap();
+		first.save(&nostr_dir).unwrap();
+		HeldIdentities::from_legacy(&first)
+			.unwrap()
+			.save(&nostr_dir)
+			.unwrap();
+		let full = fs::read(HeldIdentities::index_path(&nostr_dir)).unwrap();
+		let torn = full[..full.len() / 2].to_vec();
+		fs::write(HeldIdentities::index_path(&nostr_dir), &torn).unwrap();
+
+		wallet
+			.open(password.clone())
+			.expect("a damaged index must not stop the wallet opening");
+		assert!(wallet.is_open(), "wallet must report itself open");
+
+		let aside: Vec<PathBuf> = fs::read_dir(&nostr_dir)
+			.unwrap()
+			.filter_map(|e| e.ok())
+			.map(|e| e.path())
+			.filter(|p| {
+				p.file_name()
+					.unwrap()
+					.to_string_lossy()
+					.starts_with("identities.json.unreadable-")
+			})
+			.collect();
+		assert_eq!(aside.len(), 1, "the damaged index must be set aside");
+		assert_eq!(fs::read(&aside[0]).unwrap(), torn, "every byte is kept");
+		let index = HeldIdentities::load(&nostr_dir).expect("a fresh index must be saved");
+		assert_eq!(index.active, first.pubkey_hex().unwrap());
+		let svc = wallet
+			.nostr_service()
+			.expect("nostr must run on identity #1");
+		assert_eq!(svc.npub(), first.npub);
+
+		wallet.close();
+	}
+
 	/// Rapid fee requests coalesce to the newest amount instead of queueing one
 	/// calculation per keystroke.
 	///

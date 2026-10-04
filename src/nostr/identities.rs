@@ -38,7 +38,9 @@
 //! legacy `identity.json` is deliberately never overwritten, so an older build
 //! that ignores this index still opens the wallet on identity #1 (clean rollback).
 
-use crate::nostr::identity::{NostrIdentity, commit_staged, stage_private, write_private};
+use crate::nostr::identity::{
+	NostrIdentity, commit_staged, read_or_set_aside, stage_private, write_private,
+};
 use serde_derive::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
@@ -198,12 +200,30 @@ impl HeldIdentities {
 	///
 	/// Never touches funds and never regenerates a key. Writes only the index
 	/// (`identities.json`) — the identity files themselves are left as they are.
+	///
+	/// An index that is there but damaged (it does not parse, or is not text) is
+	/// never written over: it is renamed aside to
+	/// `identities.json.unreadable-<unix time>`, bytes unchanged, before the
+	/// index is rebuilt from identity #1. An index that cannot be read at all
+	/// (permissions, I/O error) is left in place and the rebuilt index is NOT
+	/// saved: it lives in the returned value only.
 	pub fn load_or_migrate(
 		nostr_dir: &PathBuf,
 		legacy: &NostrIdentity,
 	) -> Option<(HeldIdentities, NostrIdentity)> {
 		let legacy_hex = legacy.pubkey_hex()?;
-		match Self::load(nostr_dir) {
+		let index_path = Self::index_path(nostr_dir);
+		let (found, may_save) = match read_or_set_aside::<HeldIdentities>(&index_path) {
+			Ok(found) => (found, true),
+			Err(e) => {
+				log::error!(
+					"nostr: identity index {} could not be read, left in place and not saved this session: {e}",
+					index_path.display()
+				);
+				(None, false)
+			}
+		};
+		match found {
 			Some(mut idx) => {
 				// Repair: ensure identity #1 is always represented (it is the
 				// rollback anchor), without disturbing the active pointer.
@@ -247,9 +267,12 @@ impl HeldIdentities {
 				Some((idx.hiding_mismatched_entries(nostr_dir), active))
 			}
 			None => {
-				// Legacy layout: adopt identity.json as the sole, active identity.
+				// Legacy layout (or a damaged index just set aside): adopt
+				// identity.json as the sole, active identity.
 				let idx = Self::from_legacy(legacy)?;
-				let _ = idx.save(nostr_dir);
+				if may_save {
+					let _ = idx.save(nostr_dir);
+				}
 				Some((idx, legacy.clone()))
 			}
 		}
@@ -1041,6 +1064,140 @@ mod tests {
 		// The leftovers were neither read nor overwritten.
 		assert_eq!(std::fs::read(&id_tmp).unwrap(), b"{torn");
 		assert_eq!(std::fs::read(&idx_tmp).unwrap(), b"{torn");
+		let _ = std::fs::remove_dir_all(&dir);
+	}
+
+	/// The `identities.json.unreadable-*` files in `dir`, sorted.
+	fn index_aside_files(dir: &PathBuf) -> Vec<PathBuf> {
+		let mut v: Vec<PathBuf> = std::fs::read_dir(dir)
+			.unwrap()
+			.filter_map(|e| e.ok())
+			.map(|e| e.path())
+			.filter(|p| {
+				p.file_name()
+					.unwrap()
+					.to_string_lossy()
+					.starts_with("identities.json.unreadable-")
+			})
+			.collect();
+		v.sort();
+		v
+	}
+
+	#[test]
+	fn an_absent_index_migrates_and_sets_nothing_aside() {
+		// A real legacy wallet: no index yet. Migration builds it from identity #1
+		// and saves it, exactly as before; nothing is set aside.
+		let dir = tmpdir("absentindex");
+		let (legacy, _) = NostrIdentity::create_random("pw").unwrap();
+		legacy.save(&dir).unwrap();
+		assert!(!HeldIdentities::index_path(&dir).exists());
+		let (idx, active) = HeldIdentities::load_or_migrate(&dir, &legacy).unwrap();
+		assert_eq!(idx.len(), 1);
+		assert_eq!(active.npub, legacy.npub);
+		let saved = HeldIdentities::load(&dir).expect("the migrated index is saved");
+		assert_eq!(saved.active, legacy.pubkey_hex().unwrap());
+		assert!(index_aside_files(&dir).is_empty());
+		let _ = std::fs::remove_dir_all(&dir);
+	}
+
+	#[test]
+	fn an_unparseable_index_is_set_aside_and_rebuilt() {
+		// An index torn by an older build's in-place write. It must not be written
+		// over: its bytes go aside, a fresh index is built from identity #1 and
+		// saved, and the held identity files under identities/ are not touched.
+		let dir = tmpdir("tornindex");
+		let (legacy, _) = NostrIdentity::create_random("pw").unwrap();
+		legacy.save(&dir).unwrap();
+		let legacy_hex = legacy.pubkey_hex().unwrap();
+		let (mut idx, _) = HeldIdentities::load_or_migrate(&dir, &legacy).unwrap();
+		let (second, _) = NostrIdentity::create_random("pw").unwrap();
+		let second_hex = idx.add(&dir, &second).unwrap();
+		let second_abs = idx.entry(&second_hex).unwrap().abs_path(&dir);
+		let second_bytes = std::fs::read(&second_abs).unwrap();
+		let full = std::fs::read(HeldIdentities::index_path(&dir)).unwrap();
+		let torn = full[..full.len() / 2].to_vec();
+		std::fs::write(HeldIdentities::index_path(&dir), &torn).unwrap();
+
+		let (rebuilt, active) = HeldIdentities::load_or_migrate(&dir, &legacy).unwrap();
+		assert_eq!(rebuilt.len(), 1, "rebuilt from identity #1 alone");
+		assert_eq!(rebuilt.active, legacy_hex);
+		assert_eq!(active.npub, legacy.npub);
+		let saved = HeldIdentities::load(&dir).expect("a fresh index is saved");
+		assert_eq!(saved.identities, rebuilt.identities);
+		let aside = index_aside_files(&dir);
+		assert_eq!(aside.len(), 1, "the torn index is set aside");
+		assert_eq!(
+			std::fs::read(&aside[0]).unwrap(),
+			torn,
+			"every byte is kept"
+		);
+		assert_eq!(
+			std::fs::read(&second_abs).unwrap(),
+			second_bytes,
+			"the held identity file is untouched"
+		);
+
+		// A second damaged index (bytes that are not text) gets its own aside
+		// name: the first one is never replaced.
+		let garbage = vec![0xff, 0xfe, 0x00, 0x7b];
+		std::fs::write(HeldIdentities::index_path(&dir), &garbage).unwrap();
+		HeldIdentities::load_or_migrate(&dir, &legacy).unwrap();
+		let aside = index_aside_files(&dir);
+		assert_eq!(aside.len(), 2, "both damaged indexes are kept");
+		let kept: Vec<Vec<u8>> = aside.iter().map(|p| std::fs::read(p).unwrap()).collect();
+		assert!(kept.contains(&torn));
+		assert!(kept.contains(&garbage));
+		assert!(HeldIdentities::load(&dir).is_some());
+		let _ = std::fs::remove_dir_all(&dir);
+	}
+
+	#[test]
+	fn an_index_that_cannot_be_read_is_left_in_place_and_not_saved() {
+		// Not damaged content but an unreadable path (here a directory where the
+		// index should be). Its content is unknown: it is neither moved nor written
+		// over, and the rebuilt index exists only in the returned value.
+		let dir = tmpdir("unreadableindex");
+		let (legacy, _) = NostrIdentity::create_random("pw").unwrap();
+		legacy.save(&dir).unwrap();
+		let index_path = HeldIdentities::index_path(&dir);
+		std::fs::create_dir_all(index_path.join("keep")).unwrap();
+		let (idx, active) = HeldIdentities::load_or_migrate(&dir, &legacy).unwrap();
+		assert_eq!(idx.len(), 1);
+		assert_eq!(active.npub, legacy.npub);
+		assert!(index_path.join("keep").is_dir(), "left in place");
+		assert!(index_aside_files(&dir).is_empty(), "not moved");
+		assert!(
+			HeldIdentities::load(&dir).is_none(),
+			"nothing saved over it"
+		);
+
+		// A real index the process may not read. The atomic writer CAN rename over
+		// such a file, so only the "leave it, do not save" rule protects it.
+		// Skipped where the mode does not stop the read (running as root).
+		#[cfg(unix)]
+		{
+			use std::os::unix::fs::PermissionsExt;
+			std::fs::remove_dir_all(&index_path).unwrap();
+			let (_, _) = HeldIdentities::load_or_migrate(&dir, &legacy).unwrap();
+			let mut idx = HeldIdentities::load(&dir).unwrap();
+			let (second, _) = NostrIdentity::create_random("pw").unwrap();
+			idx.add(&dir, &second).unwrap();
+			let before = std::fs::read(&index_path).unwrap();
+			std::fs::set_permissions(&index_path, std::fs::Permissions::from_mode(0o000)).unwrap();
+			if std::fs::read(&index_path).is_err() {
+				let (view, _) = HeldIdentities::load_or_migrate(&dir, &legacy).unwrap();
+				assert_eq!(view.len(), 1);
+				std::fs::set_permissions(&index_path, std::fs::Permissions::from_mode(0o600))
+					.unwrap();
+				assert_eq!(
+					std::fs::read(&index_path).unwrap(),
+					before,
+					"an unreadable index must not be replaced"
+				);
+				assert!(index_aside_files(&dir).is_empty());
+			}
+		}
 		let _ = std::fs::remove_dir_all(&dir);
 	}
 

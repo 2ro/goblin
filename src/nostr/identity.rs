@@ -204,6 +204,38 @@ fn set_aside(path: &Path) -> std::io::Result<PathBuf> {
 	))
 }
 
+/// Read and parse the JSON file at `path` (an identity file or the held
+/// identity index), never leaving a damaged one where a later write would
+/// replace it.
+/// - `Ok(Some)`: the parsed value.
+/// - `Ok(None)`: no usable file. Either there is none, or its content is
+///   damaged (it does not parse, or is not even text, as a torn write can
+///   leave it) and it has been renamed aside (see [`set_aside`]) with its
+///   bytes unchanged and an error logged that names both paths.
+/// - `Err`: the file is there but could not be read (permissions, an I/O
+///   error). Its content is unknown, so it is left in place and the caller
+///   must not write over it.
+pub(crate) fn read_or_set_aside<T: serde::de::DeserializeOwned>(
+	path: &Path,
+) -> std::io::Result<Option<T>> {
+	let parsed = match fs::read_to_string(path) {
+		Ok(raw) => serde_json::from_str::<T>(&raw).ok(),
+		Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+		Err(e) if e.kind() == std::io::ErrorKind::InvalidData => None,
+		Err(e) => return Err(e),
+	};
+	if parsed.is_some() {
+		return Ok(parsed);
+	}
+	let aside = set_aside(path)?;
+	log::error!(
+		"nostr: {} could not be parsed; moved it to {} with its bytes unchanged",
+		path.display(),
+		aside.display()
+	);
+	Ok(None)
+}
+
 /// Restrict a directory to owner-only access on Unix.
 fn restrict_dir(dir: &PathBuf) {
 	#[cfg(unix)]
@@ -257,23 +289,7 @@ impl NostrIdentity {
 	///   error). Its content is unknown, so it is left in place and the caller
 	///   must not write a new identity over it.
 	pub fn load_or_set_aside(nostr_dir: &Path) -> std::io::Result<Option<NostrIdentity>> {
-		let path = nostr_dir.join(Self::FILE_NAME);
-		let parsed = match fs::read_to_string(&path) {
-			Ok(raw) => serde_json::from_str::<NostrIdentity>(&raw).ok(),
-			Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-			Err(e) if e.kind() == std::io::ErrorKind::InvalidData => None,
-			Err(e) => return Err(e),
-		};
-		if parsed.is_some() {
-			return Ok(parsed);
-		}
-		let aside = set_aside(&path)?;
-		log::error!(
-			"nostr: identity file {} could not be parsed; moved it to {} with its bytes unchanged",
-			path.display(),
-			aside.display()
-		);
-		Ok(None)
+		read_or_set_aside(&nostr_dir.join(Self::FILE_NAME))
 	}
 
 	/// Persist the identity file with owner-only permissions (the ncryptsec
