@@ -862,6 +862,47 @@ async fn deliver_proof(svc: &Arc<NostrService>, wallet: &Wallet, meta: &TxNostrM
 	}
 }
 
+/// What [`reconcile`] does with one tx row at service start.
+#[derive(Debug, PartialEq, Eq)]
+enum ReconcileAction {
+	/// Re-send the stored slatepack of this state.
+	Resend(grin_wallet_libwallet::SlateState),
+	/// A dispatch that failed: never re-send it, cancel it.
+	Heal,
+	/// Nothing to do.
+	Skip,
+}
+
+/// Pure reconcile policy per (direction, status). A row still `Created` crashed
+/// before its dispatch finished and the user never saw a failure, so it is
+/// re-sent. Replies (S2, I2) are re-sent as before. A `SendFailed` row is final:
+/// the UI said "Couldn't send" and "Try again" built a new slate, so re-sending
+/// the old one could pay twice.
+fn reconcile_action(direction: NostrTxDirection, status: NostrSendStatus) -> ReconcileAction {
+	use grin_wallet_libwallet::SlateState;
+	match (direction, status) {
+		// S1 or I1 never dispatched (crash before the dispatch result).
+		(NostrTxDirection::Sent, NostrSendStatus::Created) => {
+			ReconcileAction::Resend(SlateState::Standard1)
+		}
+		(NostrTxDirection::RequestedByUs, NostrSendStatus::Created) => {
+			ReconcileAction::Resend(SlateState::Invoice1)
+		}
+		// S1 or I1 whose dispatch failed: failure is final.
+		(NostrTxDirection::Sent, NostrSendStatus::SendFailed)
+		| (NostrTxDirection::RequestedByUs, NostrSendStatus::SendFailed) => ReconcileAction::Heal,
+		// We received and processed S1 but the S2 reply may not have left.
+		(NostrTxDirection::Received, NostrSendStatus::ReceivedNoReply) => {
+			ReconcileAction::Resend(SlateState::Standard2)
+		}
+		// We paid a request (I2) but the reply may not have left.
+		(NostrTxDirection::RequestedOfUs, NostrSendStatus::ReceivedNoReply) => {
+			ReconcileAction::Resend(SlateState::Invoice2)
+		}
+		_ => ReconcileAction::Skip,
+	}
+}
+
 /// Re-dispatch our pending outgoing messages (crash/offline recovery).
 async fn reconcile(svc: &Arc<NostrService>, wallet: &Wallet) {
 	let now = unix_time();
@@ -893,28 +934,22 @@ async fn reconcile(svc: &Arc<NostrService>, wallet: &Wallet) {
 			}
 			continue;
 		}
-		let resend_state = match (meta.direction, meta.status) {
-			// S1 never dispatched or failed.
-			(NostrTxDirection::Sent, NostrSendStatus::Created)
-			| (NostrTxDirection::Sent, NostrSendStatus::SendFailed) => {
-				Some(grin_wallet_libwallet::SlateState::Standard1)
+		let state = match reconcile_action(meta.direction, meta.status) {
+			ReconcileAction::Resend(state) => state,
+			ReconcileAction::Heal => {
+				// Failure is final: a dispatch failure (left by an older build) is
+				// never re-sent, because the user saw "Couldn't send" and may have
+				// paid again. Free its inputs instead. The catch-up fetch above ran
+				// first, so a reply already waiting on a relay has finalized it.
+				let outcome = crate::wallet::nostr_cancel_slate(wallet, svc, &meta.slate_id, false);
+				info!(
+					"nostr: reconcile closed failed dispatch {} ({:?})",
+					meta.slate_id, outcome
+				);
+				continue;
 			}
-			// I1 request never dispatched or failed.
-			(NostrTxDirection::RequestedByUs, NostrSendStatus::Created)
-			| (NostrTxDirection::RequestedByUs, NostrSendStatus::SendFailed) => {
-				Some(grin_wallet_libwallet::SlateState::Invoice1)
-			}
-			// We received and processed S1 but the S2 reply may not have left.
-			(NostrTxDirection::Received, NostrSendStatus::ReceivedNoReply) => {
-				Some(grin_wallet_libwallet::SlateState::Standard2)
-			}
-			// We paid a request (I2) but the reply may not have left.
-			(NostrTxDirection::RequestedOfUs, NostrSendStatus::ReceivedNoReply) => {
-				Some(grin_wallet_libwallet::SlateState::Invoice2)
-			}
-			_ => None,
+			ReconcileAction::Skip => continue,
 		};
-		let Some(state) = resend_state else { continue };
 		let Ok(slate_id) = uuid::Uuid::parse_str(&meta.slate_id) else {
 			continue;
 		};
@@ -930,7 +965,16 @@ async fn reconcile(svc: &Arc<NostrService>, wallet: &Wallet) {
 			.await
 		{
 			Ok(event_id) => {
-				let mut updated = meta.clone();
+				// Re-read under the finalize lock before writing: a failed
+				// dispatch may have closed this row (Cancelled) while it was
+				// being re-sent, and an old copy must never reopen it.
+				let _lock = svc.lock_finalize();
+				let Some(mut updated) = svc.store.tx_meta(&meta.slate_id) else {
+					continue;
+				};
+				if updated.status != meta.status {
+					continue;
+				}
 				updated.sent_event_id = Some(event_id);
 				updated.status = match state {
 					grin_wallet_libwallet::SlateState::Standard1 => NostrSendStatus::AwaitingS2,
@@ -2021,6 +2065,48 @@ mod tests {
 		assert!(!expiry_locks_outputs(RequestedByUs, AwaitingI2));
 		assert!(!expiry_locks_outputs(RequestedByUs, Created));
 		assert!(!expiry_locks_outputs(RequestedOfUs, ReceivedNoReply));
+	}
+
+	#[test]
+	fn failed_dispatch_is_never_resent() {
+		use NostrSendStatus::*;
+		use NostrTxDirection::*;
+		// C1: the UI showed "Couldn't send" and "Try again" built a new slate,
+		// so the old S1/I1 is closed, never re-sent (that paid twice).
+		assert_eq!(reconcile_action(Sent, SendFailed), ReconcileAction::Heal);
+		assert_eq!(
+			reconcile_action(RequestedByUs, SendFailed),
+			ReconcileAction::Heal
+		);
+		// A crash before the dispatch result: the user saw no failure, re-send.
+		assert_eq!(
+			reconcile_action(Sent, Created),
+			ReconcileAction::Resend(grin_wallet_libwallet::SlateState::Standard1)
+		);
+		assert_eq!(
+			reconcile_action(RequestedByUs, Created),
+			ReconcileAction::Resend(grin_wallet_libwallet::SlateState::Invoice1)
+		);
+		// Reply re-sends are unchanged.
+		assert_eq!(
+			reconcile_action(Received, ReceivedNoReply),
+			ReconcileAction::Resend(grin_wallet_libwallet::SlateState::Standard2)
+		);
+		assert_eq!(
+			reconcile_action(RequestedOfUs, ReceivedNoReply),
+			ReconcileAction::Resend(grin_wallet_libwallet::SlateState::Invoice2)
+		);
+		// Everything already dispatched or terminal is left alone.
+		for (d, s) in [
+			(Sent, AwaitingS2),
+			(Sent, Finalized),
+			(Sent, Cancelled),
+			(RequestedByUs, AwaitingI2),
+			(Received, RepliedS2),
+			(RequestedOfUs, PaidAwaitingFinalize),
+		] {
+			assert_eq!(reconcile_action(d, s), ReconcileAction::Skip, "{d:?} {s:?}");
+		}
 	}
 
 	/// A proof-mode SEND meta at a given lifecycle status, order context present,

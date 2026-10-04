@@ -92,6 +92,10 @@ pub fn decide(ctx: &IngestContext) -> IngestDecision {
 		// partial signature over our locked outputs, which the counterparty
 		// can only have if we actually sent it. Sender + tx_exists are still
 		// required, and grin rejects finalizing an already-finalized tx.
+		// A failed dispatch is now final (the send is cancelled, meta
+		// Cancelled), so SendFailed only remains on rows from older builds. The
+		// service-start catch-up runs before reconcile closes those rows, so a
+		// reply already waiting on a relay still completes the payment.
 		SlateState::Standard2 => match ctx.meta {
 			Some(meta)
 				if meta.direction == NostrTxDirection::Sent
