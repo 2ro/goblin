@@ -2005,10 +2005,12 @@ impl Wallet {
 		}
 		// A prior attempt may have finalized but then failed to post (a transient
 		// node outage). Re-finalizing errors on the already-finalized tx, so when
-		// the finalized (Standard3) slatepack is already on disk we parse and
-		// re-post it instead of finalizing again — a post failure then recovers on
-		// the next retry rather than getting permanently stuck.
-		let finalized = match self.read_slatepack_text(slate.id, &SlateState::Standard3) {
+		// the finalized slatepack is already on disk we parse and re-post it
+		// instead of finalizing again, so a post failure recovers on the next
+		// retry rather than getting permanently stuck. The file is named by the
+		// finalized state of this slate's flow (see `finalized_state_for`).
+		let finalized_state = Self::finalized_state_for(&slate.state);
+		let finalized = match self.read_slatepack_text(slate.id, &finalized_state) {
 			Some(text) => {
 				self.parse_slatepack(&text)
 					.map_err(|e| Error::GenericError(format!("reload finalized slate: {e}")))?
@@ -2018,6 +2020,19 @@ impl Wallet {
 		};
 		self.post(&finalized, Some(tx.id))?;
 		Ok(true)
+	}
+
+	/// The state a finalized slate of this slate's flow is saved under. libwallet
+	/// finalizes an Invoice2 into Invoice3 and a Standard2 into Standard3, and
+	/// [`Self::finalize`] saves the slatepack under that state. Looking for
+	/// Standard3 only made a paid request never re-post after a failed post.
+	fn finalized_state_for(state: &SlateState) -> SlateState {
+		match state {
+			SlateState::Invoice1 | SlateState::Invoice2 | SlateState::Invoice3 => {
+				SlateState::Invoice3
+			}
+			_ => SlateState::Standard3,
+		}
 	}
 
 	/// Pay an APPROVED payment request (Invoice1). Only ever called from the
@@ -4319,5 +4334,33 @@ mod open_tests {
 		);
 
 		wallet.close();
+	}
+
+	/// The re-post after a failed post looks for the finalized slatepack under
+	/// the state its flow is saved with: Invoice3 for a paid request, Standard3
+	/// for a send. Looking for Standard3 only left a paid request unbroadcast for
+	/// ever once its first post failed.
+	#[test]
+	fn repost_looks_for_the_finalized_state_of_the_flow() {
+		assert_eq!(
+			Wallet::finalized_state_for(&SlateState::Invoice2),
+			SlateState::Invoice3,
+			"a paid request is finalized and saved as Invoice3"
+		);
+		assert_eq!(
+			Wallet::finalized_state_for(&SlateState::Standard2),
+			SlateState::Standard3,
+			"a send reply is finalized and saved as Standard3"
+		);
+		for s in [SlateState::Invoice1, SlateState::Invoice3] {
+			assert_eq!(Wallet::finalized_state_for(&s), SlateState::Invoice3);
+		}
+		for s in [
+			SlateState::Standard1,
+			SlateState::Standard3,
+			SlateState::Unknown,
+		] {
+			assert_eq!(Wallet::finalized_state_for(&s), SlateState::Standard3);
+		}
 	}
 }
