@@ -18,6 +18,7 @@
 
 use super::*;
 use crate::nostr::protocol;
+use crate::nostr::relays::HOME_NIP05_DOMAIN;
 // ---------------------------------------------------------------------------
 // Tier classification (the security-critical surface).
 // ---------------------------------------------------------------------------
@@ -210,6 +211,105 @@ fn is_wallet_tag(tag: &serde_json::Value) -> bool {
 		.and_then(|name| name.as_str())
 		.map(|name| name == protocol::GOBLIN_TAG || name == protocol::GOBLIN_ACTION_TAG)
 		.unwrap_or(false)
+}
+
+// ---------------------------------------------------------------------------
+// NIP-98 HTTP auth (kind 27235): checked by the host it authorizes.
+// ---------------------------------------------------------------------------
+
+/// The NIP-98 HTTP auth kind. Its `u` tag names the one URL the signed event
+/// authorizes, so a session signs it only after checking that URL's host.
+pub const HTTP_AUTH_KIND: u16 = 27235;
+
+/// Where a NIP-98 HTTP auth event would let its bearer act, read from its `u`
+/// tag after `url::Url` parsing (hosts compared lowercase).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HttpAuthTarget {
+	/// The session's own site (its domain or a subdomain): signed silently,
+	/// like any granted low-tier kind.
+	OwnSite,
+	/// The wallet's name authority: refused. The wallet releases an @name with
+	/// exactly this event (`nip05::unregister`), so a site never gets one.
+	NameAuthority,
+	/// Any other host: refused. A site has no business holding the user's auth
+	/// for another service, and the password prompt cannot show the host, so
+	/// asking would be a blind approval.
+	OtherHost,
+	/// No `u` tag, more than one, or one that is not a plain http(s) URL with a
+	/// host: refused. The name authority honours the LAST `u` tag, so a second
+	/// one could carry it past a check of the first.
+	Invalid,
+}
+
+/// Classify a NIP-98 event's target host (see [`HttpAuthTarget`]). Only
+/// [`HttpAuthTarget::OwnSite`] is ever signed; every other result is refused.
+/// `site_domain` is the session's approved domain (a dev `host:port` domain is
+/// compared by its host); `authority_hosts` are the name-authority hosts, each
+/// matched with its subdomains. Pure, so it is tested without the global
+/// authority setting.
+pub fn http_auth_target(
+	tags: &[Vec<String>],
+	site_domain: &str,
+	authority_hosts: &[String],
+) -> HttpAuthTarget {
+	let mut u_tags = tags
+		.iter()
+		.filter(|t| t.first().map(|k| k == "u").unwrap_or(false));
+	let (Some(u_tag), None) = (u_tags.next(), u_tags.next()) else {
+		return HttpAuthTarget::Invalid;
+	};
+	let Some(raw) = u_tag.get(1) else {
+		return HttpAuthTarget::Invalid;
+	};
+	if raw.contains('\\') || raw.bytes().any(|b| b < 0x20 || b == 0x7f) {
+		return HttpAuthTarget::Invalid;
+	}
+	let Ok(url) = url::Url::parse(raw) else {
+		return HttpAuthTarget::Invalid;
+	};
+	if !matches!(url.scheme(), "https" | "http")
+		|| !url.username().is_empty()
+		|| url.password().is_some()
+	{
+		return HttpAuthTarget::Invalid;
+	}
+	let Some(host) = url.host_str() else {
+		return HttpAuthTarget::Invalid;
+	};
+	// A trailing dot names the same host; drop it so it cannot dodge a match.
+	let host = host.trim_end_matches('.').to_ascii_lowercase();
+	if host.is_empty() {
+		return HttpAuthTarget::Invalid;
+	}
+	let is_domain = matches!(url.host(), Some(url::Host::Domain(_)));
+	let within = |base: &str| {
+		let base = base.trim().trim_end_matches('.').to_ascii_lowercase();
+		!base.is_empty() && (host == base || (is_domain && host.ends_with(&format!(".{base}"))))
+	};
+	if authority_hosts.iter().any(|a| within(a)) {
+		return HttpAuthTarget::NameAuthority;
+	}
+	// The session domain is the trust URI's `d`; in development it carries a
+	// port (`localhost:3000`), which the host comparison leaves out.
+	let site_host = match site_domain.rsplit_once(':') {
+		Some((h, port)) if !port.is_empty() && port.bytes().all(|b| b.is_ascii_digit()) => h,
+		_ => site_domain,
+	};
+	if within(site_host) {
+		return HttpAuthTarget::OwnSite;
+	}
+	HttpAuthTarget::OtherHost
+}
+
+/// The name-authority hosts a session never gets HTTP auth for: the default
+/// home (goblin.st) and the configured authority, when it is another host.
+pub fn name_authority_hosts() -> Vec<String> {
+	let mut hosts = vec![HOME_NIP05_DOMAIN.to_string()];
+	let configured = crate::nostr::nip05::home_domain();
+	if !hosts.contains(&configured) {
+		hosts.push(configured);
+	}
+	hosts
 }
 
 // ---------------------------------------------------------------------------

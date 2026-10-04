@@ -243,9 +243,16 @@ impl SignError {
 /// pins `created_at` to the client's value so the signed event matches NDK's
 /// `id` and relays accept it. Defense in depth re-checks the invariants the
 /// enforcement layer also checks: the pubkey must equal the identity, the skew
-/// must hold, kind 22242 and any `delegation` tag are refused outright. Only the
-/// canonical NIP-01 serialization this computes is ever signed; no client hash.
-pub fn sign_session_event(keys: &Keys, ev: &RequestEvent, now: u64) -> Result<Event, SignError> {
+/// must hold, kind 22242 and any `delegation` tag are refused outright, and a
+/// NIP-98 HTTP auth event is signed only for `site_domain` (the session's own
+/// site). Only the canonical NIP-01 serialization this computes is ever signed;
+/// no client hash.
+pub fn sign_session_event(
+	keys: &Keys,
+	ev: &RequestEvent,
+	site_domain: &str,
+	now: u64,
+) -> Result<Event, SignError> {
 	// Identity binding: a session for identity A can never sign as identity B.
 	let want = keys.public_key();
 	let got = PublicKey::from_hex(&ev.pubkey).map_err(|_| SignError::Malformed)?;
@@ -258,6 +265,15 @@ pub fn sign_session_event(keys: &Keys, ev: &RequestEvent, now: u64) -> Result<Ev
 	}
 	// The wallet never yields a login-capable signature, in any build, ever.
 	if ev.kind == LOGIN_EVENT_KIND {
+		return Err(SignError::Refused);
+	}
+	// Nor HTTP auth for any host but the session's own site (never the name
+	// authority, whose token releases an @name), or with a missing or
+	// ambiguous `u`, on any path, the password-approved one included.
+	if ev.kind == HTTP_AUTH_KIND
+		&& http_auth_target(&ev.tags, site_domain, &name_authority_hosts())
+			!= HttpAuthTarget::OwnSite
+	{
 		return Err(SignError::Refused);
 	}
 	let mut tags = Vec::with_capacity(ev.tags.len());
@@ -346,7 +362,7 @@ pub fn serve(session: &mut Session, req: &SignRequest, sign_keys: &Keys, now: u6
 			..Served::default()
 		},
 		Decision::Silent { notify_high_volume } => {
-			let result = match sign_session_event(sign_keys, &req.event, now) {
+			let result = match sign_session_event(sign_keys, &req.event, &session.domain, now) {
 				Ok(ev) => SignResult::ok(&req.id, &ev),
 				Err(err) => SignResult::refused(&req.id, err),
 			};
@@ -379,7 +395,7 @@ pub fn complete_money(
 	let json = match op {
 		ChannelOp::Sign(req) => {
 			let result = if approved {
-				match sign_session_event(keys, &req.event, now) {
+				match sign_session_event(keys, &req.event, &session.domain, now) {
 					Ok(ev) => SignResult::ok(&req.id, &ev),
 					Err(err) => SignResult::refused(&req.id, err),
 				}

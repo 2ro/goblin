@@ -308,6 +308,15 @@ impl Session {
 				if !self.silent_kind_set.contains(&req.event.kind) {
 					return Decision::Refuse(SignError::KindNotInSession);
 				}
+				// NIP-98 HTTP auth is judged by the host it authorizes: silent for
+				// the session's own site, refused for any other host, the wallet's
+				// name authority included (see http_auth_target).
+				if req.event.kind == HTTP_AUTH_KIND
+					&& http_auth_target(&req.event.tags, &self.domain, &name_authority_hosts())
+						!= HttpAuthTarget::OwnSite
+				{
+					return Decision::Refuse(SignError::Refused);
+				}
 				// Rate limiting on the silent path only.
 				self.trim_rate_window(now);
 				if self.silent_times.len() >= RATE_HARD_PER_5MIN {
@@ -697,7 +706,7 @@ mod tests {
 			],
 			content: "+".to_string(),
 		};
-		let signed = sign_session_event(&keys, &ev, now).expect("sign");
+		let signed = sign_session_event(&keys, &ev, "magick.market", now).expect("sign");
 		assert_eq!(
 			signed.created_at.as_secs(),
 			pinned,
@@ -709,7 +718,7 @@ mod tests {
 		assert!(signed.verify().is_ok());
 		// Recomputing NDK-style over the same fields yields the same id: build a
 		// second event with the same pinned time and compare ids.
-		let again = sign_session_event(&keys, &ev, now).expect("sign again");
+		let again = sign_session_event(&keys, &ev, "magick.market", now).expect("sign again");
 		assert_eq!(
 			signed.id, again.id,
 			"id is a pure function of pinned fields"
@@ -732,28 +741,28 @@ mod tests {
 		let mut wrong = base.clone();
 		wrong.pubkey = other.public_key().to_hex();
 		assert_eq!(
-			sign_session_event(&keys, &wrong, now),
+			sign_session_event(&keys, &wrong, "magick.market", now),
 			Err(SignError::IdentityMismatch)
 		);
 		// Login kind refused outright.
 		let mut login = base.clone();
 		login.kind = LOGIN_EVENT_KIND;
 		assert_eq!(
-			sign_session_event(&keys, &login, now),
+			sign_session_event(&keys, &login, "magick.market", now),
 			Err(SignError::Refused)
 		);
 		// Delegation tag refused outright.
 		let mut deleg = base.clone();
 		deleg.tags = vec![vec!["delegation".to_string(), "x".to_string()]];
 		assert_eq!(
-			sign_session_event(&keys, &deleg, now),
+			sign_session_event(&keys, &deleg, "magick.market", now),
 			Err(SignError::Refused)
 		);
 		// Out-of-skew created_at.
 		let mut stale = base.clone();
 		stale.created_at = now + CREATED_AT_SKEW_SECS + 5;
 		assert_eq!(
-			sign_session_event(&keys, &stale, now),
+			sign_session_event(&keys, &stale, "magick.market", now),
 			Err(SignError::StaleRequest)
 		);
 	}
@@ -1235,6 +1244,205 @@ mod tests {
 		}
 	}
 
+	/// A tag list from string rows.
+	fn tags(rows: &[&[&str]]) -> Vec<Vec<String>> {
+		rows.iter()
+			.map(|r| r.iter().map(|s| s.to_string()).collect())
+			.collect()
+	}
+
+	#[test]
+	fn nip98_target_follows_the_u_host() {
+		use HttpAuthTarget::*;
+		let authorities = vec!["goblin.st".to_string(), "names.example".to_string()];
+		let target = |u: &str| {
+			http_auth_target(
+				&tags(&[&["u", u], &["method", "POST"]]),
+				"magick.market",
+				&authorities,
+			)
+		};
+		// The session's own site and its subdomains.
+		for u in [
+			"https://magick.market/api/v1/upload",
+			"https://cdn.magick.market/upload",
+			"https://MAGICK.Market:8443/x",
+		] {
+			assert_eq!(target(u), OwnSite, "{u}");
+		}
+		// The name authority in any spelling, and a configured authority.
+		for u in [
+			"https://goblin.st/api/v1/register/alice",
+			"https://GOBLIN.ST/api/v1/register/alice",
+			"https://goblin.st./api/v1/register/alice",
+			"https://api.goblin.st/x",
+			"http://goblin.st/x",
+			"https://names.example/api/v1/transfer/claim",
+		] {
+			assert_eq!(target(u), NameAuthority, "{u}");
+		}
+		// Any other host is not the site's to authorize: refused.
+		for u in [
+			"https://nostr.build/api/v2/upload",
+			"https://evilmagick.market/x",
+			"https://203.0.113.7/x",
+		] {
+			assert_eq!(target(u), OtherHost, "{u}");
+		}
+		// Unusable or ambiguous `u` values.
+		for u in [
+			"not a url",
+			"wss://magick.market/x",
+			"https://magick.market\\@goblin.st/x",
+			"https://magick.market@goblin.st/x",
+		] {
+			assert_eq!(target(u), Invalid, "{u}");
+		}
+		// No `u`, a valueless `u`, and two `u` tags (the authority honours the
+		// last one, so a harmless first one must not decide).
+		let invalid = [
+			tags(&[&["method", "POST"]]),
+			tags(&[&["u"], &["method", "POST"]]),
+			tags(&[
+				&["u", "https://magick.market/x"],
+				&["u", "https://goblin.st/api/v1/register/alice"],
+				&["method", "DELETE"],
+			]),
+		];
+		for t in invalid {
+			assert_eq!(
+				http_auth_target(&t, "magick.market", &authorities),
+				Invalid,
+				"{t:?}"
+			);
+		}
+		// A development domain carries a port; its host still matches.
+		assert_eq!(
+			http_auth_target(
+				&tags(&[&["u", "http://localhost:3000/api/x"]]),
+				"localhost:3000",
+				&authorities
+			),
+			OwnSite
+		);
+	}
+
+	#[test]
+	fn nip98_session_signs_own_site_refuses_elsewhere() {
+		let now = 1_751_800_000u64;
+		let (mut s, id) = mk_session(MAGICK_KINDS, now);
+		let http_auth = |rid: &str, rows: &[&[&str]]| {
+			let mut r = mk_req(&id, HTTP_AUTH_KIND, "", now, rid);
+			r.event.tags = tags(rows);
+			r
+		};
+		// The site's own endpoint: silent, signed.
+		let r = http_auth(
+			"h1",
+			&[
+				&["u", "https://magick.market/api/v1/upload"],
+				&["method", "POST"],
+			],
+		);
+		let out = serve(&mut s, &r, &id, now);
+		assert!(!out.money_pending);
+		assert!(out.response.unwrap().contains("\"ok\":true"));
+		// The exact event the wallet uses to release @alice (nip05::unregister),
+		// a registration with a payload hash, any other host, two `u` tags and
+		// no `u`: all refused, never a prompt.
+		let payload = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08";
+		for (rid, rows) in [
+			(
+				"h2",
+				vec![
+					vec!["u", "https://goblin.st/api/v1/register/alice"],
+					vec!["method", "DELETE"],
+				],
+			),
+			(
+				"h3",
+				vec![
+					vec!["u", "https://goblin.st/api/v1/register"],
+					vec!["method", "POST"],
+					vec!["payload", payload],
+				],
+			),
+			// Two `u` tags, the authority last.
+			(
+				"h4",
+				vec![
+					vec!["u", "https://magick.market/x"],
+					vec!["u", "https://goblin.st/api/v1/register/alice"],
+					vec!["method", "DELETE"],
+				],
+			),
+			// Another host is not the site's to authorize.
+			(
+				"h6",
+				vec![
+					vec!["u", "https://nostr.build/api/v2/upload"],
+					vec!["method", "POST"],
+				],
+			),
+			// No `u` at all.
+			("h5", vec![vec!["method", "GET"]]),
+		] {
+			let rows: Vec<&[&str]> = rows.iter().map(|r| r.as_slice()).collect();
+			let out = serve(&mut s, &http_auth(rid, &rows), &id, now);
+			assert!(!out.money_pending, "{rid} must not prompt");
+			assert!(
+				out.response
+					.unwrap()
+					.contains("\"error\":\"kind_not_in_session\""),
+				"{rid} must be refused"
+			);
+		}
+		// Defense in depth: the signer itself, which the password-approved path
+		// also uses, signs HTTP auth only for the session's own site.
+		for (rid, u) in [
+			("h7", "https://goblin.st/api/v1/register/alice"),
+			("h8", "https://nostr.build/api/v2/upload"),
+		] {
+			let r = http_auth(rid, &[&["u", u], &["method", "DELETE"]]);
+			assert_eq!(
+				sign_session_event(&id, &r.event, "magick.market", now),
+				Err(SignError::Refused),
+				"{u}"
+			);
+			let json = complete_money(&mut s, &ChannelOp::Sign(r), &id, true, now);
+			assert!(json.contains("\"ok\":false"), "{u} approved");
+		}
+		let r = http_auth(
+			"h9",
+			&[&["u", "https://magick.market/x"], &["method", "GET"]],
+		);
+		assert!(sign_session_event(&id, &r.event, "magick.market", now).is_ok());
+		// A session not granted HTTP auth refuses even its own site.
+		let (mut s2, id2) = mk_session(&[1, 7], now);
+		let mut r = mk_req(&id2, HTTP_AUTH_KIND, "", now, "h10");
+		r.event.tags = tags(&[&["u", "https://magick.market/x"], &["method", "GET"]]);
+		assert_eq!(
+			s2.decide(&r, now),
+			Decision::Refuse(SignError::KindNotInSession)
+		);
+	}
+
+	#[test]
+	fn blossom_upload_auth_is_unchanged() {
+		// NDKBlossom's real kind-24242 shape: t, x, expiration and no host tag.
+		// Uploads go to third-party Blossom servers, and the name authority only
+		// accepts kind 27235, so 24242 keeps its plain low-tier rule.
+		let now = 1_751_800_000u64;
+		let (mut s, id) = mk_session(MAGICK_KINDS, now);
+		let mut r = mk_req(&id, 24242, "Upload blob", now, "b1");
+		let hash = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08";
+		let exp = (now + 3600).to_string();
+		r.event.tags = tags(&[&["t", "upload"], &["x", hash], &["expiration", &exp]]);
+		let out = serve(&mut s, &r, &id, now);
+		assert!(!out.money_pending);
+		assert!(out.response.unwrap().contains("\"ok\":true"));
+	}
+
 	fn mk_req(identity: &Keys, kind: u16, content: &str, now: u64, id: &str) -> SignRequest {
 		SignRequest {
 			msg_type: "sign".to_string(),
@@ -1441,6 +1649,7 @@ mod tests {
 				tags: vec![],
 				content: "hi".to_string(),
 			},
+			"magick.market",
 			1_751_800_000,
 		)
 		.unwrap();
