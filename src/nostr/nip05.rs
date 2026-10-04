@@ -12,9 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! NIP-05 username resolution/verification and goblin.st registration,
-//! all HTTP routed over Tor (the in-process arti tunnel). Nothing here touches
-//! clearnet.
+//! NIP-05 username resolution/verification and goblin.st registration. Every
+//! request takes the [`Route`] of the wallet it is made for: over Tor (the
+//! in-process arti tunnel) when that wallet has Tor on, direct when it has Tor
+//! off.
 
 use base64::Engine;
 use nostr_sdk::{EventBuilder, JsonUtil, Keys, Kind, PublicKey, Tag, TagKind};
@@ -23,6 +24,7 @@ use sha2::{Digest, Sha256};
 
 use crate::nostr::relays::HOME_NIP05_DOMAIN;
 use crate::tor;
+use crate::tor::Route;
 use parking_lot::RwLock;
 
 /// Hard cap on a name-authority `@name` before it is shown as a contact handle.
@@ -101,13 +103,13 @@ fn is_valid_hostname(d: &str) -> bool {
 }
 
 /// Resolve a NIP-05 identifier (user@domain) to a pubkey + relay hints.
-pub async fn resolve(name: &str, domain: &str) -> Option<Nip05Resolution> {
+pub async fn resolve(route: Route, name: &str, domain: &str) -> Option<Nip05Resolution> {
 	let url = format!(
 		"https://{}/.well-known/nostr.json?name={}",
 		domain,
 		urlencode(name)
 	);
-	let body = tor::http_request("GET", url, None, vec![]).await?;
+	let body = tor::http_request(route, "GET", url, None, vec![]).await?;
 	parse_well_known(&body, name)
 }
 
@@ -119,13 +121,13 @@ pub async fn resolve(name: &str, domain: &str) -> Option<Nip05Resolution> {
 /// authority OR the server was unreachable (the two are indistinguishable here,
 /// so callers must NOT treat `None` as "released" — fall back to the kind-0 +
 /// verify path, which can tell a definitive miss from a network blip).
-pub async fn name_by_pubkey(domain: &str, pubkey_hex: &str) -> Option<String> {
+pub async fn name_by_pubkey(route: Route, domain: &str, pubkey_hex: &str) -> Option<String> {
 	let url = format!(
 		"https://{}/api/v1/by-pubkey/{}",
 		domain,
 		urlencode(pubkey_hex)
 	);
-	let body = tor::http_request("GET", url, None, vec![]).await?;
+	let body = tor::http_request(route, "GET", url, None, vec![]).await?;
 	let doc: Value = serde_json::from_str(&body).ok()?;
 	let raw = doc.get("name").and_then(|v| v.as_str())?;
 	// The authority is untrusted display data: strip any control/bidi/zero-width
@@ -136,8 +138,8 @@ pub async fn name_by_pubkey(domain: &str, pubkey_hex: &str) -> Option<String> {
 }
 
 /// Verify that a pubkey matches its claimed NIP-05 identifier.
-pub async fn verify(pubkey: &PublicKey, name: &str, domain: &str) -> bool {
-	match resolve(name, domain).await {
+pub async fn verify(route: Route, pubkey: &PublicKey, name: &str, domain: &str) -> bool {
+	match resolve(route, name, domain).await {
 		Some(res) => res.pubkey == *pubkey,
 		None => false,
 	}
@@ -160,13 +162,13 @@ pub enum Nip05Check {
 /// Freshness-aware NIP-05 check (see [`Nip05Check`]). Only returns `Mismatch`
 /// when the server gives a well-formed answer that doesn't include this key —
 /// any network error or non-well-known response is `Unreachable`.
-pub async fn check(pubkey: &PublicKey, name: &str, domain: &str) -> Nip05Check {
+pub async fn check(route: Route, pubkey: &PublicKey, name: &str, domain: &str) -> Nip05Check {
 	let url = format!(
 		"https://{}/.well-known/nostr.json?name={}",
 		domain,
 		urlencode(name)
 	);
-	let Some(body) = tor::http_request("GET", url, None, vec![]).await else {
+	let Some(body) = tor::http_request(route, "GET", url, None, vec![]).await else {
 		return Nip05Check::Unreachable;
 	};
 	check_body(&body, pubkey, name)
@@ -219,13 +221,13 @@ pub enum Availability {
 }
 
 /// Check name availability against the identity server.
-pub async fn check_availability(server: &str, name: &str) -> Availability {
+pub async fn check_availability(route: Route, server: &str, name: &str) -> Availability {
 	let url = format!(
 		"{}/api/v1/name/{}",
 		server.trim_end_matches('/'),
 		urlencode(name)
 	);
-	let body = match tor::http_request("GET", url, None, vec![]).await {
+	let body = match tor::http_request(route, "GET", url, None, vec![]).await {
 		Some(b) => b,
 		None => return Availability::Unknown,
 	};
@@ -276,7 +278,7 @@ pub enum RegisterResult {
 }
 
 /// Register `name` for our keys at the identity server (NIP-98 authed).
-pub async fn register(server: &str, name: &str, keys: &Keys) -> RegisterResult {
+pub async fn register(route: Route, server: &str, name: &str, keys: &Keys) -> RegisterResult {
 	let server = server.trim_end_matches('/');
 	let url = format!("{}/api/v1/register", server);
 	let body = serde_json::json!({
@@ -291,7 +293,7 @@ pub async fn register(server: &str, name: &str, keys: &Keys) -> RegisterResult {
 		("Authorization".to_string(), auth),
 		("Content-Type".to_string(), "application/json".to_string()),
 	];
-	let Some(resp) = tor::http_request("POST", url, Some(body), headers).await else {
+	let Some(resp) = tor::http_request(route, "POST", url, Some(body), headers).await else {
 		return RegisterResult::Network;
 	};
 	let Ok(doc) = serde_json::from_str::<Value>(&resp) else {
@@ -313,14 +315,14 @@ pub async fn register(server: &str, name: &str, keys: &Keys) -> RegisterResult {
 }
 
 /// Release a registered name (NIP-98 authed by the owner).
-pub async fn unregister(server: &str, name: &str, keys: &Keys) -> Result<(), String> {
+pub async fn unregister(route: Route, server: &str, name: &str, keys: &Keys) -> Result<(), String> {
 	let server = server.trim_end_matches('/');
 	let url = format!("{}/api/v1/register/{}", server, urlencode(name));
 	let Some(auth) = nip98_auth(keys, &url, "DELETE", None) else {
 		return Err("couldn't sign the request".to_string());
 	};
 	let headers = vec![("Authorization".to_string(), auth)];
-	match tor::http_request("DELETE", url, None, headers).await {
+	match tor::http_request(route, "DELETE", url, None, headers).await {
 		Some(resp) if resp.contains("\"released\":true") => Ok(()),
 		Some(resp) => Err(serde_json::from_str::<serde_json::Value>(&resp)
 			.ok()
@@ -332,10 +334,10 @@ pub async fn unregister(server: &str, name: &str, keys: &Keys) -> Result<(), Str
 
 /// Public profile probe: `None` = network failure, `Some(None)` = name has
 /// no avatar (or no such name), `Some(Some(hash))` = avatar content hash.
-pub async fn fetch_profile(server: &str, name: &str) -> Option<Option<String>> {
+pub async fn fetch_profile(route: Route, server: &str, name: &str) -> Option<Option<String>> {
 	let server = server.trim_end_matches('/');
 	let url = format!("{}/api/v1/profile/{}", server, urlencode(name));
-	let (code, raw) = tor::http_request_bytes("GET", url, None, vec![]).await?;
+	let (code, raw) = tor::http_request_bytes(route, "GET", url, None, vec![]).await?;
 	if code == 404 {
 		return Some(None);
 	}
@@ -348,13 +350,13 @@ pub async fn fetch_profile(server: &str, name: &str) -> Option<Option<String>> {
 
 /// Download a processed avatar by content hash. Verifies size and PNG
 /// magic before returning — a misbehaving server can't feed the UI junk.
-pub async fn fetch_avatar(server: &str, hash: &str) -> Option<Vec<u8>> {
+pub async fn fetch_avatar(route: Route, server: &str, hash: &str) -> Option<Vec<u8>> {
 	if hash.len() != 64 || !hash.bytes().all(|c| c.is_ascii_hexdigit()) {
 		return None;
 	}
 	let server = server.trim_end_matches('/');
 	let url = format!("{}/api/v1/avatar/{}.png", server, hash);
-	let (code, raw) = tor::http_request_bytes("GET", url, None, vec![]).await?;
+	let (code, raw) = tor::http_request_bytes(route, "GET", url, None, vec![]).await?;
 	if code != 200 || raw.len() > 1_048_576 || !raw.starts_with(&[0x89, b'P', b'N', b'G']) {
 		return None;
 	}

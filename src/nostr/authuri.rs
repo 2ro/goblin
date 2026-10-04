@@ -485,16 +485,18 @@ pub fn build_authorize_event(keys: &Keys, template: &Template) -> Result<Event, 
 
 /// POST the signed authorize event to the callback as
 /// `{"c": <nonce>, "d": <domain>, "event": <event-json>}`. Goes through
-/// [`crate::tor::http_request_bytes`], the transport-aware helper: over Tor when
-/// the open wallet routes over Tor, clearnet otherwise. Routing over Tor when it
-/// is on keeps the callback server from tying the user's real IP to the identity
-/// pubkey in the signed event. The helper sets a browser-like default
+/// [`crate::tor::http_request_bytes`] on `route`, the Tor setting of the wallet
+/// that signed the event: over Tor when that wallet has Tor on, clearnet
+/// otherwise. Routing over Tor when it is on keeps the callback server from
+/// tying the user's real IP to the identity pubkey in the signed event. The
+/// helper sets a browser-like default
 /// `User-Agent`, so the request is not trivially fingerprintable as Goblin at the
 /// destination (no identifying `goblin-wallet` header). The `c` and `d` fields
 /// correlate the delivery to the request the server minted, since the arbitrary
 /// event carries no challenge or domain tag of its own. The caller wraps this in
 /// its own timeout.
 pub async fn post_authorize_event(
+	route: crate::tor::Route,
 	callback: &str,
 	challenge: &str,
 	domain: &str,
@@ -502,6 +504,7 @@ pub async fn post_authorize_event(
 ) -> Result<(), String> {
 	let body = serde_json::json!({ "c": challenge, "d": domain, "event": event }).to_string();
 	let (status, _) = crate::tor::http_request_bytes(
+		route,
 		"POST",
 		callback.to_string(),
 		Some(body.into_bytes()),

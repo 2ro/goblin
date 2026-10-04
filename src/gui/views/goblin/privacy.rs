@@ -223,11 +223,11 @@ impl GoblinWalletView {
 			});
 		if let Some(new_val) = toggled {
 			if let Some(s) = wallet.nostr_service() {
-				// Persist the explicit choice (auto-saves nostr.toml) and mirror
-				// the process-global route flag so free-function HTTP callers pick
-				// the matching transport immediately, then rebuild the pool.
+				// Persist the explicit choice (auto-saves nostr.toml) and update
+				// this wallet's entry in the open-wallet route registry (app-level
+				// requests follow it at once), then rebuild the pool.
 				s.config.write().set_tor_enabled(new_val);
-				crate::tor::set_route_over_tor(new_val);
+				crate::tor::set_wallet_route(wallet.get_config().id, new_val);
 				s.restart(wallet.clone());
 			}
 		}

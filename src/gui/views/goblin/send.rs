@@ -62,10 +62,10 @@ fn tex_for(
 	if name.is_empty() || name.starts_with("npub1") {
 		return None;
 	}
-	let server = wallet
+	let (server, route) = wallet
 		.nostr_service()
-		.map(|s| s.config.read().nip05_server())?;
-	avatars.texture_for(ctx, &server, name)
+		.map(|s| (s.config.read().nip05_server(), s.tor_routing().into()))?;
+	avatars.texture_for(ctx, &server, route, name)
 }
 
 /// Stage of the send flow.
@@ -1001,8 +1001,13 @@ impl SendFlow {
 			// Name / @handle → goblin.st (or other) nip05 resolution.
 			self.looking_up = true;
 			let label = name.to_string();
+			let route = wallet
+				.nostr_service()
+				.map(|s| s.tor_routing())
+				.unwrap_or(true)
+				.into();
 			std::thread::spawn(move || {
-				let res = match resolve_nip05_blocking(&name, &domain) {
+				let res = match resolve_nip05_blocking(route, &name, &domain) {
 					Some(r) => {
 						let hex = r.pubkey.to_hex();
 						let home = domain == crate::nostr::nip05::home_domain();
@@ -1670,7 +1675,11 @@ impl SendFlow {
 
 /// Resolve a NIP-05 identifier on a short-lived runtime (blocking the UI
 /// briefly is acceptable for an explicit "find recipient" action).
-fn resolve_nip05_blocking(name: &str, domain: &str) -> Option<nip05::Nip05Resolution> {
+fn resolve_nip05_blocking(
+	route: crate::tor::Route,
+	name: &str,
+	domain: &str,
+) -> Option<nip05::Nip05Resolution> {
 	let name = name.to_string();
 	let domain = domain.to_string();
 	std::thread::spawn(move || {
@@ -1684,7 +1693,7 @@ fn resolve_nip05_blocking(name: &str, domain: &str) -> Option<nip05::Nip05Resolu
 		rt.block_on(async {
 			tokio::time::timeout(
 				std::time::Duration::from_secs(15),
-				nip05::resolve(&name, &domain),
+				nip05::resolve(route, &name, &domain),
 			)
 			.await
 			.ok()

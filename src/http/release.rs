@@ -135,16 +135,18 @@ impl ReleaseInfo {
 const REQUEST_URL: &'static str = "https://api.github.com/repos/2ro/goblin/releases/latest";
 
 pub async fn retrieve_release() -> Result<ReleaseInfo, String> {
-	// Route the update check through the Tor helper so it honors route_over_tor()
-	// (Tor when the toggle is on, clearnet when off) instead of the clearnet-only
-	// HttpClient::send. The helper sets a browser-like default User-Agent, so we
-	// send no identifying UA of our own; we keep only GitHub's required Accept
-	// header (GitHub also requires a UA, which the helper's default satisfies).
+	// Route the update check through the Tor helper on the app-level route (it
+	// belongs to no wallet: Tor unless every open wallet has Tor off) instead of
+	// the clearnet-only HttpClient::send. The helper sets a browser-like default
+	// User-Agent, so we send no identifying UA of our own; we keep only GitHub's
+	// required Accept header (GitHub also requires a UA, which the helper's
+	// default satisfies).
 	let headers = vec![(
 		"Accept".to_string(),
 		"application/vnd.github+json".to_string(),
 	)];
-	let body = crate::tor::http_request("GET", REQUEST_URL.to_string(), None, headers)
+	let route = crate::tor::app_route();
+	let body = crate::tor::http_request(route, "GET", REQUEST_URL.to_string(), None, headers)
 		.await
 		.ok_or_else(|| "Error checking update".to_string())?;
 	serde_json::from_str::<ReleaseInfo>(&body).map_err(|_| "Error checking update".to_string())

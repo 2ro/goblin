@@ -232,6 +232,12 @@ impl GoblinWalletView {
 					// shared HTTP client and a hard timeout.
 					st.posting = true;
 					let callback = st.uri.callback.clone();
+					// The signing wallet's own Tor setting carries the signed event.
+					let route: crate::tor::Route = wallet
+						.nostr_service()
+						.map(|s| s.tor_routing())
+						.unwrap_or(true)
+						.into();
 					let slot = st.result.clone();
 					std::thread::spawn(move || {
 						let res = match tokio::runtime::Builder::new_current_thread()
@@ -239,8 +245,9 @@ impl GoblinWalletView {
 							.build()
 						{
 							Ok(rt) => rt.block_on(async {
-								let post =
-									crate::nostr::loginuri::post_login_event(&callback, &event);
+								let post = crate::nostr::loginuri::post_login_event(
+									route, &callback, &event,
+								);
 								match tokio::time::timeout(
 									std::time::Duration::from_secs(LOGIN_POST_TIMEOUT_SECS),
 									post,
@@ -656,6 +663,12 @@ impl GoblinWalletView {
 					let callback = st.uri.callback.clone();
 					let challenge = st.uri.challenge.clone();
 					let domain = st.uri.domain.clone();
+					// The signing wallet's own Tor setting carries the signed event.
+					let route: crate::tor::Route = wallet
+						.nostr_service()
+						.map(|s| s.tor_routing())
+						.unwrap_or(true)
+						.into();
 					let slot = st.result.clone();
 					std::thread::spawn(move || {
 						let res = match tokio::runtime::Builder::new_current_thread()
@@ -664,7 +677,7 @@ impl GoblinWalletView {
 						{
 							Ok(rt) => rt.block_on(async {
 								let post = crate::nostr::authuri::post_authorize_event(
-									&callback, &challenge, &domain, &event,
+									route, &callback, &challenge, &domain, &event,
 								);
 								match tokio::time::timeout(
 									std::time::Duration::from_secs(LOGIN_POST_TIMEOUT_SECS),
@@ -962,6 +975,12 @@ impl GoblinWalletView {
 				Ok(event) => {
 					st.posting = true;
 					let callback = st.uri.callback.clone();
+					// The signing wallet's own Tor setting carries the signed event.
+					let route: crate::tor::Route = wallet
+						.nostr_service()
+						.map(|s| s.tor_routing())
+						.unwrap_or(true)
+						.into();
 					let slot = st.result.clone();
 					std::thread::spawn(move || {
 						let res = match tokio::runtime::Builder::new_current_thread()
@@ -969,8 +988,9 @@ impl GoblinWalletView {
 							.build()
 						{
 							Ok(rt) => rt.block_on(async {
-								let post =
-									crate::nostr::loginuri::post_login_event(&callback, &event);
+								let post = crate::nostr::loginuri::post_login_event(
+									route, &callback, &event,
+								);
 								match tokio::time::timeout(
 									std::time::Duration::from_secs(LOGIN_POST_TIMEOUT_SECS),
 									post,

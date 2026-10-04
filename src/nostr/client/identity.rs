@@ -272,7 +272,9 @@ impl NostrService {
 			// fetch their kind-0 off a relay (the fragile leg) — this is what
 			// makes a contact's name show on the FIRST interaction.
 			let home = crate::nostr::nip05::home_domain();
-			if let Some(name) = rt.block_on(crate::nostr::nip05::name_by_pubkey(&home, &hex)) {
+			let route = svc.tor_routing().into();
+			if let Some(name) = rt.block_on(crate::nostr::nip05::name_by_pubkey(route, &home, &hex))
+			{
 				let nip05 = format!("{}@{}", name, home);
 				if let Some(mut c) = svc.store.contact(&hex) {
 					if apply_nip05_check(&mut c, &nip05, crate::nostr::nip05::Nip05Check::Verified)
@@ -295,7 +297,7 @@ impl NostrService {
 			let Some((name, domain)) = nip05.split_once('@') else {
 				return;
 			};
-			let check = rt.block_on(crate::nostr::nip05::check(&pk, name, domain));
+			let check = rt.block_on(crate::nostr::nip05::check(route, &pk, name, domain));
 			if let Some(mut c) = svc.store.contact(&hex) {
 				if apply_nip05_check(&mut c, &nip05, check) {
 					svc.store.save_contact(&c);
