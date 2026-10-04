@@ -17,6 +17,7 @@
 //! kind-to-category display mapping. Security-critical, I/O-free.
 
 use super::*;
+use crate::nostr::protocol;
 // ---------------------------------------------------------------------------
 // Tier classification (the security-critical surface).
 // ---------------------------------------------------------------------------
@@ -119,6 +120,96 @@ fn value_has_payment_marker(v: &serde_json::Value, depth: usize) -> bool {
 		}
 		_ => false,
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Wallet-protocol payloads (the Goblin payment messages): never through a session.
+// ---------------------------------------------------------------------------
+
+/// The opening of Grin slatepack armor. Every Goblin payment message carries
+/// one in its kind-14 rumor content (the wallet extracts the block with
+/// `BEGINSLATEPACK\. ... ENDSLATEPACK\.`, see `protocol::extract_slatepack`).
+/// Matched without regard to ASCII case.
+const SLATEPACK_ARMOR_MARKER: &str = "BEGINSLATEPACK";
+
+/// How deep the JSON walk of a crypto plaintext looks for the wallet's own tags
+/// and strings. A rumor holds them at depth 3 (object, tags, tag); a subtree
+/// nested past this bound gets only the slatepack check, on its decoded text.
+const PROTOCOL_SCAN_DEPTH: usize = 8;
+
+/// True when `plaintext` is, or carries, a Goblin wallet-protocol payload: a
+/// Grin slatepack, the wallet's payment preamble or request-void text
+/// (`protocol::build_payment_content`, `protocol::build_control_content`), or a
+/// rumor tagged with the wallet's own `goblin` / `goblin-action` tags
+/// (`protocol::build_rumor_tags`, `protocol::build_control_tags`).
+///
+/// A session must never encrypt or decrypt these with the identity key. Two
+/// decrypts (gift wrap, then seal) open an incoming payment's S1 rumor, which
+/// lets a site build an S2 reply paying its own output; a session encrypt plus
+/// a silent kind-13 seal then sends that reply as the user, and the payer's
+/// wallet finalizes to the site.
+///
+/// The raw-text check always runs on the whole plaintext. JSON is then walked,
+/// bounded, so a marker hidden behind JSON string escapes, or the wallet's
+/// tags, are found as well. Past the depth bound the subtree is searched for
+/// the slatepack marker in its decoded form only (fail closed).
+pub fn is_wallet_protocol_payload(plaintext: &str) -> bool {
+	if text_is_wallet_protocol(plaintext) {
+		return true;
+	}
+	match serde_json::from_str::<serde_json::Value>(plaintext.trim()) {
+		Ok(v) => value_is_wallet_protocol(&v, 0),
+		Err(_) => false,
+	}
+}
+
+/// The text markers: slatepack armor, the payment preamble, the void text.
+fn text_is_wallet_protocol(s: &str) -> bool {
+	contains_ignore_ascii_case(s, SLATEPACK_ARMOR_MARKER)
+		|| s.contains(protocol::PREAMBLE)
+		|| s.contains(&protocol::build_control_content())
+}
+
+/// ASCII case-insensitive substring search.
+fn contains_ignore_ascii_case(haystack: &str, needle: &str) -> bool {
+	let needle = needle.as_bytes();
+	haystack
+		.as_bytes()
+		.windows(needle.len())
+		.any(|w| w.eq_ignore_ascii_case(needle))
+}
+
+/// Bounded walk of a parsed JSON value for the wallet's markers.
+fn value_is_wallet_protocol(v: &serde_json::Value, depth: usize) -> bool {
+	use serde_json::Value;
+	if depth > PROTOCOL_SCAN_DEPTH {
+		return serde_json::to_string(v)
+			.map(|s| contains_ignore_ascii_case(&s, SLATEPACK_ARMOR_MARKER))
+			.unwrap_or(true);
+	}
+	match v {
+		Value::String(s) => text_is_wallet_protocol(s),
+		Value::Array(items) => items.iter().any(|x| value_is_wallet_protocol(x, depth + 1)),
+		Value::Object(map) => {
+			if let Some(Value::Array(tags)) = map.get("tags")
+				&& tags.iter().any(is_wallet_tag)
+			{
+				return true;
+			}
+			map.values().any(|x| value_is_wallet_protocol(x, depth + 1))
+		}
+		_ => false,
+	}
+}
+
+/// True for a rumor tag named with the wallet's protocol marker or its control
+/// action (`["goblin", "1"]`, `["goblin-action", "void", <slate id>]`).
+fn is_wallet_tag(tag: &serde_json::Value) -> bool {
+	tag.as_array()
+		.and_then(|t| t.first())
+		.and_then(|name| name.as_str())
+		.map(|name| name == protocol::GOBLIN_TAG || name == protocol::GOBLIN_ACTION_TAG)
+		.unwrap_or(false)
 }
 
 // ---------------------------------------------------------------------------

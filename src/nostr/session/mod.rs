@@ -578,6 +578,8 @@ impl PendingMoney {
 #[cfg(test)]
 mod tests {
 	use super::*;
+	use crate::nostr::protocol;
+	use nostr_sdk::{JsonUtil, UnsignedEvent};
 
 	fn low_content() -> &'static str {
 		"gm"
@@ -906,6 +908,330 @@ mod tests {
 				out.response.unwrap().contains("\"plaintext\":\"secret\""),
 				"decrypt with {kinds:?}"
 			);
+		}
+	}
+
+	/// A shape-correct slatepack armor (the receiver finds it by these markers).
+	const ARMOR: &str =
+		"BEGINSLATEPACK. 4H1qx1wHe668tFW yC2gfL8PPd8kSgv pcXQhyRkHbyKHZg. ENDSLATEPACK.";
+
+	/// The kind-14 rumor a Goblin wallet seals for a payment, built the way
+	/// `send_payment_dm` builds it (protocol content and tags, receiver p tag).
+	fn goblin_payment_rumor(sender: &Keys, receiver: &PublicKey) -> UnsignedEvent {
+		let mut rumor = EventBuilder::new(
+			Kind::PrivateDirectMessage,
+			protocol::build_payment_content(ARMOR),
+		)
+		.tag(Tag::public_key(*receiver))
+		.tags(protocol::build_rumor_tags(Some("lunch")))
+		.build(sender.public_key());
+		rumor.ensure_id();
+		rumor
+	}
+
+	/// The request-void control rumor (`send_control_dm`): no slatepack, only the
+	/// wallet's control text and its `goblin-action` tag.
+	fn goblin_void_rumor(sender: &Keys, receiver: &PublicKey) -> UnsignedEvent {
+		let mut rumor = EventBuilder::new(
+			Kind::PrivateDirectMessage,
+			protocol::build_control_content(),
+		)
+		.tag(Tag::public_key(*receiver))
+		.tags(protocol::build_control_tags(
+			"0f3a9d4e-7b21-4c55-9a0e-5d1f2b3c4d5e",
+		))
+		.build(sender.public_key());
+		rumor.ensure_id();
+		rumor
+	}
+
+	/// magick.market's real NIP-17 order traffic, as the rumor JSON its NIP-59
+	/// helper hands to session encrypt (market/src/lib/orders/orderMessageRumor.ts,
+	/// privateOrderMessage.ts, nostr/nip59.ts normalizeUnsignedRumorId).
+	fn magick_rumors(sender: &PublicKey, peer: &PublicKey, now: u64) -> Vec<String> {
+		let (from, to) = (sender.to_hex(), peer.to_hex());
+		let item = format!("30402:{to}:enchanted-wand");
+		let ship = format!("30406:{to}:tracked-post");
+		let proof = r#"{"amount":"2500000000","excess":"08ab12","recipient_address":"grin1qqqq","recipient_sig":"aa","sender_address":"grin1pppp","sender_sig":"bb"}"#;
+		let shapes = vec![
+			// Order creation (kind 16, type 1) with the buyer's delivery details.
+			(
+				16,
+				"Please gift wrap it",
+				serde_json::json!([
+					["p", to],
+					["subject", "order-info"],
+					["type", "1"],
+					["order", "ord-7c1e"],
+					["amount", "2500000000"],
+					["item", item, "1"],
+					["shipping", ship],
+					["name", "Ada"],
+					["address", "1 Main St, Springfield, 12345, US"],
+					["email", "ada@example.com"],
+					["contact", "signal", "@ada.01"],
+					["phone", "+1 555 0100"]
+				]),
+			),
+			// Payment request (kind 16, type 2) carrying the seller's Grin address.
+			(
+				16,
+				"Payment request for your order",
+				serde_json::json!([
+					["p", to],
+					["subject", "order-payment"],
+					["type", "2"],
+					["order", "ord-7c1e"],
+					["amount", "2500000000"],
+					[
+						"payment",
+						"grin",
+						"grin1dhvv9mvarqwl6fgqsysaqctg8wdmt0pz0lwnc6ga6uhcmjfu08lsnaszwx"
+					],
+					["expiration", (now + 3600).to_string()]
+				]),
+			),
+			// Status (type 3) and shipping (type 4) updates.
+			(
+				16,
+				"Order status updated to confirmed",
+				serde_json::json!([
+					["p", to],
+					["subject", "order-info"],
+					["type", "3"],
+					["order", "ord-7c1e"],
+					["status", "confirmed"]
+				]),
+			),
+			(
+				16,
+				"Shipping update",
+				serde_json::json!([
+					["p", to],
+					["subject", "shipping-info"],
+					["type", "4"],
+					["order", "ord-7c1e"],
+					["status", "shipped"],
+					["tracking", "1Z999AA10123456784"],
+					["carrier", "UPS"]
+				]),
+			),
+			// Payment receipt (kind 17) carrying a Grin payment proof.
+			(
+				17,
+				"Payment confirmation",
+				serde_json::json!([
+					["p", to],
+					["subject", "order-receipt"],
+					["order", "ord-7c1e"],
+					["payment", "grin", "08ab12", proof],
+					["amount", "2500000000"]
+				]),
+			),
+			// Order chat (kind 14).
+			(
+				14,
+				"Is this still available? Happy to pay in GRIN.",
+				serde_json::json!([["p", to], ["subject", "Order ord-7c1e"]]),
+			),
+		];
+		shapes
+			.into_iter()
+			.map(|(kind, content, tags)| {
+				serde_json::json!({
+					"pubkey": from,
+					"created_at": now,
+					"kind": kind,
+					"tags": tags,
+					"content": content,
+					"id": "5c8f1e2d3c4b5a69788796a5b4c3d2e1f00112233445566778899aabbccddeeff",
+				})
+				.to_string()
+			})
+			.collect()
+	}
+
+	#[test]
+	fn wallet_protocol_detector_flags_goblin_messages_only() {
+		let now = 1_751_800_000u64;
+		let (a, b) = (Keys::generate(), Keys::generate());
+		// The wallet's own payment and control rumors.
+		assert!(is_wallet_protocol_payload(
+			&goblin_payment_rumor(&a, &b.public_key()).as_json()
+		));
+		assert!(is_wallet_protocol_payload(
+			&goblin_void_rumor(&a, &b.public_key()).as_json()
+		));
+		// Raw text forms, any ASCII case.
+		assert!(is_wallet_protocol_payload(ARMOR));
+		assert!(is_wallet_protocol_payload(&ARMOR.to_ascii_lowercase()));
+		assert!(is_wallet_protocol_payload(
+			&protocol::build_payment_content(ARMOR)
+		));
+		assert!(is_wallet_protocol_payload(protocol::PREAMBLE));
+		// The armor behind a JSON string escape is still found.
+		let escaped = r#"{"kind":14,"content":"\u0042EGINSLATEPACK. x. ENDSLATEPACK.","tags":[]}"#;
+		assert!(!escaped.contains("BEGINSLATEPACK"));
+		assert!(is_wallet_protocol_payload(escaped));
+		// Only the wallet's tags, with neutral content.
+		assert!(is_wallet_protocol_payload(
+			r#"{"kind":14,"content":"hi","tags":[["goblin","1"]]}"#
+		));
+		// Nested past the scan bound: the escaped armor is still found (fail
+		// closed), while the same depth with no marker passes.
+		let deep = |inner: &str| format!("{}{inner}{}", "[".repeat(12), "]".repeat(12));
+		assert!(is_wallet_protocol_payload(&deep(
+			r#"{"content":"\u0042EGINSLATEPACK."}"#
+		)));
+		assert!(!is_wallet_protocol_payload(&deep(r#"{"content":"hi"}"#)));
+		// magick's real order and message traffic is not wallet protocol.
+		for rumor in magick_rumors(&a.public_key(), &b.public_key(), now) {
+			assert!(!is_wallet_protocol_payload(&rumor), "{rumor}");
+		}
+		// Plain text, a grin1 address and an order-style JSON are not either.
+		assert!(!is_wallet_protocol_payload("hello there"));
+		assert!(!is_wallet_protocol_payload(
+			"pay me at grin1dhvv9mvarqwl6fgqsysaqctg8wdmt0pz0lwnc6ga6uhcmjfu08lsnaszwx"
+		));
+		assert!(!is_wallet_protocol_payload(
+			r#"{"type":"order","payment":{"bolt11":"lnbc1"}}"#
+		));
+	}
+
+	#[test]
+	fn encrypt_refuses_wallet_protocol_payloads() {
+		let now = 1_751_800_000u64;
+		let (mut s, id) = mk_session(MAGICK_KINDS, now);
+		let peer = Keys::generate();
+		let forged = [
+			// An S2 reply forged as the identity (the C2 attack payload).
+			goblin_payment_rumor(&id, &peer.public_key()).as_json(),
+			// A forged request void.
+			goblin_void_rumor(&id, &peer.public_key()).as_json(),
+			// A bare payment rumor, no preamble and no wallet tag, with the armor
+			// behind a JSON string escape (the receiver decodes it back).
+			format!(
+				r#"{{"pubkey":"{}","created_at":{now},"kind":14,"tags":[["p","{}"]],"content":"\u0042EGINSLATEPACK. 4H1qx1wHe668tFW. ENDSLATEPACK."}}"#,
+				id.public_key().to_hex(),
+				peer.public_key().to_hex()
+			),
+			// A bare slatepack.
+			ARMOR.to_string(),
+		];
+		for (i, plaintext) in forged.iter().enumerate() {
+			let e = mk_encrypt(&format!("w{i}"), now, &peer.public_key(), plaintext);
+			let out = serve_encrypt(&mut s, &e, &id, now);
+			assert!(!out.money_pending, "no prompt for case {i}");
+			let json = out.response.expect("refusal is answered");
+			assert!(json.contains("\"ok\":false"), "case {i}: {json}");
+			assert!(json.contains("\"error\":\"kind_not_in_session\""));
+			assert!(!json.contains("ciphertext"));
+			// Even a password-approved encrypt never seals it.
+			let done = complete_money(&mut s, &ChannelOp::Encrypt(e), &id, true, now);
+			assert!(done.contains("\"ok\":false"), "approved case {i}");
+		}
+	}
+
+	#[tokio::test]
+	async fn decrypt_never_returns_a_goblin_payment() {
+		let now = 1_751_800_000u64;
+		let (mut s, bob) = mk_session(MAGICK_KINDS, now);
+		let alice = Keys::generate();
+		// A real NIP-44 v2 gift wrap of a payment S1, from the unchanged nostr-sdk
+		// builder (what a v2 payer sends).
+		let rumor = goblin_payment_rumor(&alice, &bob.public_key());
+		let wrap = EventBuilder::gift_wrap(&alice, &bob.public_key(), rumor, [])
+			.await
+			.unwrap();
+		// Layer 1 (gift wrap -> seal) still opens: the seal content is opaque.
+		let out = serve_decrypt(
+			&mut s,
+			&mk_decrypt("l1", now, &wrap.pubkey, &wrap.content),
+			&bob,
+			now,
+		);
+		let json = out.response.unwrap();
+		assert!(json.contains("\"ok\":true"), "{json}");
+		let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+		let seal = Event::from_json(v["plaintext"].as_str().unwrap()).unwrap();
+		assert_eq!(seal.kind, Kind::Seal);
+		// Layer 2 (seal -> rumor) would hand the site the slate: refused, and it
+		// answers exactly like a ciphertext that does not open.
+		let out = serve_decrypt(
+			&mut s,
+			&mk_decrypt("l2", now, &seal.pubkey, &seal.content),
+			&bob,
+			now,
+		);
+		let json = out.response.unwrap();
+		assert!(json.contains("\"error\":\"malformed\""), "{json}");
+		assert!(!json.to_ascii_uppercase().contains("SLATEPACK"));
+		assert!(!json.contains("plaintext"));
+		// A plain v2 message carrying a void control is refused the same way.
+		let ct = nip44::encrypt(
+			alice.secret_key(),
+			&bob.public_key(),
+			goblin_void_rumor(&alice, &bob.public_key()).as_json(),
+			nip44::Version::V2,
+		)
+		.unwrap();
+		let out = serve_decrypt(
+			&mut s,
+			&mk_decrypt("l3", now, &alice.public_key(), &ct),
+			&bob,
+			now,
+		);
+		assert!(out.response.unwrap().contains("\"error\":\"malformed\""));
+	}
+
+	#[test]
+	fn magick_order_and_dm_traffic_still_encrypts_and_decrypts() {
+		let now = 1_751_800_000u64;
+		let ephemeral = Keys::generate();
+		// The buyer seals each message to the seller through its session.
+		let (mut buyer_s, buyer) = mk_session(MAGICK_KINDS, now);
+		let (mut seller_s, seller) = mk_session(MAGICK_KINDS, now);
+		for (i, rumor) in magick_rumors(&buyer.public_key(), &seller.public_key(), now)
+			.into_iter()
+			.enumerate()
+		{
+			let e = mk_encrypt(&format!("e{i}"), now, &seller.public_key(), &rumor);
+			let out = serve_encrypt(&mut buyer_s, &e, &buyer, now);
+			assert!(!out.money_pending, "case {i} encrypts silently");
+			let json = out.response.unwrap();
+			assert!(json.contains("\"ok\":true"), "case {i}: {json}");
+			let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+			let seal_ct = v["ciphertext"].as_str().unwrap().to_string();
+			// The seal and gift wrap the buyer's browser then builds.
+			let seal = EventBuilder::new(Kind::Seal, seal_ct)
+				.sign_with_keys(&buyer)
+				.unwrap();
+			let wrap_ct = nip44::encrypt(
+				ephemeral.secret_key(),
+				&seller.public_key(),
+				seal.as_json(),
+				nip44::Version::V2,
+			)
+			.unwrap();
+			// The seller's session opens both layers back to the same rumor.
+			let out = serve_decrypt(
+				&mut seller_s,
+				&mk_decrypt(&format!("w{i}"), now, &ephemeral.public_key(), &wrap_ct),
+				&seller,
+				now,
+			);
+			let v: serde_json::Value = serde_json::from_str(&out.response.unwrap()).unwrap();
+			assert_eq!(v["ok"], true, "case {i} wrap layer");
+			let opened = Event::from_json(v["plaintext"].as_str().unwrap()).unwrap();
+			let out = serve_decrypt(
+				&mut seller_s,
+				&mk_decrypt(&format!("s{i}"), now, &opened.pubkey, &opened.content),
+				&seller,
+				now,
+			);
+			let v: serde_json::Value = serde_json::from_str(&out.response.unwrap()).unwrap();
+			assert_eq!(v["ok"], true, "case {i} seal layer");
+			assert_eq!(v["plaintext"].as_str().unwrap(), rumor);
 		}
 	}
 
