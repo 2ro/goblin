@@ -376,4 +376,28 @@ impl WalletCreationContent {
 			_ => true,
 		}
 	}
+
+	/// Whether the current step shows the seed words (Goblin: keep them out of
+	/// screenshots, screen recordings and the app switcher).
+	pub fn shows_mnemonic(&self) -> bool {
+		step_shows_mnemonic(&self.step)
+	}
+}
+
+/// The mnemonic steps show the seed words: generated ones on create, typed ones
+/// on restore and on confirm. Only the connection step shows none.
+fn step_shows_mnemonic(step: &Step) -> bool {
+	*step != Step::SetupConnection
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[test]
+	fn creation_mnemonic_steps_show_seed_words() {
+		assert!(step_shows_mnemonic(&Step::EnterMnemonic));
+		assert!(step_shows_mnemonic(&Step::ConfirmMnemonic));
+		assert!(!step_shows_mnemonic(&Step::SetupConnection));
+	}
 }

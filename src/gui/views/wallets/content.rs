@@ -392,13 +392,22 @@ impl ContentContainer for WalletsContent {
 				}
 			});
 
-		// The Goblin wallet view and onboarding report the touch filter
-		// themselves. Every other screen drawn here (wallet list, app settings,
-		// GRIM wallet creation) has no money-commit control, so reaching one by
-		// any path turns the filter off.
+		// The Goblin wallet view and onboarding report the touch filter and the
+		// secure-screen flag themselves. Every other screen drawn here (wallet
+		// list, app settings, GRIM wallet creation) has no money-commit control,
+		// and only the creation mnemonic steps show seed words (app settings
+		// opened over the creation flow hide them). Reporting from here each
+		// frame means leaving the creation flow by any path (back, title arrow,
+		// finish, settings) clears the flag.
 		let goblin_drawn =
 			self.showing_wallet() && !self.creating_wallet() && !self.showing_settings();
 		if !goblin_drawn && !self.onboarding_active() {
+			let seed_words = !self.showing_settings()
+				&& self
+					.creation_content
+					.as_ref()
+					.is_some_and(|c| c.shows_mnemonic());
+			cb.set_secure_screen(seed_words);
 			cb.set_touch_filter(false);
 		}
 	}
