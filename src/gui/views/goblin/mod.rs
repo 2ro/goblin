@@ -623,6 +623,8 @@ struct BackupState {
 	error: Option<String>,
 	/// The backup file was created.
 	done: bool,
+	/// The save picker is open (Android); its outcome is still to come.
+	saving: bool,
 	/// The form was opened from the Danger Zone delete flow, so it renders
 	/// inline there instead of under the Advanced nostr section.
 	anchor_delete: bool,

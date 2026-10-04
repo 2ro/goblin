@@ -242,6 +242,15 @@ impl GoblinWalletView {
 		let t = theme::tokens();
 		let bk = self.backup.as_mut().unwrap();
 		let mut close = false;
+		// An Android save reports its outcome after the picker closes.
+		if bk.saving {
+			match cb.save_file_result() {
+				Some(result) => apply_save_result(bk, result),
+				None => ui
+					.ctx()
+					.request_repaint_after(std::time::Duration::from_millis(200)),
+			}
+		}
 		w::card(ui, |ui| {
 			ui.set_min_width(ui.available_width());
 			if bk.done {
@@ -312,6 +321,12 @@ impl GoblinWalletView {
 						Vec2::new(half, 44.0),
 					)),
 					|ui| {
+						if bk.saving {
+							ui.centered_and_justified(|ui| {
+								View::small_loading_spinner(ui);
+							});
+							return;
+						}
 						ui.add_enabled_ui(!bk.password.is_empty(), |ui| {
 							if w::big_action(ui, &t!("goblin.settings.create_backup"), false)
 								.clicked()
@@ -321,16 +336,11 @@ impl GoblinWalletView {
 										let stamp = chrono::Local::now().format("%Y-%m-%d-%H%M");
 										let fname = format!("GOBLIN-{stamp}.backup");
 										match cb.save_file(fname, envelope.into_bytes()) {
-											Ok(()) => {
-												bk.done = true;
+											Some(result) => apply_save_result(bk, result),
+											// Android: the picker is open; wait for it.
+											None => {
+												bk.saving = true;
 												bk.error = None;
-												bk.password.clear();
-											}
-											Err(_) => {
-												bk.error = Some(
-													t!("goblin.settings.backup_write_failed")
-														.to_string(),
-												);
 											}
 										}
 									}
@@ -345,5 +355,72 @@ impl GoblinWalletView {
 		if close {
 			self.backup = None;
 		}
+	}
+}
+
+/// Apply a save outcome to the backup card. Only a written file shows "Backup
+/// saved". A cancelled picker returns to the form as it was, and a failed write
+/// shows the write error.
+fn apply_save_result(bk: &mut BackupState, result: crate::gui::platform::SaveResult) {
+	use crate::gui::platform::SaveResult;
+	bk.saving = false;
+	match result {
+		SaveResult::Saved => {
+			bk.done = true;
+			bk.error = None;
+			bk.password.clear();
+		}
+		SaveResult::Cancelled => bk.error = None,
+		SaveResult::Failed => {
+			bk.error = Some(t!("goblin.settings.backup_write_failed").to_string());
+		}
+	}
+}
+
+#[cfg(test)]
+mod backup_tests {
+	use super::{BackupState, apply_save_result};
+	use crate::gui::platform::SaveResult;
+
+	/// A card that waits on the save picker, with the password still typed.
+	fn waiting() -> BackupState {
+		BackupState {
+			password: "pw".to_string(),
+			saving: true,
+			..Default::default()
+		}
+	}
+
+	/// Only a written file shows "Backup saved".
+	#[test]
+	fn backup_saved_only_after_write() {
+		let mut bk = waiting();
+		apply_save_result(&mut bk, SaveResult::Saved);
+		assert!(bk.done);
+		assert!(!bk.saving);
+		assert!(bk.error.is_none());
+		assert!(bk.password.is_empty());
+	}
+
+	/// A cancelled picker goes back to the form: not saved, no error, and the
+	/// typed password is kept for another try.
+	#[test]
+	fn backup_cancel_returns_to_form() {
+		let mut bk = waiting();
+		apply_save_result(&mut bk, SaveResult::Cancelled);
+		assert!(!bk.done);
+		assert!(!bk.saving);
+		assert!(bk.error.is_none());
+		assert_eq!(bk.password, "pw");
+	}
+
+	/// A failed write is not success: the card shows the write error.
+	#[test]
+	fn backup_write_failure_shows_error() {
+		let mut bk = waiting();
+		apply_save_result(&mut bk, SaveResult::Failed);
+		assert!(!bk.done);
+		assert!(!bk.saving);
+		assert!(bk.error.is_some());
 	}
 }

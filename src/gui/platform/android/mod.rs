@@ -26,7 +26,7 @@ use jni::JNIEnv;
 use jni::objects::{JByteArray, JObject, JString, JValue};
 use winit::platform::android::activity::AndroidApp;
 
-use crate::gui::platform::PlatformCallbacks;
+use crate::gui::platform::{PlatformCallbacks, SaveResult};
 
 /// Android platform implementation.
 #[derive(Clone)]
@@ -201,36 +201,69 @@ impl PlatformCallbacks for Android {
 		Ok(())
 	}
 
-	fn save_file(&self, name: String, data: Vec<u8>) -> Result<(), std::io::Error> {
+	fn save_file(&self, name: String, data: Vec<u8>) -> Option<SaveResult> {
+		// Forget an outcome an earlier save left behind: the picker opened below
+		// reports THIS save's outcome through `onFileSave`.
+		*SAVE_FILE_RESULT.write() = None;
 		// Stage the bytes in the share cache (same dir the FileProvider exposes),
 		// then let Java copy them to the user-chosen Storage Access Framework
 		// document. Mirrors `share_data`, but the Java side uses CREATE_DOCUMENT.
-		let default_cache = OsString::from(dirs::cache_dir().unwrap());
-		let mut file = PathBuf::from(env::var_os("XDG_CACHE_HOME").unwrap_or(default_cache));
-		file.push("share");
-		if !file.exists() {
-			std::fs::create_dir(file.clone())?;
+		let staged = (|| -> std::io::Result<PathBuf> {
+			let default_cache = dirs::cache_dir()
+				.map(OsString::from)
+				.ok_or_else(|| std::io::Error::other("no cache dir"))?;
+			let mut file = PathBuf::from(env::var_os("XDG_CACHE_HOME").unwrap_or(default_cache));
+			file.push("share");
+			if !file.exists() {
+				std::fs::create_dir(file.clone())?;
+			}
+			file.push(&name);
+			if file.exists() {
+				std::fs::remove_file(file.clone())?;
+			}
+			let mut f = File::create_new(file.clone())?;
+			f.write_all(data.as_slice())?;
+			f.sync_all()?;
+			Ok(file)
+		})();
+		let file = match staged {
+			Ok(file) => file,
+			Err(e) => {
+				log::error!("save_file: staging failed: {e}");
+				return Some(SaveResult::Failed);
+			}
+		};
+		let Ok(vm) = (unsafe { jni::JavaVM::from_raw(self.android_app.vm_as_ptr() as _) }) else {
+			return Some(SaveResult::Failed);
+		};
+		let Ok(env) = vm.attach_current_thread() else {
+			return Some(SaveResult::Failed);
+		};
+		let (Ok(path_arg), Ok(name_arg)) = (
+			env.new_string(file.to_string_lossy()),
+			env.new_string(&name),
+		) else {
+			return Some(SaveResult::Failed);
+		};
+		let launched = self
+			.call_java_method(
+				"saveFile",
+				"(Ljava/lang/String;Ljava/lang/String;)V",
+				&[
+					JValue::Object(&JObject::from(path_arg)),
+					JValue::Object(&JObject::from(name_arg)),
+				],
+			)
+			.is_some();
+		if !launched {
+			return Some(SaveResult::Failed);
 		}
-		file.push(&name);
-		if file.exists() {
-			std::fs::remove_file(file.clone())?;
-		}
-		let mut f = File::create_new(file.clone())?;
-		f.write_all(data.as_slice())?;
-		f.sync_all()?;
-		let vm = unsafe { jni::JavaVM::from_raw(self.android_app.vm_as_ptr() as _) }.unwrap();
-		let env = vm.attach_current_thread().unwrap();
-		let path_arg = env.new_string(file.to_str().unwrap()).unwrap();
-		let name_arg = env.new_string(&name).unwrap();
-		let _ = self.call_java_method(
-			"saveFile",
-			"(Ljava/lang/String;Ljava/lang/String;)V",
-			&[
-				JValue::Object(&JObject::from(path_arg)),
-				JValue::Object(&JObject::from(name_arg)),
-			],
-		);
-		Ok(())
+		// The picker is open; Java reports the outcome once it closes.
+		None
+	}
+
+	fn save_file_result(&self) -> Option<SaveResult> {
+		SAVE_FILE_RESULT.write().take()
 	}
 
 	fn share_text(&self, text: String) {
@@ -326,6 +359,8 @@ lazy_static! {
 	static ref LAST_CAMERA_IMAGE: Arc<RwLock<Option<(Vec<u8>, u32)>>> = Arc::new(RwLock::new(None));
 	/// Picked file path.
 	static ref PICKED_FILE_PATH: Arc<RwLock<Option<String>>> = Arc::new(RwLock::new(None));
+	/// Outcome of the last `saveFile` picker, reported by Java.
+	static ref SAVE_FILE_RESULT: Arc<RwLock<Option<SaveResult>>> = Arc::new(RwLock::new(None));
 	/// App handle for JNI calls from threads without a platform reference.
 	static ref ANDROID_APP: Arc<RwLock<Option<AndroidApp>>> = Arc::new(RwLock::new(None));
 }
@@ -446,4 +481,17 @@ pub extern "C" fn Java_mw_gri_android_MainActivity_onFilePick(
 			Err(_) => {}
 		}
 	}
+}
+
+/// Callback from Java code with the outcome of the last `saveFile` picker, as a
+/// [`SaveResult::from_code`] code (0 cancelled, 1 saved, other failed).
+#[allow(non_snake_case)]
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_mw_gri_android_MainActivity_onFileSave(
+	_env: JNIEnv,
+	_class: JObject,
+	result: jni::sys::jint,
+) {
+	let mut w_result = SAVE_FILE_RESULT.write();
+	*w_result = Some(SaveResult::from_code(result));
 }

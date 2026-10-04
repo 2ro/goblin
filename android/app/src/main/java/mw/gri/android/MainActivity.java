@@ -77,6 +77,10 @@ public class MainActivity extends GameActivity {
     private ActivityResultLauncher<Intent> mFileSaveResult = null;
     // Source path (in the share cache) staged by Rust for the next saveFile().
     private String mPendingSavePath = null;
+    // saveFile() outcome codes for onFileSave (Rust SaveResult::from_code).
+    private static final int SAVE_FILE_CANCELLED = 0;
+    private static final int SAVE_FILE_SAVED = 1;
+    private static final int SAVE_FILE_FAILED = 2;
 
     // A copied secret (seed words, nsec) is cleared from the clipboard after this
     // delay, but only if the clipboard still holds it.
@@ -184,29 +188,40 @@ public class MainActivity extends GameActivity {
                 });
 
         // Register file SAVE result (Storage Access Framework CREATE_DOCUMENT):
-        // copy the staged source file into the user-chosen document.
+        // copy the staged source file into the user-chosen document, then tell
+        // native code how it ended, so "saved" is only shown for a written file.
         mFileSaveResult = registerForActivityResult(
                 new ActivityResultContracts.StartActivityForResult(),
                 result -> {
                     String src = mPendingSavePath;
                     mPendingSavePath = null;
-                    if (result.getResultCode() == Activity.RESULT_OK && src != null) {
-                        Intent data = result.getData();
-                        if (data != null && data.getData() != null) {
-                            Uri uri = data.getData();
-                            try (InputStream is = new FileInputStream(new File(src));
-                                 OutputStream os = getContentResolver().openOutputStream(uri)) {
-                                byte[] buffer = new byte[4096];
-                                int length;
-                                while (is != null && (length = is.read(buffer)) > 0) {
-                                    os.write(buffer, 0, length);
-                                }
-                                if (os != null) os.flush();
-                            } catch (Exception e) {
-                                Log.e("grim", e.toString());
+                    if (result.getResultCode() != Activity.RESULT_OK) {
+                        onFileSave(SAVE_FILE_CANCELLED);
+                        return;
+                    }
+                    boolean saved = false;
+                    Intent data = result.getData();
+                    if (src != null && data != null && data.getData() != null) {
+                        Uri uri = data.getData();
+                        try (InputStream is = new FileInputStream(new File(src));
+                             OutputStream os = getContentResolver().openOutputStream(uri)) {
+                            if (os == null) {
+                                throw new IOException("no output stream");
                             }
+                            byte[] buffer = new byte[4096];
+                            int length;
+                            while ((length = is.read(buffer)) > 0) {
+                                os.write(buffer, 0, length);
+                            }
+                            os.flush();
+                            saved = true;
+                        } catch (Exception e) {
+                            // Also a failed close, which can lose buffered bytes.
+                            saved = false;
+                            Log.e("grim", e.toString());
                         }
                     }
+                    onFileSave(saved ? SAVE_FILE_SAVED : SAVE_FILE_FAILED);
                 });
 
         // Listener for display insets (cutouts) to pass values into native code.
@@ -726,8 +741,12 @@ public class MainActivity extends GameActivity {
         } catch (android.content.ActivityNotFoundException ex) {
             Log.e("grim", ex.toString());
             mPendingSavePath = null;
+            onFileSave(SAVE_FILE_FAILED);
         }
     }
+
+    // Pass the outcome of the last saveFile() into native code.
+    public native void onFileSave(int result);
 
     // Called from native code to share plain text (e.g. a payment link) via the
     // system share sheet.
