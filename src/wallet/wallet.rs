@@ -3109,15 +3109,39 @@ async fn handle_task(w: &Wallet, t: WalletTask) {
 				w.task(WalletTask::Cancel(*id));
 			}
 		}
-		WalletTask::Cancel(id) => match w.cancel(*id) {
-			Ok(_) => {
-				sync_wallet_data(&w, false);
+		WalletTask::Cancel(id) => {
+			// Every queued cancel (tx list, activity receipt fallback, automatic
+			// cancels after a failed finalize) obeys the one cancel-safety rule:
+			// a row the counterparty can finalize waits for a node sync.
+			if let Some(tx) = w.retrieve_tx_by_id(Some(*id), None) {
+				let live = !matches!(
+					tx.tx_type,
+					TxLogEntryType::TxSentCancelled | TxLogEntryType::TxReceivedCancelled
+				);
+				if live
+					&& !crate::wallet::types::cancel_safe(
+						&tx.tx_type,
+						tx.tx_slate_state.as_ref(),
+						w.synced_from_node(),
+						tx.confirmed,
+					) {
+					info!(
+						"tx cancel: tx {} waits for a node sync before it can be cancelled",
+						id
+					);
+					return;
+				}
 			}
-			Err(e) => {
-				error!("tx cancel error: {:?}", e);
-				w.on_tx_error(*id, Some(e));
+			match w.cancel(*id) {
+				Ok(_) => {
+					sync_wallet_data(&w, false);
+				}
+				Err(e) => {
+					error!("tx cancel error: {:?}", e);
+					w.on_tx_error(*id, Some(e));
+				}
 			}
-		},
+		}
 		WalletTask::VerifyProof(p, _) => {
 			w.proof_verifying.store(true, Ordering::Relaxed);
 			let res = w.verify_payment_proof(p);
@@ -3400,14 +3424,33 @@ async fn handle_task(w: &Wallet, t: WalletTask) {
 			}
 			// Cancel the underlying grin invoice tx (an issued invoice locks no
 			// outputs, but cancelling keeps the wallet ledger tidy).
-			if let Some(tx_id) = w.get_data().and_then(|d| d.txs).and_then(|txs| {
+			let found = w.get_data().and_then(|d| d.txs).and_then(|txs| {
 				txs.iter()
 					.find(|t| {
 						t.data.tx_slate_id.map(|u| u.to_string()).as_deref()
 							== Some(slate_id.as_str())
 					})
-					.map(|t| t.data.id)
-			}) {
+					.map(|t| {
+						// One cancel-safety rule: once we finalized the payer's
+						// reply the request may be on chain, so it waits for a
+						// node sync.
+						let wait_for_sync = !t.cancelled()
+							&& !crate::wallet::types::cancel_safe(
+								&t.data.tx_type,
+								t.data.tx_slate_state.as_ref(),
+								w.synced_from_node(),
+								t.data.confirmed,
+							);
+						(t.data.id, wait_for_sync)
+					})
+			});
+			if let Some((_, true)) = found {
+				info!(
+					"nostr cancel: request {slate_id} waits for a node sync before it can be cancelled"
+				);
+				return;
+			}
+			if let Some((tx_id, false)) = found {
 				if let Err(e) = w.cancel(tx_id) {
 					error!("nostr cancel: wallet cancel failed: {e}");
 				}
@@ -3466,10 +3509,26 @@ async fn handle_task(w: &Wallet, t: WalletTask) {
 					service.set_cancel_notice(crate::nostr::CancelOutcome::AlreadyCompleted);
 					return;
 				}
-				if matches!(
+				let live = !matches!(
 					tx.tx_type,
 					TxLogEntryType::TxSentCancelled | TxLogEntryType::TxReceivedCancelled
-				) {
+				);
+				// One cancel-safety rule: a send this wallet already finalized (or
+				// one of unknown state) may be on chain, so it waits for a node
+				// sync. No notice: neither outcome is true yet.
+				if live
+					&& !crate::wallet::types::cancel_safe(
+						&tx.tx_type,
+						tx.tx_slate_state.as_ref(),
+						w.synced_from_node(),
+						tx.confirmed,
+					) {
+					info!(
+						"nostr cancel send: slate {slate_id} waits for a node sync before it can be cancelled"
+					);
+					return;
+				}
+				if !live {
 					// Already cancelled at the grin layer — just reconcile the meta.
 					service
 						.store
