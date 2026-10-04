@@ -211,25 +211,35 @@ fn validate_domain(raw: &str) -> Option<String> {
 }
 
 /// True when `domain` can stand for one site: its host part (before any
-/// `:port`) has at least two non-empty labels (one trailing dot ignored), or it
-/// is the `localhost` development form accepted since the first build
-/// (`localhost`, or `localhost:` followed by anything, any ASCII case). A single
-/// label such as `market` would bind every `*.market` callback and HTTP-auth
-/// host to one approval. A multi-label public suffix (`co.uk`) still passes:
-/// telling it apart needs the public suffix list, which the wallet does not
-/// ship and could only get as a new dependency.
+/// `:port`) is a multi-label LDH name ([`is_site_host`]), or it is the
+/// `localhost` development form accepted since the first build (`localhost`,
+/// or `localhost:` followed by anything, any ASCII case). A single label such as
+/// `market` would bind every `*.market` callback and HTTP-auth host to one
+/// approval. A multi-label public suffix (`co.uk`) still passes: telling it
+/// apart needs the public suffix list, which the wallet does not ship and could
+/// only get as a new dependency.
 ///
 /// Shared by the login, authorize and trust parsers and by [`domain_bound`].
 pub(crate) fn site_domain_allowed(domain: &str) -> bool {
 	let host = domain.split(':').next().unwrap_or(domain);
-	host.eq_ignore_ascii_case("localhost") || has_interior_dot(host)
+	host.eq_ignore_ascii_case("localhost") || is_site_host(host)
 }
 
-/// True when `host` has two or more labels, none empty (one trailing dot is
-/// ignored). Also used by the session's HTTP-auth host check.
-pub(crate) fn has_interior_dot(host: &str) -> bool {
+/// True when `host` has two or more labels, each non-empty and made only of
+/// ASCII letters, digits and '-' (LDH; punycode `xn--` labels qualify), with
+/// one trailing dot ignored. Any other character is refused: a `*` label, for
+/// one, still parses as a URL host and would read as a wildcard in the trust
+/// prompt ("Trust *.market?"). Also used by the session's HTTP-auth check of
+/// its own site domain.
+pub(crate) fn is_site_host(host: &str) -> bool {
 	let host = host.strip_suffix('.').unwrap_or(host);
-	host.contains('.') && host.split('.').all(|label| !label.is_empty())
+	host.contains('.')
+		&& host.split('.').all(|label| {
+			!label.is_empty()
+				&& label
+					.bytes()
+					.all(|b| b.is_ascii_alphanumeric() || b == b'-')
+		})
 }
 
 /// The callback must be `https://...`, or `http://localhost[:port]...` as the
@@ -882,6 +892,167 @@ mod tests {
 				"expected cb={bad:?} rejected"
 			);
 		}
+	}
+
+	/// One site-domain shape: whether `d` parses, which `https://<host>/cb`
+	/// callbacks bind to it, and which NIP-98 `u` hosts are its own site.
+	struct DomainRow {
+		d: &'static str,
+		valid: bool,
+		bound: &'static [&'static str],
+		own: &'static [&'static str],
+	}
+
+	#[test]
+	fn site_domain_shapes_table() {
+		use crate::nostr::session::{HttpAuthTarget, http_auth_target};
+		// Every row is tried against every host, as a callback and as a `u`.
+		const HOSTS: &[&str] = &[
+			"magick.market",
+			"shop.magick.market",
+			"evil.market",
+			"market",
+			"*.market",
+			"x.*.market",
+			"evil.com",
+			"evil.com.",
+			"x.evil.com",
+			"0.1",
+			"0.0.0.1",
+			"[::1]",
+			"localhost",
+			"xn--bcher-kva.example",
+		];
+		let rows = [
+			// Real sites: magick's production domain and a punycode name.
+			DomainRow {
+				d: "magick.market",
+				valid: true,
+				bound: &["magick.market", "shop.magick.market"],
+				own: &["magick.market", "shop.magick.market"],
+			},
+			DomainRow {
+				d: "xn--bcher-kva.example",
+				valid: true,
+				bound: &["xn--bcher-kva.example"],
+				own: &["xn--bcher-kva.example"],
+			},
+			// The localhost dev forms still parse (their http://localhost
+			// callback is checked below); localhost is never an HTTP-auth site.
+			DomainRow {
+				d: "localhost:3000",
+				valid: true,
+				bound: &[],
+				own: &[],
+			},
+			DomainRow {
+				d: "localhost",
+				valid: true,
+				bound: &["localhost"],
+				own: &[],
+			},
+			// The site's own fully qualified name: it binds only the dotted
+			// callback and covers only evil.com hosts, nothing outside evil.com.
+			DomainRow {
+				d: "evil.com.",
+				valid: true,
+				bound: &["evil.com."],
+				own: &["evil.com", "evil.com.", "x.evil.com"],
+			},
+			// Accepted shapes that bind no https callback and own no host: an
+			// IP shorthand the URL parser rewrites (0.1 becomes 0.0.0.1), and a
+			// `localhost:` dev form whose "port" is a name.
+			DomainRow {
+				d: "0.1",
+				valid: true,
+				bound: &[],
+				own: &[],
+			},
+			DomainRow {
+				d: "localhost:evil.com",
+				valid: true,
+				bound: &[],
+				own: &[],
+			},
+			// Refused: single labels in any spelling, empty labels, a bracketed
+			// IPv6 literal, and a `*` label that would read as a wildcard.
+			DomainRow {
+				d: "market:443",
+				valid: false,
+				bound: &[],
+				own: &[],
+			},
+			DomainRow {
+				d: "localhost.:3000",
+				valid: false,
+				bound: &[],
+				own: &[],
+			},
+			DomainRow {
+				d: "[::1]",
+				valid: false,
+				bound: &[],
+				own: &[],
+			},
+			DomainRow {
+				d: "*.market",
+				valid: false,
+				bound: &[],
+				own: &[],
+			},
+			DomainRow {
+				d: "MARKET",
+				valid: false,
+				bound: &[],
+				own: &[],
+			},
+			DomainRow {
+				d: ".market",
+				valid: false,
+				bound: &[],
+				own: &[],
+			},
+			DomainRow {
+				d: "a..b",
+				valid: false,
+				bound: &[],
+				own: &[],
+			},
+			// Percent-decoded once by the parser, so this is `market`.
+			DomainRow {
+				d: "%6Darket",
+				valid: false,
+				bound: &[],
+				own: &[],
+			},
+		];
+		let authorities = vec!["goblin.st".to_string()];
+		for row in rows {
+			let parsed = validate_domain(row.d);
+			assert_eq!(parsed.is_some(), row.valid, "validate d={:?}", row.d);
+			// The domain as a session would hold it (decoded), or the raw shape.
+			let d = parsed.unwrap_or_else(|| row.d.to_string());
+			for host in HOSTS {
+				let cb = format!("https://{host}/cb");
+				assert_eq!(
+					domain_bound(&cb, &d),
+					row.bound.contains(host),
+					"bind {cb} to d={d:?}"
+				);
+				let u = vec![vec!["u".to_string(), format!("https://{host}/api/x")]];
+				assert_eq!(
+					http_auth_target(&u, &d, &authorities) == HttpAuthTarget::OwnSite,
+					row.own.contains(host),
+					"own site {host} for d={d:?}"
+				);
+			}
+		}
+		// The localhost dev callbacks still bind their dev domains.
+		assert!(domain_bound(
+			"http://localhost:3000/api/v1/login/callback",
+			"localhost:3000"
+		));
+		assert!(domain_bound("http://localhost/cb", "localhost"));
 	}
 
 	#[test]

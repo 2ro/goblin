@@ -17,7 +17,7 @@
 //! kind-to-category display mapping. Security-critical, I/O-free.
 
 use super::*;
-use crate::nostr::authuri::has_interior_dot;
+use crate::nostr::authuri::is_site_host;
 use crate::nostr::protocol;
 use crate::nostr::relays::HOME_NIP05_DOMAIN;
 // ---------------------------------------------------------------------------
@@ -296,9 +296,11 @@ pub fn http_auth_target(
 		Some((h, port)) if !port.is_empty() && port.bytes().all(|b| b.is_ascii_digit()) => h,
 		_ => site_domain,
 	};
-	// A single-label site domain (`market`, or the `localhost` dev domain) is
-	// never a site of its own: it would cover every `*.market` host.
-	if has_interior_dot(site_host) && within(site_host) {
+	// Only a multi-label LDH site domain is a site of its own (the same rule
+	// the parsers apply to `d`): a single label (`market`, or the `localhost`
+	// dev domain) would cover every `*.market` host, and a `*` label reads as
+	// a wildcard.
+	if is_site_host(site_host) && within(site_host) {
 		return HttpAuthTarget::OwnSite;
 	}
 	HttpAuthTarget::OtherHost
