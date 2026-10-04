@@ -73,6 +73,39 @@ impl NostrService {
 		held_keys_for(&self.recv.read(), from_hex)
 	}
 
+	/// The keys a receipt or proof of a payment is signed with: the identity
+	/// that paid, or the active one when that identity is no longer held
+	/// (deleted, or replaced by an import). Unlike a reply, nobody checks their
+	/// sender (the merchant matches the order handle), and without them the
+	/// order is never credited, so they never fail for want of the paying
+	/// identity. The fallback is logged once per identity and order.
+	fn payment_proof_keys(&self, from_hex: &str, order: &str) -> Keys {
+		static LOGGED: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+		match self.sender_keys(from_hex) {
+			Ok(keys) => keys,
+			Err(e) => {
+				let key = format!("{from_hex}:{order}");
+				let first = LOGGED
+					.lock()
+					.map(|mut seen| {
+						let first = !seen.contains(&key);
+						if first && seen.len() < 256 {
+							seen.push(key);
+						}
+						first
+					})
+					.unwrap_or(true);
+				if first {
+					warn!(
+						"nostr: {e}; the receipt and proof for order {order} go out as the \
+						 active identity"
+					);
+				}
+				self.keys()
+			}
+		}
+	}
+
 	/// Our identity (pubkey hex) for an incoming request or surfaced payment:
 	/// the one its wrap was addressed to. A request stored before Build 170
 	/// has no record of it and uses the active identity, as before.
@@ -246,14 +279,15 @@ impl NostrService {
 	/// does). The proof and kernel excess are DELIBERATELY omitted here: a Grin
 	/// payment proof carries the buyer's own slatepack address, and publishing it
 	/// in the clear would leak the buyer's wallet address to the world. Signed
-	/// by our identity `from_hex`, the one that paid.
+	/// by our identity `from_hex`, the one that paid (see
+	/// [`Self::payment_proof_keys`]).
 	pub async fn publish_receipt_sent(
 		&self,
 		from_hex: &str,
 		order: &str,
 		amount: u64,
 	) -> Result<(), String> {
-		let from = self.sender_keys(from_hex)?;
+		let from = self.payment_proof_keys(from_hex, order);
 		let client = {
 			let r_client = self.client.read();
 			r_client.clone().ok_or("nostr client is not running")?
@@ -270,7 +304,8 @@ impl NostrService {
 	/// tagged with the invoice number, the amount, and the kernel excess. Encrypted
 	/// end to end, so the proof (which contains the buyer's sender address) never
 	/// goes out in the clear; only the addressed watcher can read it. Sealed and
-	/// signed by our identity `from_hex`, the one that paid.
+	/// signed by our identity `from_hex`, the one that paid (see
+	/// [`Self::payment_proof_keys`]).
 	pub async fn deliver_proof_wrap(
 		&self,
 		from_hex: &str,
@@ -280,7 +315,7 @@ impl NostrService {
 		kernel_hex: &str,
 		proof_json: &str,
 	) -> Result<(), String> {
-		let from = self.sender_keys(from_hex)?;
+		let from = self.payment_proof_keys(from_hex, order);
 		let client = {
 			let r_client = self.client.read();
 			r_client.clone().ok_or("nostr client is not running")?
@@ -1218,16 +1253,28 @@ mod tests {
 			.await
 			.unwrap_err();
 		assert!(err.contains("no longer held"), "{err}");
+		// A receipt and a proof are the exception: nobody checks their sender
+		// and the order is credited only with them, so they go out as the
+		// active identity (here they get as far as the missing client).
 		let err = svc
 			.publish_receipt_sent(&gone, "MM-ab", 1)
 			.await
 			.unwrap_err();
-		assert!(err.contains("no longer held"), "{err}");
+		assert!(err.contains("not running"), "{err}");
 		let err = svc
 			.deliver_proof_wrap(&gone, &peer.to_bech32().unwrap(), "MM-ab", 1, "00", "{}")
 			.await
 			.unwrap_err();
-		assert!(err.contains("no longer held"), "{err}");
+		assert!(err.contains("not running"), "{err}");
+		assert_eq!(
+			svc.payment_proof_keys(&gone, "MM-ab").public_key(),
+			a.public_key()
+		);
+		assert_eq!(
+			svc.payment_proof_keys(&b.public_key().to_hex(), "MM-ab")
+				.public_key(),
+			b.public_key()
+		);
 
 		// Held identities resolve to themselves, whichever is active.
 		let b_hex = b.public_key().to_hex();
