@@ -59,10 +59,27 @@ impl Android {
 		let mut env = vm.attach_current_thread().unwrap();
 		let activity =
 			unsafe { JObject::from_raw(self.android_app.activity_as_ptr() as jni::sys::jobject) };
-		if let Ok(result) = env.call_method(activity, name, s, a) {
-			return Some(result.as_jni().clone());
+		match env.call_method(activity, name, s, a) {
+			Ok(result) => Some(result.as_jni().clone()),
+			Err(e) => {
+				log::error!("jni: {name} failed: {e}");
+				clear_java_exception(&env, name);
+				None
+			}
 		}
-		None
+	}
+}
+
+/// Describe, log and clear a Java exception that a failed JNI call left
+/// pending. The native threads that call into Java here never return to Java,
+/// so the exception would never be delivered, and the next JNI call made with
+/// it pending aborts the app under CheckJNI (on in our debuggable APKs).
+fn clear_java_exception(env: &JNIEnv, context: &str) {
+	if env.exception_check().unwrap_or(false) {
+		// Prints the exception and its stack to logcat, then clear it.
+		let _ = env.exception_describe();
+		let _ = env.exception_clear();
+		log::error!("jni: {context}: cleared a pending Java exception");
 	}
 }
 
@@ -79,7 +96,10 @@ impl PlatformCallbacks for Android {
 	fn copy_string_to_buffer(&self, data: String) {
 		let vm = unsafe { jni::JavaVM::from_raw(self.android_app.vm_as_ptr() as _) }.unwrap();
 		let env = vm.attach_current_thread().unwrap();
-		let arg_value = env.new_string(data).unwrap();
+		let Ok(arg_value) = env.new_string(data) else {
+			clear_java_exception(&env, "copyText");
+			return;
+		};
 		let _ = self.call_java_method(
 			"copyText",
 			"(Ljava/lang/String;)V",
@@ -100,6 +120,7 @@ impl PlatformCallbacks for Android {
 			return;
 		};
 		let Ok(arg_value) = env.new_string(data) else {
+			clear_java_exception(&env, "copySecretText");
 			return;
 		};
 		let _ = self.call_java_method(
@@ -128,10 +149,13 @@ impl PlatformCallbacks for Android {
 			return String::new();
 		}
 		let j_string = unsafe { JString::from(JObject::from_raw(j_object)) };
-		let paste_data: String = env
-			.get_string(&j_string)
-			.map(|s| s.into())
-			.unwrap_or_default();
+		let paste_data: String = match env.get_string(&j_string) {
+			Ok(s) => s.into(),
+			Err(_) => {
+				clear_java_exception(&env, "pasteText");
+				String::new()
+			}
+		};
 		// The UI thread stays attached for the app lifetime, so its local
 		// references are never freed by a detach: drop this one now.
 		let _ = env.delete_local_ref(j_string);
@@ -192,7 +216,10 @@ impl PlatformCallbacks for Android {
 		// Call share modal at system.
 		let vm = unsafe { jni::JavaVM::from_raw(self.android_app.vm_as_ptr() as _) }.unwrap();
 		let env = vm.attach_current_thread().unwrap();
-		let arg_value = env.new_string(file.to_str().unwrap()).unwrap();
+		let Ok(arg_value) = env.new_string(file.to_str().unwrap()) else {
+			clear_java_exception(&env, "shareData");
+			return Err(std::io::Error::other("jni: new_string failed"));
+		};
 		let _ = self.call_java_method(
 			"shareData",
 			"(Ljava/lang/String;)V",
@@ -239,10 +266,14 @@ impl PlatformCallbacks for Android {
 		let Ok(env) = vm.attach_current_thread() else {
 			return Some(SaveResult::Failed);
 		};
-		let (Ok(path_arg), Ok(name_arg)) = (
-			env.new_string(file.to_string_lossy()),
-			env.new_string(&name),
-		) else {
+		// One at a time: a failed new_string leaves an exception pending, and no
+		// further JNI call may run until it is cleared.
+		let Ok(path_arg) = env.new_string(file.to_string_lossy()) else {
+			clear_java_exception(&env, "saveFile");
+			return Some(SaveResult::Failed);
+		};
+		let Ok(name_arg) = env.new_string(&name) else {
+			clear_java_exception(&env, "saveFile");
 			return Some(SaveResult::Failed);
 		};
 		let launched = self
@@ -270,6 +301,7 @@ impl PlatformCallbacks for Android {
 		let vm = unsafe { jni::JavaVM::from_raw(self.android_app.vm_as_ptr() as _) }.unwrap();
 		let env = vm.attach_current_thread().unwrap();
 		let Ok(arg_value) = env.new_string(text) else {
+			clear_java_exception(&env, "shareText");
 			return;
 		};
 		let _ = self.call_java_method(
@@ -399,9 +431,11 @@ pub fn notify_payment_received(name: &str, amount: &str) {
 		return;
 	};
 	let Ok(j_name) = env.new_string(name) else {
+		clear_java_exception(&env, "notifyPaymentReceived");
 		return;
 	};
 	let Ok(j_amount) = env.new_string(amount) else {
+		clear_java_exception(&env, "notifyPaymentReceived");
 		return;
 	};
 	let _ = platform.call_java_method(
@@ -440,9 +474,11 @@ pub fn notify_payment_requested(name: &str, amount: &str) {
 		return;
 	};
 	let Ok(j_name) = env.new_string(name) else {
+		clear_java_exception(&env, "notifyPaymentRequested");
 		return;
 	};
 	let Ok(j_amount) = env.new_string(amount) else {
+		clear_java_exception(&env, "notifyPaymentRequested");
 		return;
 	};
 	let _ = platform.call_java_method(
