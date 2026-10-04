@@ -1380,6 +1380,54 @@ mod tests {
 		let _ = std::fs::remove_dir_all(dir);
 	}
 
+	/// A result belongs to the dispatch that produced it. Send #1 spins, the
+	/// user goes back and starts send #2: #1's late verdict (FAILED, or a late
+	/// SENT) never reaches #2's screen; only the task holding the current turn
+	/// changes the phase.
+	#[tokio::test]
+	async fn only_the_current_send_turn_changes_the_screen() {
+		use crate::nostr::send_phase::{FAILED, SENT, WORKING};
+		let (id_a, a) = NostrIdentity::create_random("pw").unwrap();
+		let (svc, dir) = service_with(&[(id_a, a.clone())], &a);
+
+		// Send #1: the screen begins a turn, the task takes it first thing.
+		let one = svc.begin_send();
+		let task_one = svc.send_turn();
+		assert_eq!(task_one, one);
+		assert!(svc.set_send_phase_for(task_one, WORKING));
+
+		// Back, then send #2.
+		let two = svc.begin_send();
+		let task_two = svc.send_turn();
+		assert_eq!(task_two, two);
+		assert_ne!(task_one, task_two);
+		assert_eq!(svc.send_phase(), WORKING);
+
+		// #1 reaches its failure verdict: its money work is its own, the
+		// screen is not.
+		assert!(!svc.fail_send_for(task_one, "no relay accepted it"));
+		assert!(!svc.set_send_phase_for(task_one, FAILED));
+		assert_eq!(svc.send_phase(), WORKING);
+		assert_eq!(svc.last_send_error(), None);
+
+		// #2 completes: shown.
+		assert!(svc.set_send_phase_for(task_two, SENT));
+		assert_eq!(svc.send_phase(), SENT);
+
+		// The reverse: a stale SENT never shows over a later send.
+		let three = svc.begin_send();
+		assert!(!svc.set_send_phase_for(task_two, SENT));
+		assert_eq!(svc.send_phase(), WORKING);
+		assert!(svc.fail_send_for(three, "why"));
+		assert_eq!(svc.send_phase(), FAILED);
+		assert_eq!(svc.last_send_error().as_deref(), Some("why"));
+
+		// A new turn clears the reason.
+		svc.begin_send();
+		assert_eq!(svc.last_send_error(), None);
+		let _ = std::fs::remove_dir_all(dir);
+	}
+
 	/// The plain receipt is signed by the identity that paid, with the frozen
 	/// contract shape unchanged.
 	#[test]

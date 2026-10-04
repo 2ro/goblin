@@ -1445,11 +1445,12 @@ impl SendFlow {
 				Some(self.note.trim().to_string())
 			};
 			// Clear any stale picker error so the failure screen shows the right
-			// message, and reset the send phase to Working so sending_ui waits for
-			// the real dispatch result rather than flipping to Success prematurely.
+			// message, and start a new send turn (phase Working) so sending_ui
+			// waits for this dispatch's own result: an earlier send still in
+			// flight can no longer flip this screen.
 			self.error = None;
 			if let Some(service) = wallet.nostr_service() {
-				service.set_send_phase(crate::nostr::send_phase::WORKING);
+				service.begin_send();
 			}
 			if self.request {
 				wallet.task(WalletTask::NostrRequest(

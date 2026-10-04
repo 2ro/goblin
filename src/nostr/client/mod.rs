@@ -159,6 +159,10 @@ pub struct NostrService {
 	rate: Mutex<HashMap<String, Vec<i64>>>,
 	/// Current outgoing-send phase for the UI (see [`SendPhase`]).
 	send_phase: std::sync::atomic::AtomicU8,
+	/// The current send turn: every send, request or approval started from the
+	/// screen takes a new one, and only the task holding the current turn may
+	/// change `send_phase` (see [`NostrService::begin_send`]).
+	send_turn: Mutex<u64>,
 	/// Human-readable reason the last send/request/approve failed, surfaced on
 	/// the failure screen so the user (and we) can see WHY, not just "couldn't
 	/// send". Cleared when a new attempt starts.
@@ -256,6 +260,7 @@ impl NostrService {
 			has_new_requests: AtomicBool::new(false),
 			rate: Mutex::new(HashMap::new()),
 			send_phase: std::sync::atomic::AtomicU8::new(send_phase::IDLE),
+			send_turn: Mutex::new(0),
 			last_send_error: RwLock::new(None),
 			cancel_notice: RwLock::new(None),
 			cancel_finalize_lock: Mutex::new(()),
@@ -311,20 +316,52 @@ impl NostrService {
 		self.send_phase.load(Ordering::Relaxed)
 	}
 
-	/// Set the outgoing-send phase (called by the send task + UI). Starting a new
-	/// attempt (WORKING) clears any prior failure reason.
-	pub fn set_send_phase(&self, phase: u8) {
+	/// Start a send, request or approval from the screen: a new turn, phase
+	/// WORKING, no failure reason. The phase is one value the screen reads, so a
+	/// result belongs to the dispatch that produced it: a task left behind (the
+	/// user went back and started another send) still does all its money work,
+	/// but only the task holding the current turn may change the phase. Returns
+	/// the new turn.
+	pub fn begin_send(&self) -> u64 {
+		let mut turn = self.send_turn.lock();
+		*turn += 1;
+		*self.last_send_error.write() = None;
+		self.send_phase
+			.store(send_phase::WORKING, Ordering::Relaxed);
+		*turn
+	}
+
+	/// The current send turn. A send, request or approval task takes it as its
+	/// first action and writes the phase only with it.
+	pub fn send_turn(&self) -> u64 {
+		*self.send_turn.lock()
+	}
+
+	/// Set the outgoing-send phase for the dispatch of `turn`, only while it is
+	/// the current turn; false when a newer send has taken over the screen.
+	/// WORKING clears any prior failure reason.
+	pub fn set_send_phase_for(&self, turn: u64, phase: u8) -> bool {
+		let current = self.send_turn.lock();
+		if *current != turn {
+			return false;
+		}
 		if phase == send_phase::WORKING {
 			*self.last_send_error.write() = None;
 		}
 		self.send_phase.store(phase, Ordering::Relaxed);
+		true
 	}
 
-	/// Record why the current send/request/approve failed (shown on the failure
-	/// screen) and flip the phase to FAILED.
-	pub fn fail_send(&self, reason: impl Into<String>) {
+	/// Record why the dispatch of `turn` failed (shown on the failure screen)
+	/// and flip the phase to FAILED, only while `turn` is the current turn.
+	pub fn fail_send_for(&self, turn: u64, reason: impl Into<String>) -> bool {
+		let current = self.send_turn.lock();
+		if *current != turn {
+			return false;
+		}
 		*self.last_send_error.write() = Some(reason.into());
 		self.send_phase.store(send_phase::FAILED, Ordering::Relaxed);
+		true
 	}
 
 	/// The reason the last send failed, if any.
