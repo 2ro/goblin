@@ -27,11 +27,6 @@ use winit::platform::android::activity::AndroidApp;
 
 use crate::gui::platform::PlatformCallbacks;
 
-/// How long a revealed secret (e.g. an nsec) may sit in the clipboard before it
-/// is auto-cleared, if it is still there. Long enough to paste into another app,
-/// short enough that it does not linger.
-const CLIPBOARD_SECRET_TTL_SECS: u64 = 45;
-
 /// Android platform implementation.
 #[derive(Clone)]
 pub struct Android {
@@ -92,32 +87,53 @@ impl PlatformCallbacks for Android {
 	}
 
 	fn copy_secret_to_buffer(&self, data: String) {
-		// Copy now, then clear after a delay if the clipboard still holds exactly
-		// this secret (compare-then-clear), so a revealed nsec does not linger.
-		// Runs on a detached thread that reaches Java via the cloned app handle,
-		// the same non-GUI JNI path as the payment notifications.
-		self.copy_string_to_buffer(data.clone());
-		let platform = self.clone();
-		std::thread::spawn(move || {
-			std::thread::sleep(std::time::Duration::from_secs(CLIPBOARD_SECRET_TTL_SECS));
-			if platform.get_string_from_buffer() == data {
-				platform.copy_string_to_buffer(String::new());
-			}
-		});
+		// Java owns the whole secret copy: a neutral clip label, the sensitive
+		// flag, and the delayed compare-and-clear (main looper, then the next
+		// window focus when the app is in the background). No Rust thread here:
+		// a thread that is not attached to the JVM cannot safely read the
+		// clipboard back through JNI.
+		let Ok(vm) = (unsafe { jni::JavaVM::from_raw(self.android_app.vm_as_ptr() as _) }) else {
+			return;
+		};
+		let Ok(env) = vm.attach_current_thread() else {
+			return;
+		};
+		let Ok(arg_value) = env.new_string(data) else {
+			return;
+		};
+		let _ = self.call_java_method(
+			"copySecretText",
+			"(Ljava/lang/String;)V",
+			&[JValue::Object(&JObject::from(arg_value))],
+		);
 	}
 
 	fn get_string_from_buffer(&self) -> String {
-		let result = self
-			.call_java_method("pasteText", "()Ljava/lang/String;", &[])
-			.unwrap();
-		let vm = unsafe { jni::JavaVM::from_raw(self.android_app.vm_as_ptr() as _) }.unwrap();
-		let mut env = vm.attach_current_thread().unwrap();
-		let j_object: jni::sys::jobject = unsafe { result.l };
-		let paste_data: String = unsafe {
-			env.get_string(JString::from(JObject::from_raw(j_object)).as_ref())
-				.unwrap()
-				.into()
+		// Attach BEFORE the call and hold the guard until the string is read.
+		// `call_java_method` takes its own guard; if that one were the outermost
+		// it would detach the thread on return and free the returned local
+		// reference before we read it.
+		let Ok(vm) = (unsafe { jni::JavaVM::from_raw(self.android_app.vm_as_ptr() as _) }) else {
+			return String::new();
 		};
+		let Ok(mut env) = vm.attach_current_thread() else {
+			return String::new();
+		};
+		let Some(result) = self.call_java_method("pasteText", "()Ljava/lang/String;", &[]) else {
+			return String::new();
+		};
+		let j_object: jni::sys::jobject = unsafe { result.l };
+		if j_object.is_null() {
+			return String::new();
+		}
+		let j_string = unsafe { JString::from(JObject::from_raw(j_object)) };
+		let paste_data: String = env
+			.get_string(&j_string)
+			.map(|s| s.into())
+			.unwrap_or_default();
+		// The UI thread stays attached for the app lifetime, so its local
+		// references are never freed by a detach: drop this one now.
+		let _ = env.delete_local_ref(j_string);
 		paste_data
 	}
 

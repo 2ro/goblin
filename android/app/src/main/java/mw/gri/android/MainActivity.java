@@ -32,6 +32,9 @@ import com.google.androidgamesdk.gametextinput.State;
 import com.google.common.util.concurrent.ListenableFuture;
 
 import java.io.*;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.util.Objects;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -72,6 +75,23 @@ public class MainActivity extends GameActivity {
     private ActivityResultLauncher<Intent> mFileSaveResult = null;
     // Source path (in the share cache) staged by Rust for the next saveFile().
     private String mPendingSavePath = null;
+
+    // A copied secret (seed words, nsec) is cleared from the clipboard after this
+    // delay, but only if the clipboard still holds it.
+    private static final long SECRET_CLIP_TTL_MS = 45_000;
+    // ClipDescription.EXTRA_IS_SENSITIVE (API 33), by value so minSdk 24 builds
+    // compile. Keyboards and the Android 13+ copy preview hide sensitive clips.
+    private static final String EXTRA_IS_SENSITIVE = "android.content.extra.IS_SENSITIVE";
+    private final Handler mMainHandler = new Handler(Looper.getMainLooper());
+    // SHA-256 of the secret whose clear is pending; never the secret itself.
+    // Main thread only.
+    private byte[] mSecretClipHash = null;
+    // The delay has passed, but the clear could not run yet (no window focus).
+    private boolean mSecretClipDue = false;
+    private final Runnable mSecretClipTimer = () -> {
+        mSecretClipDue = true;
+        clearSecretClipIfDue();
+    };
 
     @SuppressLint("UnspecifiedRegisterReceiverFlag")
     @Override
@@ -459,6 +479,92 @@ public class MainActivity extends GameActivity {
         clipboard.setPrimaryClip(clip);
     }
 
+    // Called from native code to copy a SECRET (seed words, nsec) to the
+    // clipboard: a neutral label instead of the data, the sensitive flag, and a
+    // clear after SECRET_CLIP_TTL_MS if the clipboard still holds this secret.
+    public void copySecretText(String data) {
+        runOnUiThread(() -> {
+            ClipboardManager clipboard = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
+            if (clipboard == null) {
+                return;
+            }
+            ClipData clip = ClipData.newPlainText("Goblin", data);
+            PersistableBundle extras = new PersistableBundle();
+            extras.putBoolean(EXTRA_IS_SENSITIVE, true);
+            clip.getDescription().setExtras(extras);
+            try {
+                clipboard.setPrimaryClip(clip);
+            } catch (RuntimeException e) {
+                Log.e("grim", e.toString());
+                return;
+            }
+            // A newer secret copy replaces a clear still pending for an older one.
+            mMainHandler.removeCallbacks(mSecretClipTimer);
+            mSecretClipHash = sha256(data);
+            mSecretClipDue = false;
+            mMainHandler.postDelayed(mSecretClipTimer, SECRET_CLIP_TTL_MS);
+        });
+    }
+
+    // Compare-and-clear for a copied secret once its delay has passed. From
+    // Android 10 an app without window focus reads an empty clipboard, which
+    // would look like "the user copied something else". So without focus the
+    // clear stays pending and runs at the next focus gain or resume instead.
+    private void clearSecretClipIfDue() {
+        if (!mSecretClipDue || mSecretClipHash == null) {
+            return;
+        }
+        if (Build.VERSION.SDK_INT >= 29 && !hasWindowFocus()) {
+            return;
+        }
+        ClipboardManager clipboard = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
+        if (clipboard != null) {
+            try {
+                ClipData clip = clipboard.getPrimaryClip();
+                CharSequence text = null;
+                if (clip != null && clip.getItemCount() > 0) {
+                    text = clip.getItemAt(0).getText();
+                }
+                if (text != null && MessageDigest.isEqual(sha256(text.toString()), mSecretClipHash)) {
+                    if (Build.VERSION.SDK_INT >= 28) {
+                        clipboard.clearPrimaryClip();
+                    } else {
+                        clipboard.setPrimaryClip(ClipData.newPlainText("", ""));
+                    }
+                }
+            } catch (RuntimeException e) {
+                // Read not allowed right now: keep the clear pending for the next try.
+                Log.e("grim", e.toString());
+                return;
+            }
+        }
+        mSecretClipHash = null;
+        mSecretClipDue = false;
+    }
+
+    private static byte[] sha256(String s) {
+        try {
+            return MessageDigest.getInstance("SHA-256").digest(s.getBytes(StandardCharsets.UTF_8));
+        } catch (NoSuchAlgorithmException e) {
+            // Every Java platform must provide SHA-256.
+            throw new IllegalStateException(e);
+        }
+    }
+
+    @Override
+    public void onWindowFocusChanged(boolean hasFocus) {
+        super.onWindowFocusChanged(hasFocus);
+        if (hasFocus) {
+            clearSecretClipIfDue();
+        }
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        clearSecretClipIfDue();
+    }
+
     // Called from native code to get text from clipboard.
     public String pasteText() {
         ClipboardManager clipboard = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
@@ -470,9 +576,11 @@ public class MainActivity extends GameActivity {
         } else if (desc != null && (!(desc.hasMimeType(MIMETYPE_TEXT_PLAIN))
                 && !(desc.hasMimeType(MIMETYPE_TEXT_HTML)))) {
             text = "";
-        } else if (data != null) {
-            ClipData.Item item = data.getItemAt(0);
-            text = item.getText().toString();
+        } else if (data != null && data.getItemCount() > 0) {
+            // A text clip item can carry only a URI (e.g. a file copied in a
+            // file manager); getText() is then null.
+            CharSequence item = data.getItemAt(0).getText();
+            text = item != null ? item.toString() : "";
         }
         return text;
     }
