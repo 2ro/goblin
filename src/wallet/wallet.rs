@@ -3813,6 +3813,21 @@ fn nostr_cancel_refusal(
 	None
 }
 
+/// Whether the helper marks the meta Cancelled for this refusal (`None` means
+/// the grin cancel runs, and the meta is marked first). A tx with nothing
+/// locked always ends Cancelled. A confirmed or finalized tx never does: the
+/// payment went through or may be on chain. A row the helper cannot cancel
+/// yet (no lookup, no node sync) ends Cancelled only when `failure_is_final`.
+fn nostr_cancel_marks(refusal: Option<NostrCancelResult>, failure_is_final: bool) -> bool {
+	match refusal {
+		None | Some(NostrCancelResult::NothingLocked) => true,
+		Some(NostrCancelResult::NotSafeYet) | Some(NostrCancelResult::Unavailable) => {
+			failure_is_final
+		}
+		Some(_) => false,
+	}
+}
+
 /// Cancel the grin tx behind a nostr payment slate without user input: a failed
 /// dispatch (failure is final), stale expiry, and the heal of rows marked
 /// Cancelled whose outputs are still locked.
@@ -3868,10 +3883,11 @@ pub fn nostr_cancel_slate(
 		match lookup {
 			None => {
 				warn!("nostr cancel: tx store not readable for slate {slate_id}");
-				if failure_is_final {
+				let refused = NostrCancelResult::Unavailable;
+				if nostr_cancel_marks(Some(refused), failure_is_final) {
 					mark();
 				}
-				NostrCancelResult::Unavailable
+				refused
 			}
 			Some(None) => {
 				mark();
@@ -3882,20 +3898,14 @@ pub fn nostr_cancel_slate(
 				let finalized_file = [SlateState::Standard3, SlateState::Invoice3]
 					.iter()
 					.any(|st| fs::exists(w.get_config().get_slate_path(uuid, st)).unwrap_or(true));
-				match nostr_cancel_refusal(&tx, finalized_file, w.synced_from_node()) {
-					Some(NostrCancelResult::NothingLocked) => {
-						mark();
-						NostrCancelResult::NothingLocked
-					}
-					Some(NostrCancelResult::NotSafeYet) => {
-						if failure_is_final {
-							mark();
-						}
-						NostrCancelResult::NotSafeYet
-					}
+				let refusal = nostr_cancel_refusal(&tx, finalized_file, w.synced_from_node());
+				// Meta first: once marked, a late reply is dropped at decide().
+				if nostr_cancel_marks(refusal, failure_is_final) {
+					mark();
+				}
+				match refusal {
 					Some(refused) => refused,
 					None => {
-						mark();
 						match w.cancel(tx.id) {
 							Ok(()) => NostrCancelResult::Cancelled,
 							Err(e) => {
@@ -3991,6 +4001,46 @@ mod nostr_cancel_tests {
 				nostr_cancel_refusal(&gone, false, synced),
 				Some(NostrCancelResult::NothingLocked)
 			);
+		}
+	}
+
+	/// V1-3: reconcile closes a legacy SendFailed row with failure_is_final. A
+	/// row written before the wallet stamped the slate state (None), before a
+	/// node sync, cannot be cancelled yet, yet it must still end Cancelled so
+	/// its reply is never finalized; the heal pass frees the inputs later.
+	#[test]
+	fn legacy_failed_dispatch_ends_cancelled_without_a_sync() {
+		let legacy = tx(TxLogEntryType::TxSent, None, false);
+		let refusal = nostr_cancel_refusal(&legacy, false, false);
+		assert_eq!(refusal, Some(NostrCancelResult::NotSafeYet));
+		assert!(nostr_cancel_marks(refusal, true));
+		// The same with an unreadable tx store.
+		assert!(nostr_cancel_marks(
+			Some(NostrCancelResult::Unavailable),
+			true
+		));
+		// Expiry and heal (not final) leave such a row for a later cycle.
+		assert!(!nostr_cancel_marks(refusal, false));
+		assert!(!nostr_cancel_marks(
+			Some(NostrCancelResult::Unavailable),
+			false
+		));
+		// A cancel that runs, or a tx with nothing locked, always ends Cancelled.
+		for is_final in [false, true] {
+			assert!(nostr_cancel_marks(None, is_final));
+			assert!(nostr_cancel_marks(
+				Some(NostrCancelResult::NothingLocked),
+				is_final
+			));
+			// A payment that completed or may be on chain never does.
+			assert!(!nostr_cancel_marks(
+				Some(NostrCancelResult::Confirmed),
+				is_final
+			));
+			assert!(!nostr_cancel_marks(
+				Some(NostrCancelResult::Finalized),
+				is_final
+			));
 		}
 	}
 

@@ -1071,10 +1071,12 @@ async fn reconcile(svc: &Arc<NostrService>, wallet: &Wallet) {
 			ReconcileAction::Resend(state) => state,
 			ReconcileAction::Heal => {
 				// Failure is final: a dispatch failure (left by an older build) is
-				// never re-sent, because the user saw "Couldn't send" and may have
-				// paid again. Free its inputs instead. The catch-up fetch above ran
-				// first, so a reply already waiting on a relay has finalized it.
-				let outcome = crate::wallet::nostr_cancel_slate(wallet, svc, &meta.slate_id, false);
+				// never re-sent or finalized (decide() drops its reply), because
+				// the user saw "Couldn't send" and may have paid again. Close it:
+				// the row ends Cancelled even when the grin cancel cannot run yet
+				// (no node sync, unknown state), and the heal pass frees its
+				// inputs later.
+				let outcome = crate::wallet::nostr_cancel_slate(wallet, svc, &meta.slate_id, true);
 				info!(
 					"nostr: reconcile closed failed dispatch {} ({:?})",
 					meta.slate_id, outcome

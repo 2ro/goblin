@@ -83,27 +83,26 @@ pub fn decide(ctx: &IngestContext) -> IngestDecision {
 			}
 		}
 		// Standard2 is the counterparty's reply to a send WE initiated. The
-		// status allow-set below includes Created/SendFailed (not just
-		// AwaitingS2) on purpose: our send records intent as Created BEFORE
-		// dispatch and only flips to AwaitingS2 after a relay accepts S1, so
-		// a crash in that gap leaves a legitimate pending send marked
-		// Created/SendFailed even though the counterparty did receive S1.
+		// status allow-set below includes Created (not just AwaitingS2) on
+		// purpose: our send records intent as Created BEFORE dispatch and only
+		// flips to AwaitingS2 after a relay accepts S1, so a crash in that gap
+		// leaves a legitimate pending send marked Created even though the
+		// counterparty did receive S1.
 		// This is NOT a forgery vector: a finalizing S2 must carry our S1
 		// partial signature over our locked outputs, which the counterparty
 		// can only have if we actually sent it. Sender + tx_exists are still
 		// required, and grin rejects finalizing an already-finalized tx.
-		// A failed dispatch is now final (the send is cancelled, meta
-		// Cancelled), so SendFailed only remains on rows from older builds. The
-		// service-start catch-up runs before reconcile closes those rows, so a
-		// reply already waiting on a relay still completes the payment.
+		// SendFailed is NOT accepted: failure is final. The user saw "Couldn't
+		// send" and may have paid again with a new slate, so finalizing the
+		// old one could pay twice. Current builds never write SendFailed (a
+		// failed dispatch cancels the send); only rows from older builds hold
+		// it, and reconcile closes them.
 		SlateState::Standard2 => match ctx.meta {
 			Some(meta)
 				if meta.direction == NostrTxDirection::Sent
 					&& matches!(
 						meta.status,
-						NostrSendStatus::AwaitingS2
-							| NostrSendStatus::Created
-							| NostrSendStatus::SendFailed
+						NostrSendStatus::AwaitingS2 | NostrSendStatus::Created
 					) && meta.npub == ctx.sender
 					&& ctx.tx_exists =>
 			{
@@ -129,14 +128,14 @@ pub fn decide(ctx: &IngestContext) -> IngestDecision {
 			// NEVER pay automatically.
 			IngestDecision::SurfaceRequest
 		}
+		// Invoice2 is the payer's reply to a request WE issued: same allow-set
+		// rule as Standard2 (Created after a crash, never SendFailed).
 		SlateState::Invoice2 => match ctx.meta {
 			Some(meta)
 				if meta.direction == NostrTxDirection::RequestedByUs
 					&& matches!(
 						meta.status,
-						NostrSendStatus::AwaitingI2
-							| NostrSendStatus::Created
-							| NostrSendStatus::SendFailed
+						NostrSendStatus::AwaitingI2 | NostrSendStatus::Created
 					) && meta.npub == ctx.sender
 					&& ctx.tx_exists =>
 			{
@@ -302,16 +301,40 @@ mod tests {
 
 	#[test]
 	fn s2_finalizes_from_pre_dispatch_states() {
-		// Created/SendFailed are deliberately accepted: a crash between
-		// relay-accept and the AwaitingS2 write must not strand a real send.
-		for status in [NostrSendStatus::Created, NostrSendStatus::SendFailed] {
-			let m = meta(NostrTxDirection::Sent, status, ALICE);
-			let c = ctx(SlateState::Standard2, 100, ALICE, Some(&m), true);
-			assert_eq!(decide(&c), IngestDecision::FinalizePost);
-			// Still bound to the counterparty: a stranger's S2 drops.
-			let c2 = ctx(SlateState::Standard2, 100, MALLORY, Some(&m), true);
-			assert!(matches!(decide(&c2), IngestDecision::Drop(_)));
-		}
+		// Created is deliberately accepted: a crash between relay-accept and
+		// the AwaitingS2 write must not strand a real send.
+		let m = meta(NostrTxDirection::Sent, NostrSendStatus::Created, ALICE);
+		let c = ctx(SlateState::Standard2, 100, ALICE, Some(&m), true);
+		assert_eq!(decide(&c), IngestDecision::FinalizePost);
+		// Still bound to the counterparty: a stranger's S2 drops.
+		let c2 = ctx(SlateState::Standard2, 100, MALLORY, Some(&m), true);
+		assert!(matches!(decide(&c2), IngestDecision::Drop(_)));
+		// The same holds for a request we issued and the payer's I2.
+		let r = meta(
+			NostrTxDirection::RequestedByUs,
+			NostrSendStatus::Created,
+			ALICE,
+		);
+		let c3 = ctx(SlateState::Invoice2, 100, ALICE, Some(&r), true);
+		assert_eq!(decide(&c3), IngestDecision::FinalizePost);
+	}
+
+	#[test]
+	fn reply_to_a_failed_dispatch_never_finalizes() {
+		// Failure is final: the user saw "Couldn't send" (or "Couldn't
+		// request") and may have paid again with a new slate. A late reply to
+		// the old slate from an older build's SendFailed row is dropped, so the
+		// first start of a new build cannot pay twice.
+		let s = meta(NostrTxDirection::Sent, NostrSendStatus::SendFailed, ALICE);
+		let c = ctx(SlateState::Standard2, 100, ALICE, Some(&s), true);
+		assert!(matches!(decide(&c), IngestDecision::Drop(_)));
+		let r = meta(
+			NostrTxDirection::RequestedByUs,
+			NostrSendStatus::SendFailed,
+			ALICE,
+		);
+		let c2 = ctx(SlateState::Invoice2, 100, ALICE, Some(&r), true);
+		assert!(matches!(decide(&c2), IngestDecision::Drop(_)));
 	}
 
 	#[test]
