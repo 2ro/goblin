@@ -310,6 +310,26 @@ fn advanced_state_kept(on_advanced: bool, last_drawn: Option<u64>, pass: u64) ->
 	on_advanced && last_drawn.is_none_or(|last| pass <= last + 1)
 }
 
+/// Whether a money-commit control is on screen: the send review with its
+/// hold-to-send, the request approval review with its hold-to-accept, or the
+/// session money prompt. Only then are touches through another app's window
+/// dropped (Android tapjacking guard); every other screen gets every touch.
+/// `send` is the open send flow (`Some(in_review)`), which covers everything
+/// below it; a receipt or profile overlay covers the approval review; the money
+/// prompt is a modal over whatever is on screen.
+fn touch_filter_wanted(
+	send: Option<bool>,
+	receipt_or_profile: bool,
+	approve_review: bool,
+	money_prompt: bool,
+) -> bool {
+	money_prompt
+		|| match send {
+			Some(in_review) => in_review,
+			None => !receipt_or_profile && approve_review,
+		}
+}
+
 /// Inputs and last result for the manual slatepack page (GRIM's native flow,
 /// surfaced as an advanced fallback under Settings → Wallet).
 #[derive(Default)]
@@ -1261,6 +1281,16 @@ impl GoblinWalletView {
 			});
 		}
 
+		// Tapjacking guard only while a money-commit control is on screen. Set
+		// here, after this frame's deep links and prompts, so a review opened by
+		// a deep link is guarded in the same frame it is first drawn.
+		cb.set_touch_filter(touch_filter_wanted(
+			self.send.as_ref().map(|s| s.in_review()),
+			self.receipt.is_some() || self.profile.is_some(),
+			self.approve_review.is_some(),
+			Modal::opened() == Some(MONEY_MODAL),
+		));
+
 		// Send flow takes the full surface when active.
 		if let Some(send) = &mut self.send {
 			let done = send.ui(ui, wallet, cb, &mut self.avatars);
@@ -1793,5 +1823,32 @@ mod advanced_secret_tests {
 		// Reset (what leaving the page does) hides everything.
 		adv = AdvancedState::default();
 		assert!(!adv.secret_shown());
+	}
+}
+
+#[cfg(test)]
+mod touch_filter_tests {
+	use super::touch_filter_wanted;
+
+	/// The obscured-touch filter is on only while a money-commit control is on
+	/// screen, and off on every other screen.
+	#[test]
+	fn touch_filter_only_on_money_commit_screens() {
+		// Send flow on its review (hold-to-send): on.
+		assert!(touch_filter_wanted(Some(true), false, false, false));
+		// Send flow on any other stage (recipient, amount, sending, result): off,
+		// even with an approval review waiting underneath (the flow covers it).
+		assert!(!touch_filter_wanted(Some(false), false, false, false));
+		assert!(!touch_filter_wanted(Some(false), false, true, false));
+		// Request approval review (hold-to-accept) on screen: on.
+		assert!(touch_filter_wanted(None, false, true, false));
+		// A receipt or profile overlay covers the approval review: off.
+		assert!(!touch_filter_wanted(None, true, true, false));
+		// Session money prompt: on, over whatever is below it.
+		assert!(touch_filter_wanted(None, false, false, true));
+		assert!(touch_filter_wanted(Some(false), true, false, true));
+		// Plain screens (home, pay, activity, settings): off.
+		assert!(!touch_filter_wanted(None, false, false, false));
+		assert!(!touch_filter_wanted(None, true, false, false));
 	}
 }

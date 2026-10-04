@@ -345,14 +345,23 @@ impl PlatformCallbacks for Android {
 
 	fn set_secure_screen(&self, secure: bool) {
 		// Views report this every frame; cross into Java only on a change.
-		if crate::gui::platform::secure_screen_changed(&SECURE_SCREEN, secure) {
+		if crate::gui::platform::flag_changed(&SECURE_SCREEN, secure) {
 			let _ = self.call_java_method("setSecureScreen", "(Z)V", &[JValue::Bool(secure as u8)]);
+		}
+	}
+
+	fn set_touch_filter(&self, on: bool) {
+		// Views report this every frame; cross into Java only on a change.
+		if crate::gui::platform::flag_changed(&TOUCH_FILTER, on) {
+			let _ = self.call_java_method("setTouchFilter", "(Z)V", &[JValue::Bool(on as u8)]);
 		}
 	}
 }
 
 /// Last secure-screen state handed to Java (FLAG_SECURE on the window).
 static SECURE_SCREEN: AtomicBool = AtomicBool::new(false);
+/// Last obscured-touch filter state handed to Java.
+static TOUCH_FILTER: AtomicBool = AtomicBool::new(false);
 
 lazy_static! {
 	/// Last image data from camera.

@@ -215,6 +215,8 @@ impl OnboardingContent {
 		// The seed words (shown on create, typed on restore and confirm) must not
 		// reach screenshots, screen recordings or the app switcher.
 		cb.set_secure_screen(matches!(self.step, Step::Words | Step::ConfirmWords));
+		// No onboarding step commits money: every touch is delivered.
+		cb.set_touch_filter(false);
 		done
 	}
 

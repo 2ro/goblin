@@ -102,6 +102,9 @@ impl WalletContentContainer for WalletContent {
 				.show_inside(ui, |ui| {
 					sync_ui(ui, wallet);
 				});
+			// The sync screen replaces the Goblin view, which reports the touch
+			// filter itself; nothing here commits money.
+			cb.set_touch_filter(false);
 			self.handle_task_result(wallet);
 			return;
 		}

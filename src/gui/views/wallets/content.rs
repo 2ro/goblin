@@ -391,6 +391,16 @@ impl ContentContainer for WalletsContent {
 					return;
 				}
 			});
+
+		// The Goblin wallet view and onboarding report the touch filter
+		// themselves. Every other screen drawn here (wallet list, app settings,
+		// GRIM wallet creation) has no money-commit control, so reaching one by
+		// any path turns the filter off.
+		let goblin_drawn =
+			self.showing_wallet() && !self.creating_wallet() && !self.showing_settings();
+		if !goblin_drawn && !self.onboarding_active() {
+			cb.set_touch_filter(false);
+		}
 	}
 }
 

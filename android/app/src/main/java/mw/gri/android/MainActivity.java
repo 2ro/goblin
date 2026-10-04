@@ -104,8 +104,15 @@ public class MainActivity extends GameActivity {
     // recreated activity applies it again. Main thread only.
     private static boolean sSecureScreen = false;
 
-    // The current touch gesture started under another app's window and is
-    // being dropped (see dispatchTouchEvent).
+    // Native code says a money-commit control (hold-to-send, hold-to-accept,
+    // the session money prompt) is on screen: only then are touches through
+    // another app's window dropped. Off by default and on every other screen,
+    // so a screen dimmer or other full-screen overlay never makes the wallet
+    // dead to touch. Written from the native thread, read on the main thread.
+    private static volatile boolean sObscuredTouchFilter = false;
+
+    // The current touch gesture started under another app's window while the
+    // filter was on, and is being dropped (see dispatchTouchEvent).
     private boolean mDropObscuredGesture = false;
 
     @SuppressLint("UnspecifiedRegisterReceiverFlag")
@@ -377,23 +384,34 @@ public class MainActivity extends GameActivity {
         }
     }
 
-    // Tapjacking guard: drop touches that pass through another app's window
-    // drawn over ours (an overlay that hides what the user really taps, e.g. a
-    // hold-to-send). This is filterTouchesWhenObscured, applied here because
-    // GameActivity hands every touch to native code from Activity.onTouchEvent
-    // and no view consumes it: a filtering view would return false and the
-    // touch would still reach onTouchEvent. The decision is made per gesture at
-    // ACTION_DOWN, so native code never sees half a gesture (a lost UP would
-    // leave the pointer pressed).
+    // Tapjacking guard: while sObscuredTouchFilter is on, drop touches that pass
+    // through another app's window drawn over ours (an overlay that hides what
+    // the user really holds). This is filterTouchesWhenObscured, applied here
+    // because GameActivity hands every touch to native code from
+    // Activity.onTouchEvent and no view consumes it: a filtering view would
+    // return false and the touch would still reach onTouchEvent. The decision is
+    // made per gesture at ACTION_DOWN, so native code never sees half a gesture
+    // (a lost UP would leave the pointer pressed).
     @Override
     public boolean dispatchTouchEvent(MotionEvent event) {
         if (event.getActionMasked() == MotionEvent.ACTION_DOWN) {
-            mDropObscuredGesture = (event.getFlags() & MotionEvent.FLAG_WINDOW_IS_OBSCURED) != 0;
+            mDropObscuredGesture = sObscuredTouchFilter
+                    && (event.getFlags() & MotionEvent.FLAG_WINDOW_IS_OBSCURED) != 0;
+            if (mDropObscuredGesture) {
+                Log.w("grim", "touch dropped: another app's window covers it");
+            }
         }
         if (mDropObscuredGesture) {
             return false;
         }
         return super.dispatchTouchEvent(event);
+    }
+
+    // Called from native code when a money-commit control comes on or leaves
+    // the screen.
+    public void setTouchFilter(boolean on) {
+        sObscuredTouchFilter = on;
+        Log.i("grim", "obscured-touch filter " + (on ? "on" : "off"));
     }
 
     @Override
