@@ -1316,13 +1316,42 @@ mod tests {
 				"{t:?}"
 			);
 		}
-		// A development domain carries a port; its host still matches.
+		// A site domain with a port still matches by its host.
 		assert_eq!(
 			http_auth_target(
-				&tags(&[&["u", "http://localhost:3000/api/x"]]),
-				"localhost:3000",
+				&tags(&[&["u", "https://magick.market:8443/api/x"]]),
+				"magick.market:8443",
 				&authorities
 			),
+			OwnSite
+		);
+	}
+
+	#[test]
+	fn nip98_single_label_site_is_never_own_site() {
+		use HttpAuthTarget::*;
+		let authorities = vec!["goblin.st".to_string()];
+		let target = |site: &str, u: &str| {
+			http_auth_target(&tags(&[&["u", u], &["method", "POST"]]), site, &authorities)
+		};
+		// A session opened for `d=market` (bound to evil.market) must not cover
+		// magick.market or any other *.market host, nor `market` itself.
+		for u in [
+			"https://magick.market/api/x",
+			"https://evil.market/api/x",
+			"https://market/api/x",
+		] {
+			assert_eq!(target("market", u), OtherHost, "{u}");
+			assert_eq!(target("market.", u), OtherHost, "{u} (trailing dot)");
+		}
+		// The localhost dev domain is single-label too: no silent HTTP auth.
+		assert_eq!(
+			target("localhost:3000", "http://localhost:3000/api/x"),
+			OtherHost
+		);
+		// A real two-label site is unaffected.
+		assert_eq!(
+			target("magick.market", "https://magick.market/api/x"),
 			OwnSite
 		);
 	}

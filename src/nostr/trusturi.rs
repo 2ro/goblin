@@ -181,14 +181,16 @@ fn validate_challenge(raw: &str) -> Option<String> {
 }
 
 /// The domain must be non-empty, printable ASCII without spaces, within DNS
-/// length bounds. Display data plus one binding check, never a route (same rule
-/// as login and authorize).
+/// length bounds, naming a site rather than a single label (see
+/// [`super::authuri::site_domain_allowed`]). Display data plus one binding
+/// check, never a route (same rule as login and authorize).
 fn validate_domain(raw: &str) -> Option<String> {
 	let decoded = String::from_utf8_lossy(&percent_decode(raw)).into_owned();
 	let decoded = decoded.trim();
 	if decoded.is_empty()
 		|| decoded.len() > MAX_DOMAIN_LEN
 		|| !decoded.chars().all(|c| c.is_ascii_graphic())
+		|| !super::authuri::site_domain_allowed(decoded)
 	{
 		return None;
 	}
@@ -512,6 +514,24 @@ mod tests {
 			"goblin:trust?c={C}&d=magick.market&cb=https%3A%2F%2Fmagick.market%2Fapi%2Fv1%2Flogin%2Fcallback&sk={SK}&r=wss%3A%2F%2Frelay.floonet.dev&k=0,1,5,7,13,14,16,1059,1111,10000,30000,30003,30078,30405,30406,31990,24242,27235"
 		);
 		assert!(parse(&ok).is_some());
+	}
+
+	#[test]
+	fn single_label_domain_rejected() {
+		// A trust URI for d=market bound to evil.market would open a session
+		// whose HTTP auth covered every *.market host: rejected.
+		let bad = format!(
+			"goblin:trust?c={C}&d=market&cb=https://evil.market/cb&sk={SK}&r=wss://relay.evil.market&k=1,27235"
+		);
+		assert_eq!(parse(&bad), None);
+		// magick's localhost dev trust URI still parses exactly as before.
+		let dev = format!(
+			"goblin:trust?c={C}&d=localhost:3000&cb=http%3A%2F%2Flocalhost%3A3000%2Fapi%2Fv1%2Flogin%2Fcallback&sk={SK}&r=ws%3A%2F%2Flocalhost%3A7777&k=1,7,13,1059"
+		);
+		let out = parse(&dev).expect("localhost dev trust still accepted");
+		assert_eq!(out.domain, "localhost:3000");
+		assert_eq!(out.callback, "http://localhost:3000/api/v1/login/callback");
+		assert_eq!(out.relay, "ws://localhost:7777");
 	}
 
 	#[test]

@@ -153,14 +153,17 @@ fn validate_challenge(raw: &str) -> Option<String> {
 }
 
 /// The domain must be non-empty, printable ASCII without spaces, and within
-/// DNS length bounds. It is DISPLAY data (the user approves it by eye) and a
-/// tag value, never a route, so a shape check is enough.
+/// DNS length bounds, and it must name a site (not a single label such as
+/// `market`, see [`super::authuri::site_domain_allowed`]). It is DISPLAY data
+/// (the user approves it by eye) and a tag value, never a route, so a shape
+/// check is enough.
 fn validate_domain(raw: &str) -> Option<String> {
 	let decoded = String::from_utf8_lossy(&percent_decode(raw)).into_owned();
 	let decoded = decoded.trim();
 	if decoded.is_empty()
 		|| decoded.len() > MAX_DOMAIN_LEN
 		|| !decoded.chars().all(|c| c.is_ascii_graphic())
+		|| !super::authuri::site_domain_allowed(decoded)
 	{
 		return None;
 	}
@@ -418,6 +421,25 @@ mod tests {
 			parse(&ok).unwrap().callback,
 			"https://magick.market/api/v1/login/callback"
 		);
+	}
+
+	#[test]
+	fn single_label_domain_rejected() {
+		// d=market bound to evil.market: rejected, it would cover every *.market.
+		let bad = format!("goblin:login?c={C}&d=market&cb=https://evil.market/cb");
+		assert_eq!(parse(&bad), None);
+		// magick's localhost dev login (d = window.location.host) still parses.
+		let dev = format!(
+			"goblin:login?c={C}&d=localhost:3000&cb=http%3A%2F%2Flocalhost%3A3000%2Fapi%2Fv1%2Flogin%2Fcallback"
+		);
+		let out = parse(&dev).expect("localhost dev login still accepted");
+		assert_eq!(out.domain, "localhost:3000");
+		assert_eq!(out.callback, "http://localhost:3000/api/v1/login/callback");
+		// And its production login.
+		let prod = format!(
+			"goblin:login?c={C}&d=magick.market&cb=https%3A%2F%2Fmagick.market%2Fapi%2Fv1%2Flogin%2Fcallback"
+		);
+		assert_eq!(parse(&prod).unwrap().domain, "magick.market");
 	}
 
 	#[test]
