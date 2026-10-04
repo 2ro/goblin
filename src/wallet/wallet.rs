@@ -3109,15 +3109,39 @@ async fn handle_task(w: &Wallet, t: WalletTask) {
 				w.task(WalletTask::Cancel(*id));
 			}
 		}
-		WalletTask::Cancel(id) => match w.cancel(*id) {
-			Ok(_) => {
-				sync_wallet_data(&w, false);
+		WalletTask::Cancel(id) => {
+			// Every queued cancel (tx list, activity receipt fallback, automatic
+			// cancels after a failed finalize) obeys the one cancel-safety rule:
+			// a row the counterparty can finalize waits for a node sync.
+			if let Some(tx) = w.retrieve_tx_by_id(Some(*id), None) {
+				let live = !matches!(
+					tx.tx_type,
+					TxLogEntryType::TxSentCancelled | TxLogEntryType::TxReceivedCancelled
+				);
+				if live
+					&& !crate::wallet::types::cancel_safe(
+						&tx.tx_type,
+						tx.tx_slate_state.as_ref(),
+						w.synced_from_node(),
+						tx.confirmed,
+					) {
+					info!(
+						"tx cancel: tx {} waits for a node sync before it can be cancelled",
+						id
+					);
+					return;
+				}
 			}
-			Err(e) => {
-				error!("tx cancel error: {:?}", e);
-				w.on_tx_error(*id, Some(e));
+			match w.cancel(*id) {
+				Ok(_) => {
+					sync_wallet_data(&w, false);
+				}
+				Err(e) => {
+					error!("tx cancel error: {:?}", e);
+					w.on_tx_error(*id, Some(e));
+				}
 			}
-		},
+		}
 		WalletTask::VerifyProof(p, _) => {
 			w.proof_verifying.store(true, Ordering::Relaxed);
 			let res = w.verify_payment_proof(p);
@@ -3247,23 +3271,44 @@ async fn handle_task(w: &Wallet, t: WalletTask) {
 							}
 							Err(e) => {
 								error!("nostr send dispatch failed: {e}");
-								service.store.update_tx_status(
-									&s.id.to_string(),
-									crate::nostr::NostrSendStatus::SendFailed,
-								);
-								if let Some(tx) = &tx {
-									w.on_tx_error(
-										tx.id,
-										Some(Error::GenericError(format!(
-											"nostr dispatch failed: {e}"
-										))),
-									);
+								// Failure is final: cancel this slate NOW, before the UI
+								// shows "Couldn't send", so "Try again" builds a clean new
+								// slate and nothing ever re-sends this one. A timeout can
+								// hide a relay that took the wrap; if the reply already
+								// finalized the payment, it was sent, and "Try again"
+								// would pay twice.
+								match nostr_cancel_slate(w, &service, &s.id.to_string(), true) {
+									NostrCancelResult::Finalized | NostrCancelResult::Confirmed => {
+										info!(
+											"nostr send {} completed despite the dispatch error",
+											s.id
+										);
+										service.set_send_phase(crate::nostr::send_phase::SENT);
+									}
+									outcome => {
+										// Keep the error marker only on a tx still live.
+										if let Some(tx) = &tx
+											&& matches!(
+												outcome,
+												NostrCancelResult::CancelFailed
+													| NostrCancelResult::Unavailable
+											) {
+											w.on_tx_error(
+												tx.id,
+												Some(Error::GenericError(format!(
+													"nostr dispatch failed: {e}"
+												))),
+											);
+										}
+										service.set_send_phase(crate::nostr::send_phase::FAILED);
+									}
 								}
-								service.set_send_phase(crate::nostr::send_phase::FAILED);
 							}
 						}
 					} else {
-						// No slatepack text produced — treat as failure.
+						// No slatepack text produced: treat as failure, and failure is
+						// final, so free the inputs this slate locked.
+						nostr_cancel_slate(w, &service, &s.id.to_string(), true);
 						service.set_send_phase(crate::nostr::send_phase::FAILED);
 					}
 					w.on_task_result(tx, &t);
@@ -3343,14 +3388,23 @@ async fn handle_task(w: &Wallet, t: WalletTask) {
 							}
 							Err(e) => {
 								error!("nostr request dispatch failed: {e}");
-								service.store.update_tx_status(
-									&s.id.to_string(),
-									crate::nostr::NostrSendStatus::SendFailed,
-								);
-								service.set_send_phase(crate::nostr::send_phase::FAILED);
+								// Failure is final, as for a send: cancel the issued
+								// invoice before the UI shows the failure. If the payer's
+								// reply already completed it, the request went through.
+								match nostr_cancel_slate(w, &service, &s.id.to_string(), true) {
+									NostrCancelResult::Finalized | NostrCancelResult::Confirmed => {
+										info!(
+											"nostr request {} completed despite the dispatch error",
+											s.id
+										);
+										service.set_send_phase(crate::nostr::send_phase::SENT);
+									}
+									_ => service.set_send_phase(crate::nostr::send_phase::FAILED),
+								}
 							}
 						}
 					} else {
+						nostr_cancel_slate(w, &service, &s.id.to_string(), true);
 						service.set_send_phase(crate::nostr::send_phase::FAILED);
 					}
 					w.on_task_result(tx, &t);
@@ -3400,14 +3454,33 @@ async fn handle_task(w: &Wallet, t: WalletTask) {
 			}
 			// Cancel the underlying grin invoice tx (an issued invoice locks no
 			// outputs, but cancelling keeps the wallet ledger tidy).
-			if let Some(tx_id) = w.get_data().and_then(|d| d.txs).and_then(|txs| {
+			let found = w.get_data().and_then(|d| d.txs).and_then(|txs| {
 				txs.iter()
 					.find(|t| {
 						t.data.tx_slate_id.map(|u| u.to_string()).as_deref()
 							== Some(slate_id.as_str())
 					})
-					.map(|t| t.data.id)
-			}) {
+					.map(|t| {
+						// One cancel-safety rule: once we finalized the payer's
+						// reply the request may be on chain, so it waits for a
+						// node sync.
+						let wait_for_sync = !t.cancelled()
+							&& !crate::wallet::types::cancel_safe(
+								&t.data.tx_type,
+								t.data.tx_slate_state.as_ref(),
+								w.synced_from_node(),
+								t.data.confirmed,
+							);
+						(t.data.id, wait_for_sync)
+					})
+			});
+			if let Some((_, true)) = found {
+				info!(
+					"nostr cancel: request {slate_id} waits for a node sync before it can be cancelled"
+				);
+				return;
+			}
+			if let Some((tx_id, false)) = found {
 				if let Err(e) = w.cancel(tx_id) {
 					error!("nostr cancel: wallet cancel failed: {e}");
 				}
@@ -3466,10 +3539,26 @@ async fn handle_task(w: &Wallet, t: WalletTask) {
 					service.set_cancel_notice(crate::nostr::CancelOutcome::AlreadyCompleted);
 					return;
 				}
-				if matches!(
+				let live = !matches!(
 					tx.tx_type,
 					TxLogEntryType::TxSentCancelled | TxLogEntryType::TxReceivedCancelled
-				) {
+				);
+				// One cancel-safety rule: a send this wallet already finalized (or
+				// one of unknown state) may be on chain, so it waits for a node
+				// sync. No notice: neither outcome is true yet.
+				if live
+					&& !crate::wallet::types::cancel_safe(
+						&tx.tx_type,
+						tx.tx_slate_state.as_ref(),
+						w.synced_from_node(),
+						tx.confirmed,
+					) {
+					info!(
+						"nostr cancel send: slate {slate_id} waits for a node sync before it can be cancelled"
+					);
+					return;
+				}
+				if !live {
 					// Already cancelled at the grin layer — just reconcile the meta.
 					service
 						.store
@@ -3661,6 +3750,245 @@ async fn handle_task(w: &Wallet, t: WalletTask) {
 			}
 		}
 	};
+}
+
+/// Result of [`nostr_cancel_slate`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NostrCancelResult {
+	/// The grin tx was cancelled now: its outputs are free again.
+	Cancelled,
+	/// Nothing is locked: the grin tx does not exist or is already cancelled.
+	NothingLocked,
+	/// The tx is confirmed on chain: the payment completed.
+	Confirmed,
+	/// This wallet finalized the tx, so it may be on chain: never auto-cancelled.
+	Finalized,
+	/// The cancel-safety rule needs a node sync first.
+	NotSafeYet,
+	/// The wallet's tx store could not be read.
+	Unavailable,
+	/// The grin cancel failed. The meta is Cancelled, so the heal pass retries.
+	CancelFailed,
+}
+
+/// Why an automatic cancel must leave this tx alone, or `None` to cancel it.
+/// Pure, so the money-path decision is unit tested. A tx this wallet finalized
+/// (Standard3/Invoice3 recorded, or the finalized slatepack on disk) is never
+/// cancelled automatically: it may already be posted, and a user can still
+/// repost or cancel it from the tx list.
+fn nostr_cancel_refusal(
+	tx: &TxLogEntry,
+	finalized_file: bool,
+	synced: bool,
+) -> Option<NostrCancelResult> {
+	if matches!(
+		tx.tx_type,
+		TxLogEntryType::TxSentCancelled | TxLogEntryType::TxReceivedCancelled
+	) {
+		return Some(NostrCancelResult::NothingLocked);
+	}
+	if tx.confirmed {
+		return Some(NostrCancelResult::Confirmed);
+	}
+	if finalized_file
+		|| matches!(
+			tx.tx_slate_state,
+			Some(SlateState::Standard3) | Some(SlateState::Invoice3)
+		) {
+		return Some(NostrCancelResult::Finalized);
+	}
+	if !crate::wallet::types::cancel_safe(
+		&tx.tx_type,
+		tx.tx_slate_state.as_ref(),
+		synced,
+		tx.confirmed,
+	) {
+		return Some(NostrCancelResult::NotSafeYet);
+	}
+	None
+}
+
+/// Cancel the grin tx behind a nostr payment slate without user input: a failed
+/// dispatch (failure is final), stale expiry, and the heal of rows marked
+/// Cancelled whose outputs are still locked.
+///
+/// Holds the same lock as `nostr_finalize_post`, so a reply cannot finalize the
+/// tx while this cancels it. The meta is marked Cancelled FIRST, so a late reply
+/// is dropped at `decide()`, then the grin tx is cancelled. Rows the rule
+/// refuses keep their meta, except when `failure_is_final`: a failed dispatch
+/// must never be re-sent by `reconcile`, so its meta ends Cancelled even when
+/// the grin cancel cannot run now (the heal pass frees the outputs later).
+pub fn nostr_cancel_slate(
+	w: &Wallet,
+	service: &NostrService,
+	slate_id: &str,
+	failure_is_final: bool,
+) -> NostrCancelResult {
+	let Ok(uuid) = Uuid::parse_str(slate_id) else {
+		error!("nostr cancel: bad slate id {slate_id}");
+		return NostrCancelResult::Unavailable;
+	};
+	let result = {
+		let _lock = service.lock_finalize();
+		let mark = || {
+			service
+				.store
+				.update_tx_status(slate_id, crate::nostr::NostrSendStatus::Cancelled)
+		};
+		// A reply finalized this payment while we waited for the lock.
+		let finalized = service
+			.store
+			.tx_meta(slate_id)
+			.map(|m| m.status == crate::nostr::NostrSendStatus::Finalized)
+			.unwrap_or(false);
+		if finalized {
+			return NostrCancelResult::Finalized;
+		}
+		// Authoritative lookup, the same query as `retrieve_tx_by_id`, but a
+		// store error stays apart from "no such tx".
+		let instance = { w.instance.as_ref().read().clone() };
+		let lookup = instance.and_then(|inst| {
+			retrieve_txs(
+				inst,
+				w.keychain_mask().as_ref(),
+				&None,
+				false,
+				None,
+				Some(uuid),
+				None,
+			)
+			.map(|(_, txs)| txs.into_iter().next())
+			.ok()
+		});
+		match lookup {
+			None => {
+				warn!("nostr cancel: tx store not readable for slate {slate_id}");
+				if failure_is_final {
+					mark();
+				}
+				NostrCancelResult::Unavailable
+			}
+			Some(None) => {
+				mark();
+				NostrCancelResult::NothingLocked
+			}
+			Some(Some(tx)) => {
+				// An unreadable path counts as finalized: when in doubt, keep it.
+				let finalized_file = [SlateState::Standard3, SlateState::Invoice3]
+					.iter()
+					.any(|st| fs::exists(w.get_config().get_slate_path(uuid, st)).unwrap_or(true));
+				match nostr_cancel_refusal(&tx, finalized_file, w.synced_from_node()) {
+					Some(NostrCancelResult::NothingLocked) => {
+						mark();
+						NostrCancelResult::NothingLocked
+					}
+					Some(NostrCancelResult::NotSafeYet) => {
+						if failure_is_final {
+							mark();
+						}
+						NostrCancelResult::NotSafeYet
+					}
+					Some(refused) => refused,
+					None => {
+						mark();
+						match w.cancel(tx.id) {
+							Ok(()) => NostrCancelResult::Cancelled,
+							Err(e) => {
+								error!(
+									"nostr cancel: wallet cancel failed for slate {slate_id}: {e}"
+								);
+								NostrCancelResult::CancelFailed
+							}
+						}
+					}
+				}
+			}
+		}
+	};
+	if result == NostrCancelResult::Cancelled {
+		sync_wallet_data(w, false);
+	}
+	result
+}
+
+#[cfg(test)]
+mod nostr_cancel_tests {
+	use super::*;
+	use grin_keychain::Identifier;
+
+	fn tx(tx_type: TxLogEntryType, state: Option<SlateState>, confirmed: bool) -> TxLogEntry {
+		let mut t = TxLogEntry::new(Identifier::zero(), tx_type, 0);
+		t.tx_slate_state = state;
+		t.confirmed = confirmed;
+		t
+	}
+
+	#[test]
+	fn failed_dispatch_cancel_frees_our_slate_offline() {
+		// A just-built send or request: only we can finalize it, so it is
+		// cancelled at once, node sync or not.
+		let send = tx(TxLogEntryType::TxSent, Some(SlateState::Standard1), false);
+		assert_eq!(nostr_cancel_refusal(&send, false, false), None);
+		let request = tx(
+			TxLogEntryType::TxReceived,
+			Some(SlateState::Invoice1),
+			false,
+		);
+		assert_eq!(nostr_cancel_refusal(&request, false, false), None);
+	}
+
+	#[test]
+	fn auto_cancel_never_touches_a_finalized_or_confirmed_tx() {
+		// A reply raced the failed dispatch and this wallet finalized: the
+		// recorded state or the finalized slatepack on disk both count.
+		for synced in [false, true] {
+			let s3 = tx(TxLogEntryType::TxSent, Some(SlateState::Standard3), false);
+			assert_eq!(
+				nostr_cancel_refusal(&s3, false, synced),
+				Some(NostrCancelResult::Finalized)
+			);
+			let file_only = tx(TxLogEntryType::TxSent, Some(SlateState::Standard1), false);
+			assert_eq!(
+				nostr_cancel_refusal(&file_only, true, synced),
+				Some(NostrCancelResult::Finalized)
+			);
+			let i3 = tx(
+				TxLogEntryType::TxReceived,
+				Some(SlateState::Invoice3),
+				false,
+			);
+			assert_eq!(
+				nostr_cancel_refusal(&i3, false, synced),
+				Some(NostrCancelResult::Finalized)
+			);
+			let mined = tx(TxLogEntryType::TxSent, Some(SlateState::Standard1), true);
+			assert_eq!(
+				nostr_cancel_refusal(&mined, false, synced),
+				Some(NostrCancelResult::Confirmed)
+			);
+			let gone = tx(
+				TxLogEntryType::TxSentCancelled,
+				Some(SlateState::Standard1),
+				false,
+			);
+			assert_eq!(
+				nostr_cancel_refusal(&gone, false, synced),
+				Some(NostrCancelResult::NothingLocked)
+			);
+		}
+	}
+
+	#[test]
+	fn auto_cancel_of_a_paid_request_waits_for_sync() {
+		// We paid a request (TxSent, Invoice2): the issuer can finalize it, so
+		// the tx may be on chain until a node sync says otherwise.
+		let paid = tx(TxLogEntryType::TxSent, Some(SlateState::Invoice2), false);
+		assert_eq!(
+			nostr_cancel_refusal(&paid, false, false),
+			Some(NostrCancelResult::NotSafeYet)
+		);
+		assert_eq!(nostr_cancel_refusal(&paid, false, true), None);
+	}
 }
 
 /// Refresh [`WalletData`] from local base or node.

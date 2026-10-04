@@ -36,7 +36,7 @@ use crate::gui::views::wallets::wallet::message::MessageInputContent;
 use crate::gui::views::wallets::wallet::types::{GRIN, WalletContentContainer};
 use crate::gui::views::{Content, Modal, PullToRefresh, View};
 use crate::wallet::Wallet;
-use crate::wallet::types::{WalletData, WalletTask, WalletTx, WalletTxAction};
+use crate::wallet::types::{WalletData, WalletTask, WalletTx, WalletTxAction, cancel_safe};
 
 /// Wallet transactions tab content.
 pub struct WalletTransactionsContent {
@@ -280,11 +280,17 @@ impl WalletTransactionsContent {
 						// can decide a broadcast has timed out.
 						let synced = wallet.synced_from_node();
 						let repeat = synced && tx.broadcasting_timed_out(wallet);
-						// Draw button to cancel transaction. Cancel is a purely local
-						// libwallet operation (it unlocks the reserved inputs), so it
-						// is always offered for a cancellable pending, even when the
-						// node is unreachable or the wallet has not synced yet.
-						if tx.can_cancel() || repeat {
+						// Draw button to cancel transaction. Before a node sync it is
+						// offered only where this wallet alone can finalize the tx;
+						// any other row may already be on chain (see `cancel_safe`).
+						let cancel = tx.can_cancel()
+							&& cancel_safe(
+								&tx.data.tx_type,
+								tx.data.tx_slate_state.as_ref(),
+								synced,
+								tx.data.confirmed,
+							);
+						if cancel || repeat {
 							let (icon, color) = (PROHIBIT, Some(Colors::red()));
 							View::item_button(ui, btn_rounding, icon, color, || {
 								self.confirm_cancel_tx_id = Some(tx.data.id);

@@ -407,6 +407,34 @@ impl WalletTx {
 	}
 }
 
+/// The one cancel-safety rule shared by every cancel path (tx list, activity
+/// cancel, expiry, heal, failed dispatch). A cancel without a node sync is safe
+/// only while THIS wallet is the only party that can finalize the tx: our own
+/// unanswered send (TxSent, Standard1) or our own unanswered request
+/// (TxReceived, Invoice1). Every other row (a request we paid, a payment we
+/// replied to, anything finalized or of unknown state) may already be on chain
+/// without this wallet knowing, so it needs a node sync and no confirmation.
+pub fn cancel_safe(
+	tx_type: &TxLogEntryType,
+	slate_state: Option<&SlateState>,
+	synced: bool,
+	confirmed: bool,
+) -> bool {
+	if confirmed
+		|| matches!(
+			tx_type,
+			TxLogEntryType::TxSentCancelled | TxLogEntryType::TxReceivedCancelled
+		) {
+		return false;
+	}
+	let only_we_finalize = matches!(
+		(tx_type, slate_state),
+		(TxLogEntryType::TxSent, Some(SlateState::Standard1))
+			| (TxLogEntryType::TxReceived, Some(SlateState::Invoice1))
+	);
+	only_we_finalize || synced
+}
+
 /// Result of [`crate::wallet::Wallet::manual_process_slatepack`]: either a reply
 /// slatepack the user must hand back to the counterparty, or a returned slate now
 /// being finalized and posted on the worker thread.
@@ -568,6 +596,84 @@ mod tests {
 		let confirmed = tx(TxLogEntryType::TxSent, true, None);
 		let c_created = confirmed.data.creation_ts.timestamp();
 		assert!(!confirmed.stale_at(c_created + 10 * WalletTx::STALE_AGE_SECS));
+	}
+
+	#[test]
+	fn cancel_safe_unsynced_only_where_we_alone_finalize() {
+		use SlateState::*;
+		use TxLogEntryType::*;
+		// Only we can finalize these, so a cancel needs no node sync.
+		assert!(cancel_safe(&TxSent, Some(&Standard1), false, false));
+		assert!(cancel_safe(&TxReceived, Some(&Invoice1), false, false));
+		// The counterparty can finalize these (or we already did), so the tx may
+		// be on chain: no cancel before a node sync.
+		for (tx_type, state) in [
+			(TxSent, Some(Invoice2)),
+			(TxReceived, Some(Standard2)),
+			(TxSent, Some(Standard3)),
+			(TxReceived, Some(Invoice3)),
+			(TxSent, None),
+			(TxReceived, None),
+		] {
+			assert!(
+				!cancel_safe(&tx_type, state.as_ref(), false, false),
+				"{tx_type:?} {state:?} must wait for a node sync"
+			);
+			assert!(
+				cancel_safe(&tx_type, state.as_ref(), true, false),
+				"{tx_type:?} {state:?} may cancel once synced and unconfirmed"
+			);
+		}
+		// A confirmed or already-cancelled tx is never cancelled, synced or not.
+		for synced in [false, true] {
+			assert!(!cancel_safe(&TxSent, Some(&Standard1), synced, true));
+			assert!(!cancel_safe(&TxReceived, Some(&Standard2), synced, true));
+			assert!(!cancel_safe(
+				&TxSentCancelled,
+				Some(&Standard1),
+				synced,
+				false
+			));
+			assert!(!cancel_safe(
+				&TxReceivedCancelled,
+				Some(&Invoice1),
+				synced,
+				false
+			));
+		}
+	}
+
+	/// F6: the tx list offers Cancel only under the cancel-safety rule. A payment
+	/// we replied to (TxReceived, Standard2) may already be on chain, so before a
+	/// node sync it gets no Cancel button even though `can_cancel()` holds.
+	#[test]
+	fn unsynced_list_offers_no_cancel_for_a_replied_payment() {
+		let offered = |t: &WalletTx, synced: bool| {
+			t.can_cancel()
+				&& cancel_safe(
+					&t.data.tx_type,
+					t.data.tx_slate_state.as_ref(),
+					synced,
+					t.data.confirmed,
+				)
+		};
+		let replied = tx_with_state(
+			TxLogEntryType::TxReceived,
+			false,
+			None,
+			Some(SlateState::Standard2),
+		);
+		assert!(replied.can_cancel());
+		assert!(!offered(&replied, false));
+		assert!(offered(&replied, true));
+		// Our own unanswered send stays cancellable offline.
+		let own_send = tx_with_state(
+			TxLogEntryType::TxSent,
+			false,
+			None,
+			Some(SlateState::Standard1),
+		);
+		assert!(offered(&own_send, false));
 	}
 
 	/// A transaction with no recorded Slate state is not actionable.
