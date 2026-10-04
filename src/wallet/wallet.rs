@@ -2758,19 +2758,15 @@ const ATTEMPT_DELAY: Duration = Duration::from_millis(3 * 1000);
 /// Number of attempts to sync [`WalletData`] before setting an error.
 const SYNC_ATTEMPTS: u8 = 10;
 
-/// Launch thread to sync wallet data from node.
-fn start_sync(wallet: Wallet) -> Thread {
-	// Start tasks thread.
-	let (tx, rx) = mpsc::channel();
-	{
-		let mut w_tasks = wallet.tasks_sender.write();
-		*w_tasks = Some(tx);
-	}
-	let wallet_thread = wallet.clone();
-	thread::spawn(move || {
-		loop {
-			let wallet_task = wallet_thread.clone();
-			if let Ok(task) = rx.recv() {
+/// Run the wallet tasks thread: handle each task from `rx` until the wallet
+/// closes or the channel does. A reopen gives the wallet a new channel and a
+/// new tasks thread, which drops the old sender; from then on `recv` fails at
+/// once, so the old thread must stop there instead of spinning on the error.
+fn serve_tasks(wallet_thread: Wallet, rx: mpsc::Receiver<WalletTask>) {
+	loop {
+		let wallet_task = wallet_thread.clone();
+		match rx.recv() {
+			Ok(task) => {
 				thread::spawn(move || {
 					tokio::runtime::Builder::new_current_thread()
 						.enable_all()
@@ -2781,11 +2777,24 @@ fn start_sync(wallet: Wallet) -> Thread {
 						});
 				});
 			}
-			if wallet_thread.is_closing() || !wallet_thread.is_open() {
-				break;
-			}
+			Err(_) => break,
 		}
-	});
+		if wallet_thread.is_closing() || !wallet_thread.is_open() {
+			break;
+		}
+	}
+}
+
+/// Launch thread to sync wallet data from node.
+fn start_sync(wallet: Wallet) -> Thread {
+	// Start tasks thread.
+	let (tx, rx) = mpsc::channel();
+	{
+		let mut w_tasks = wallet.tasks_sender.write();
+		*w_tasks = Some(tx);
+	}
+	let wallet_thread = wallet.clone();
+	thread::spawn(move || serve_tasks(wallet_thread, rx));
 
 	// Reset progress values.
 	wallet.info_sync_progress.store(0, Ordering::Relaxed);
@@ -4670,5 +4679,58 @@ mod open_tests {
 		}
 
 		wallet.close();
+	}
+
+	/// The tasks thread stops once its channel is closed, even while the wallet
+	/// stays open. A reopen replaces the wallet's task sender and starts a new
+	/// tasks thread, so the old thread's `recv` fails at once from then on; it
+	/// used to loop on that error at full CPU until the next close.
+	///
+	/// Builds a real wallet under the module's sandbox HOME. Documented run:
+	///   cargo test --lib open_tests -- --test-threads=1
+	#[test]
+	fn tasks_thread_exits_when_its_channel_closes() {
+		let _serialised = serialised();
+		let sandbox = sandbox();
+
+		let password = ZeroingString::from("tasks-test-password");
+		let wallet = Wallet::create(
+			&"tasks-test".to_string(),
+			&password,
+			&Mnemonic::default(),
+			&ConnectionMethod::Integrated,
+		)
+		.expect("wallet creation must succeed");
+
+		// Hard guard: refuse to continue if the sandbox did not take effect.
+		let data_path = PathBuf::from(wallet.get_config().get_data_path());
+		assert!(
+			data_path.starts_with(sandbox),
+			"sandbox did not take effect (wallet at {}); refusing to touch real data",
+			data_path.display()
+		);
+		wallet.open(password.clone()).expect("wallet must open");
+
+		// A channel whose sender is already gone, as after a reopen.
+		let (tx, rx) = mpsc::channel::<WalletTask>();
+		drop(tx);
+		let served = wallet.clone();
+		let handle = thread::spawn(move || serve_tasks(served, rx));
+		let deadline = std::time::Instant::now() + Duration::from_secs(5);
+		while !handle.is_finished() && std::time::Instant::now() < deadline {
+			thread::sleep(Duration::from_millis(10));
+		}
+		let finished = handle.is_finished();
+		let still_open = wallet.is_open();
+		wallet.close();
+
+		assert!(
+			still_open,
+			"the wallet must stay open, so only the closed channel can stop the thread"
+		);
+		assert!(
+			finished,
+			"the tasks thread must stop when its channel closes"
+		);
 	}
 }
