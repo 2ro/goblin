@@ -17,68 +17,108 @@
 //! and receipt/proof delivery.
 
 use super::*;
+use crate::wallet::NostrCancelResult;
 
 impl NostrService {
 	/// Auto-expire stale pending transactions after the configured window
 	/// (`NostrConfig::expiry_secs`, default 24h). A transaction that never
 	/// completed is canceled/expired:
-	/// - Outgoing sends and invoices we paid LOCK our outputs, so they are
-	///   cancelled at the wallet level (reusing GRIM's `cancel_tx` via
-	///   `WalletTask::Cancel`) to release those funds.
+	/// - Outgoing sends and invoices we paid (or built a reply for) LOCK our
+	///   outputs, so they go through `nostr_cancel_slate`: authoritative tx
+	///   lookup, finalize lock, cancel-safety rule. The row turns Cancelled only
+	///   when its outputs are free (or nothing was locked); otherwise it is left
+	///   for the next cycle (wallet data not loaded yet, no node sync yet).
 	/// - Incoming payments and invoices we issued lock nothing of ours, so we
 	///   only annotate the metadata `Cancelled`; if a payment posts late,
 	///   on-chain confirmation still wins (the UI only shows "canceled" while
 	///   unconfirmed).
 	/// - Pending incoming requests become `Expired`.
 	///
+	/// Every cycle it also heals rows marked Cancelled whose grin tx still
+	/// locks our outputs (see [`heal_due`]).
+	///
 	/// Runs from the wallet sync loop, so a lowered `expiry_secs` (set in
 	/// `nostr.toml` for testing) takes effect within a sync cycle.
 	pub fn expire_stale(&self, wallet: &Wallet) {
 		let now = unix_time();
+		let metas = self.store.all_tx_meta();
+		let data = wallet.get_data();
+		let data_loaded = data.is_some();
+
+		// Heal: a row marked Cancelled whose cancel never freed its outputs (an
+		// older build expired it before the wallet data loaded, or a cancel
+		// failed). Candidates come from the loaded tx list, so a cycle with
+		// nothing stuck costs no extra lookup; the helper re-checks each one
+		// authoritatively under the finalize lock.
+		if let Some(txs) = data.and_then(|d| d.txs) {
+			let synced = wallet.synced_from_node();
+			let live: HashMap<String, _> = txs
+				.iter()
+				.filter(|t| t.action.is_none())
+				.filter_map(|t| t.data.tx_slate_id.map(|u| (u.to_string(), t)))
+				.collect();
+			for meta in &metas {
+				let Some(t) = live.get(&meta.slate_id) else {
+					continue;
+				};
+				if heal_due(
+					meta.direction,
+					meta.status,
+					&t.data.tx_type,
+					t.data.tx_slate_state.as_ref(),
+					t.data.confirmed,
+					synced,
+				) {
+					let outcome =
+						crate::wallet::nostr_cancel_slate(wallet, self, &meta.slate_id, false);
+					if !cancel_deferred(outcome) {
+						info!(
+							"nostr: heal cancelled {} ({:?}): {:?}",
+							meta.slate_id, meta.direction, outcome
+						);
+					}
+				}
+			}
+		}
+
 		let window = self.config.read().expiry_secs();
 		if window <= 0 {
 			return;
 		}
 
-		let stale: Vec<TxNostrMeta> = self
-			.store
-			.all_tx_meta()
+		let stale: Vec<TxNostrMeta> = metas
 			.into_iter()
 			.filter(|m| !expiry_terminal(m.status))
 			.filter(|m| now - m.created_at > window)
 			.collect();
 
-		if !stale.is_empty() {
-			// Map slate uuid → wallet tx id once (public wallet data), so we can
-			// cancel the underlying GRIM tx for the funds-locking cases.
-			let tx_ids: HashMap<String, u32> = wallet
-				.get_data()
-				.and_then(|d| d.txs)
-				.map(|txs| {
-					txs.iter()
-						.filter_map(|t| t.data.tx_slate_id.map(|u| (u.to_string(), t.data.id)))
-						.collect()
-				})
-				.unwrap_or_default();
-
-			for meta in stale {
-				// Only outgoing sends + invoices we paid lock our outputs.
-				if expiry_locks_outputs(meta.direction, meta.status) {
-					if let Some(&tx_id) = tx_ids.get(&meta.slate_id) {
-						info!(
-							"nostr: expiring stale send {} → cancel wallet tx {}",
-							meta.slate_id, tx_id
-						);
-						wallet.task(WalletTask::Cancel(tx_id));
-					}
-				} else {
+		for meta in stale {
+			match expire_step(meta.direction, meta.status, data_loaded) {
+				ExpireStep::MarkOnly => {
 					info!(
 						"nostr: expiring stale {} ({:?})",
 						meta.slate_id, meta.direction
 					);
+					self.store
+						.update_tx_status(&meta.slate_id, NostrSendStatus::Cancelled);
 				}
-				self.store
-					.update_tx_status(&meta.slate_id, NostrSendStatus::Cancelled);
+				// First sync cycle after open: leave the row for the next cycle
+				// rather than mark it Cancelled with its outputs still locked.
+				ExpireStep::Defer => {}
+				ExpireStep::Cancel => {
+					let outcome =
+						crate::wallet::nostr_cancel_slate(wallet, self, &meta.slate_id, false);
+					if expire_marks_after(outcome) {
+						self.store
+							.update_tx_status(&meta.slate_id, NostrSendStatus::Cancelled);
+					}
+					if !cancel_deferred(outcome) {
+						info!(
+							"nostr: expiring stale send {}: {:?}",
+							meta.slate_id, outcome
+						);
+					}
+				}
 			}
 		}
 
@@ -748,7 +788,8 @@ fn expiry_terminal(status: NostrSendStatus) -> bool {
 
 /// Whether an expired transaction with this (direction, status) locked OUR
 /// outputs and therefore needs a wallet-level `cancel_tx` to release them
-/// (outgoing sends and invoices we paid). Incoming payments and invoices we
+/// (outgoing sends, and invoices we paid: `pay()` locks our inputs when it
+/// builds the I2, before the reply leaves). Incoming payments and invoices we
 /// issued lock nothing of ours, so those are only annotated as canceled.
 fn expiry_locks_outputs(direction: NostrTxDirection, status: NostrSendStatus) -> bool {
 	matches!(
@@ -759,8 +800,87 @@ fn expiry_locks_outputs(direction: NostrTxDirection, status: NostrSendStatus) ->
 			| (
 				NostrTxDirection::RequestedOfUs,
 				NostrSendStatus::PaidAwaitingFinalize
-			)
+			) | (
+			NostrTxDirection::RequestedOfUs,
+			NostrSendStatus::ReceivedNoReply
+		)
 	)
+}
+
+/// What [`NostrService::expire_stale`] does with one stale row.
+#[derive(Debug, PartialEq, Eq)]
+enum ExpireStep {
+	/// Locks nothing of ours: annotate it Cancelled.
+	MarkOnly,
+	/// Locks our outputs: cancel it through `nostr_cancel_slate`.
+	Cancel,
+	/// Locks our outputs but the wallet data is not loaded yet: next cycle.
+	Defer,
+}
+
+/// Pure expiry policy. A row that locks our outputs is never marked Cancelled
+/// while the wallet data is unavailable (the first sync cycle after open):
+/// that used to end the row as "canceled" with its inputs still locked.
+fn expire_step(
+	direction: NostrTxDirection,
+	status: NostrSendStatus,
+	data_loaded: bool,
+) -> ExpireStep {
+	if !expiry_locks_outputs(direction, status) {
+		ExpireStep::MarkOnly
+	} else if data_loaded {
+		ExpireStep::Cancel
+	} else {
+		ExpireStep::Defer
+	}
+}
+
+/// Whether expiry itself must mark the row Cancelled after the helper ran. A
+/// confirmed tx locks nothing, so the stale row ends (the UI shows confirmed).
+/// The helper already marked every row it cancelled or found unlocked, and
+/// leaves the rest for the next cycle.
+fn expire_marks_after(outcome: NostrCancelResult) -> bool {
+	outcome == NostrCancelResult::Confirmed
+}
+
+/// Whether the helper left the row for a later cycle (no lookup, no node sync
+/// yet, or a tx this wallet finalized), so nothing changed and nothing is
+/// logged.
+fn cancel_deferred(outcome: NostrCancelResult) -> bool {
+	matches!(
+		outcome,
+		NostrCancelResult::NotSafeYet
+			| NostrCancelResult::Unavailable
+			| NostrCancelResult::Finalized
+	)
+}
+
+/// Heal predicate: a row marked Cancelled whose grin tx still locks our
+/// outputs, so the cancel never happened (an older build's expiry before the
+/// wallet data loaded, or a failed grin cancel). Only our sends and paid
+/// requests lock outputs (TxSent). Never a tx that is confirmed or that this
+/// wallet finalized (Standard3/Invoice3), and only under the cancel-safety
+/// rule. Received payments are excluded on purpose: a void marks them
+/// Cancelled without a grin cancel, which would delete our incoming output.
+fn heal_due(
+	direction: NostrTxDirection,
+	status: NostrSendStatus,
+	tx_type: &grin_wallet_libwallet::TxLogEntryType,
+	slate_state: Option<&grin_wallet_libwallet::SlateState>,
+	confirmed: bool,
+	synced: bool,
+) -> bool {
+	use grin_wallet_libwallet::{SlateState, TxLogEntryType};
+	status == NostrSendStatus::Cancelled
+		&& matches!(
+			direction,
+			NostrTxDirection::Sent | NostrTxDirection::RequestedOfUs
+		) && *tx_type == TxLogEntryType::TxSent
+		&& !confirmed
+		&& !matches!(
+			slate_state,
+			Some(SlateState::Standard3) | Some(SlateState::Invoice3)
+		) && crate::wallet::types::cancel_safe(tx_type, slate_state, synced, confirmed)
 }
 
 /// Whether the plain "payment sent" receipt (frozen contract 4.3.1) still owes a
@@ -2058,13 +2178,154 @@ mod tests {
 		assert!(expiry_locks_outputs(Sent, AwaitingS2));
 		assert!(expiry_locks_outputs(Sent, SendFailed));
 		assert!(expiry_locks_outputs(RequestedOfUs, PaidAwaitingFinalize));
+		// H1: we built the I2 for a request (pay() locked our inputs) but the
+		// reply may not have left: it locks our outputs too.
+		assert!(expiry_locks_outputs(RequestedOfUs, ReceivedNoReply));
 		// Incoming payments and invoices we issued lock nothing of ours →
 		// annotate only, never cancel a tx that could still settle/pay.
 		assert!(!expiry_locks_outputs(Received, ReceivedNoReply));
 		assert!(!expiry_locks_outputs(Received, RepliedS2));
 		assert!(!expiry_locks_outputs(RequestedByUs, AwaitingI2));
 		assert!(!expiry_locks_outputs(RequestedByUs, Created));
-		assert!(!expiry_locks_outputs(RequestedOfUs, ReceivedNoReply));
+	}
+
+	#[test]
+	fn expiry_never_marks_a_locking_row_without_wallet_data() {
+		use NostrSendStatus::*;
+		use NostrTxDirection::*;
+		// F2: on the first sync cycle after open the wallet data is not loaded.
+		// A row that locks our outputs waits for the next cycle instead of
+		// ending "canceled" with its inputs still locked.
+		for (d, s) in [
+			(Sent, Created),
+			(Sent, AwaitingS2),
+			(Sent, SendFailed),
+			(RequestedOfUs, PaidAwaitingFinalize),
+			(RequestedOfUs, ReceivedNoReply),
+		] {
+			assert_eq!(expire_step(d, s, false), ExpireStep::Defer, "{d:?} {s:?}");
+			assert_eq!(expire_step(d, s, true), ExpireStep::Cancel, "{d:?} {s:?}");
+		}
+		// Rows that lock nothing keep today's annotate-only expiry.
+		for (d, s) in [
+			(Received, ReceivedNoReply),
+			(Received, RepliedS2),
+			(RequestedByUs, AwaitingI2),
+		] {
+			for loaded in [false, true] {
+				assert_eq!(expire_step(d, s, loaded), ExpireStep::MarkOnly);
+			}
+		}
+	}
+
+	#[test]
+	fn expiry_marks_cancelled_only_with_a_known_result() {
+		use NostrCancelResult::*;
+		// No lookup, no node sync yet, or a tx we finalized: the row is left
+		// untouched for a later cycle, never marked Cancelled blind.
+		for outcome in [Unavailable, NotSafeYet, Finalized] {
+			assert!(cancel_deferred(outcome), "{outcome:?}");
+			assert!(!expire_marks_after(outcome), "{outcome:?}");
+		}
+		// A confirmed tx locks nothing: expiry ends the stale row.
+		assert!(expire_marks_after(Confirmed));
+		// The helper itself marked these (cancelled, or nothing was locked, or
+		// the grin cancel failed and the heal pass retries).
+		for outcome in [Cancelled, NothingLocked, CancelFailed] {
+			assert!(!cancel_deferred(outcome), "{outcome:?}");
+			assert!(!expire_marks_after(outcome), "{outcome:?}");
+		}
+	}
+
+	#[test]
+	fn heal_frees_cancelled_rows_whose_outputs_are_still_locked() {
+		use NostrSendStatus::*;
+		use NostrTxDirection::*;
+		use grin_wallet_libwallet::SlateState::*;
+		use grin_wallet_libwallet::TxLogEntryType::*;
+		// A send marked Cancelled with its grin tx still live: healed at once,
+		// node sync or not (only we can finalize a Standard1).
+		assert!(heal_due(
+			Sent,
+			Cancelled,
+			&TxSent,
+			Some(&Standard1),
+			false,
+			false
+		));
+		// A paid request (Invoice2) the issuer may have finalized: only after
+		// a node sync says it is not confirmed.
+		assert!(!heal_due(
+			RequestedOfUs,
+			Cancelled,
+			&TxSent,
+			Some(&Invoice2),
+			false,
+			false
+		));
+		assert!(heal_due(
+			RequestedOfUs,
+			Cancelled,
+			&TxSent,
+			Some(&Invoice2),
+			false,
+			true
+		));
+		for synced in [false, true] {
+			// Never a tx this wallet finalized, or a confirmed one.
+			assert!(!heal_due(
+				Sent,
+				Cancelled,
+				&TxSent,
+				Some(&Standard3),
+				false,
+				synced
+			));
+			assert!(!heal_due(
+				Sent,
+				Cancelled,
+				&TxSent,
+				Some(&Standard1),
+				true,
+				synced
+			));
+			// Already cancelled at the grin layer: nothing to heal.
+			assert!(!heal_due(
+				Sent,
+				Cancelled,
+				&TxSentCancelled,
+				Some(&Standard1),
+				false,
+				synced
+			));
+			// A live row is not touched by the heal pass.
+			assert!(!heal_due(
+				Sent,
+				AwaitingS2,
+				&TxSent,
+				Some(&Standard1),
+				false,
+				synced
+			));
+			// A voided received payment stays tracked (cancelling it would
+			// delete our incoming output), and an issued invoice locks nothing.
+			assert!(!heal_due(
+				Received,
+				Cancelled,
+				&TxReceived,
+				Some(&Standard2),
+				false,
+				synced
+			));
+			assert!(!heal_due(
+				RequestedByUs,
+				Cancelled,
+				&TxReceived,
+				Some(&Invoice1),
+				false,
+				synced
+			));
+		}
 	}
 
 	#[test]
