@@ -933,15 +933,24 @@ impl OnboardingContent {
 			Ok(w) => {
 				self.mnemonic_setup.reset();
 				wallets.add(w.clone());
+				// Write this NEW wallet's EXPLICIT Tor choice (from the privacy
+				// step) to its nostr.toml BEFORE open(). open() builds the nostr
+				// service from that file and starts the sync thread, whose first
+				// iteration starts the service, and run_service reads the choice
+				// once at its top. Written only after open() returned, the service
+				// read the unset value (Tor ON) first, so a Tor-OFF user's first
+				// session ran over Tor (seen on Build 168, 3 of 3 runs). (Cohort
+				// rule: only new-wallet onboarding writes an explicit value;
+				// upgraders keep None -> Tor ON.)
+				crate::nostr::NostrConfig::load(std::path::PathBuf::from(
+					w.get_config().get_data_path(),
+				))
+				.set_tor_enabled(self.tor_choice);
 				match w.open(pass) {
 					Ok(_) => {
-						// Write this NEW wallet's EXPLICIT Tor choice (from the
-						// privacy step) before its nostr service starts. init_nostr
-						// built the service synchronously inside open(); start() runs
-						// later on the sync thread, so setting it now writes nostr.toml
-						// and picks the transport before the pool builds. (Cohort rule:
-						// only new-wallet onboarding writes an explicit value;
-						// upgraders keep None -> Tor ON.)
+						// Mirror the choice into the service's in-memory config
+						// (loaded from the file written above) and the process-wide
+						// route flag.
 						if let Some(svc) = w.nostr_service() {
 							svc.config.write().set_tor_enabled(self.tor_choice);
 							crate::tor::set_route_over_tor(self.tor_choice);
