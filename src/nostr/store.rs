@@ -631,6 +631,7 @@ mod tests {
 			note: None,
 			received_at: 0,
 			status: RequestStatus::Pending,
+			recipient_pubkey: None,
 		}
 	}
 
@@ -826,6 +827,7 @@ mod tests {
 			note: None,
 			received_at: 100,
 			status: RequestStatus::Pending,
+			recipient_pubkey: None,
 		}
 	}
 
@@ -875,6 +877,7 @@ mod tests {
 			note: None,
 			received_at,
 			status,
+			recipient_pubkey: None,
 		}
 	}
 
