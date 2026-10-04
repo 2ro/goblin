@@ -160,11 +160,12 @@ pub(super) async fn run_service(svc: Arc<NostrService>, wallet: Wallet) {
 	// Mirror the configured name authority so resolution + display follow it.
 	crate::nostr::nip05::set_home_domain(&svc.config.read().home_domain());
 
-	// Resolve THIS wallet's transport choice and mirror it into the process-global
-	// so free-function HTTP callers (NIP-05, price, pool) take the matching path.
+	// Resolve THIS wallet's transport choice. Its own HTTP calls pass it as their
+	// route; the open-wallet registry only feeds requests that belong to no wallet.
 	// `None` (every legacy nostr.toml) resolves to Tor ON — upgraders keep Tor.
 	let over_tor = svc.config.read().tor_enabled();
-	crate::tor::set_route_over_tor(over_tor);
+	let wallet_id = wallet.get_config().id;
+	crate::tor::set_wallet_route(wallet_id, over_tor);
 
 	// One relay pool serves the whole wallet; its transport is fixed when the
 	// Client is built. Pick Tor vs clearnet from the wallet setting. A settings
@@ -231,7 +232,7 @@ pub(super) async fn run_service(svc: Arc<NostrService>, wallet: Wallet) {
 	// Tor, which manages its own circuit health). Disarmed when the loop exits.
 	crate::tor::set_relay_consumer(true);
 	// Refresh the relay candidate pool cache (gist over Tor) when stale.
-	tokio::spawn(crate::nostr::pool::refresh_if_stale());
+	tokio::spawn(crate::nostr::pool::refresh_if_stale(over_tor.into()));
 	// Select this identity's advertised relay set if it hasn't one yet.
 	ensure_advertised_set(&svc).await;
 
@@ -566,6 +567,11 @@ pub(super) async fn run_service(svc: Arc<NostrService>, wallet: Wallet) {
 	// No longer a relay consumer: disarm relay-reachability governance so the
 	// idle tunnel isn't condemned for "no relay" once we stop dialing.
 	crate::tor::set_relay_consumer(false);
+	// Drop this wallet's route entry only when the wallet let go of the service
+	// (close takes it before stop). A restart or an identity rebuild keeps it.
+	if wallet.nostr_service().is_none() {
+		crate::tor::remove_wallet_route(wallet_id);
+	}
 	{
 		let mut w_client = svc.client.write();
 		*w_client = None;
@@ -674,7 +680,7 @@ async fn ensure_advertised_set(svc: &Arc<NostrService>) {
 		if set.len() >= MAX_DM_RELAYS {
 			break;
 		}
-		if pool::probe(&url).await {
+		if pool::probe(svc.tor_routing().into(), &url).await {
 			set.push(url);
 		}
 	}
@@ -758,10 +764,11 @@ pub(super) async fn publish_identity(svc: &Arc<NostrService>, client: &Client) {
 	}
 
 	// Discovery fan-out off the caller's path: each indexer is gated by the
-	// lazy NIP-11 probe (over Tor) before use.
+	// lazy NIP-11 probe (on this wallet's route) before use.
 	let client = client.clone();
+	let route = svc.tor_routing().into();
 	tokio::spawn(async move {
-		let targets: Vec<String> = crate::nostr::pool::usable_discovery_relays()
+		let targets: Vec<String> = crate::nostr::pool::usable_discovery_relays(route)
 			.await
 			.into_iter()
 			.filter(|u| !advertised.contains(u))

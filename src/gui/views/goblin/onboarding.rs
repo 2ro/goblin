@@ -939,7 +939,7 @@ impl OnboardingContent {
 						// upgraders keep None -> Tor ON.)
 						if let Some(svc) = w.nostr_service() {
 							svc.config.write().set_tor_enabled(self.tor_choice);
-							crate::tor::set_route_over_tor(self.tor_choice);
+							crate::tor::set_wallet_route(w.get_config().id, self.tor_choice);
 						}
 						// A full-backup restore: reinstate every identity from the
 						// backup in a worker once nostr is up (the seed itself was

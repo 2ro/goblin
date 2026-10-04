@@ -48,6 +48,7 @@ pub(super) fn start_claim_flow(claim: &mut ClaimState, name: &str, wallet: &Wall
 		return;
 	};
 	let server = service.config.read().nip05_server();
+	let route: crate::tor::Route = service.tor_routing().into();
 	// Reuse the service's keys directly — never round-trip the secret through a
 	// plaintext nsec String to rebuild keys the service already holds.
 	let keys = service.keys();
@@ -66,8 +67,8 @@ pub(super) fn start_claim_flow(claim: &mut ClaimState, name: &str, wallet: &Wall
 		};
 		let msg = rt.block_on(async {
 			use crate::nostr::nip05::{Availability, RegisterResult, check_availability, register};
-			match check_availability(&server, &name).await {
-				Availability::Available => match register(&server, &name, &keys).await {
+			match check_availability(route, &server, &name).await {
+				Availability::Available => match register(route, &server, &name, &keys).await {
 					RegisterResult::Ok(nip05) => ClaimMsg::Registered(nip05),
 					RegisterResult::Conflict(_) => {
 						ClaimMsg::Error(t!("goblin.settings.err_just_taken").to_string())
@@ -93,6 +94,7 @@ pub(super) fn start_release(claim: &mut ClaimState, name: &str, wallet: &Wallet)
 		return;
 	};
 	let server = service.config.read().nip05_server();
+	let route: crate::tor::Route = service.tor_routing().into();
 	// Reuse the service's keys directly — never round-trip the secret through a
 	// plaintext nsec String to rebuild keys the service already holds.
 	let keys = service.keys();
@@ -110,7 +112,9 @@ pub(super) fn start_release(claim: &mut ClaimState, name: &str, wallet: &Wallet)
 		};
 		// Release is always allowed server-side (it's what arms the cooldown),
 		// so there's no cooldown rejection to handle here.
-		let msg = match rt.block_on(crate::nostr::nip05::unregister(&server, &name, &keys)) {
+		let msg = match rt.block_on(crate::nostr::nip05::unregister(
+			route, &server, &name, &keys,
+		)) {
 			Ok(()) => ClaimMsg::Released,
 			Err(e) => ClaimMsg::Error(t!("goblin.settings.err_release", err => e).to_string()),
 		};

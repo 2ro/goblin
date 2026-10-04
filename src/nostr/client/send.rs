@@ -353,7 +353,7 @@ impl NostrService {
 			);
 		}
 		let mut from = self.relays();
-		for url in crate::nostr::pool::usable_discovery_relays().await {
+		for url in crate::nostr::pool::usable_discovery_relays(self.tor_routing().into()).await {
 			if !from.contains(&url) {
 				from.push(url);
 			}

@@ -12,10 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Embedded-Tor transport. Everything Goblin sends over the network — nostr relay
-//! websockets and every HTTP request (NIP-05, price, relay pool, avatars) — rides
-//! Tor, embedded in-process (arti), copied from our sister wallet GRIM's proven,
-//! shipping engine. Every relay is reached over a Tor exit to its clearnet host,
+//! Embedded-Tor transport. For a wallet with Tor on, everything Goblin sends over
+//! the network (nostr relay websockets and every HTTP request: NIP-05, price,
+//! relay pool, avatars) rides Tor, embedded in-process (arti), copied from our
+//! sister wallet GRIM's proven, shipping engine. A wallet with Tor off goes direct.
+//! Each HTTP request names its own [`Route`]: a request made for a wallet carries
+//! that wallet's setting, and only requests that belong to no wallet use
+//! [`app_route`]. Every relay is reached over a Tor exit to its clearnet host,
 //! with the usual hostname-validated TLS for `wss://`: the wallet's own IP is
 //! never exposed, while the relay stays a normal public endpoint. (Earlier builds
 //! could pin a per-relay `.onion` for a direct onion-circuit money path; that was
@@ -36,15 +39,16 @@ pub use engine::{
 };
 pub use transport::{ClearnetWebSocketTransport, TorWebSocketTransport};
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use bytes::Bytes;
 use http_body_util::Full;
 use hyper_util::rt::TokioIo;
 use log::{debug, warn};
+use parking_lot::RwLock;
 use tokio::io::{AsyncRead, AsyncWrite};
 
 use crate::Settings;
@@ -67,29 +71,70 @@ const MAX_REDIRECTS: usize = 5;
 pub(crate) const DEFAULT_USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) \
 	 Chrome/131.0.0.0 Safari/537.36";
 
-/// Process-global transport choice for the OPEN wallet: `true` = route nostr
-/// relays and every sensitive HTTP call over Tor (the historical default),
-/// `false` = go direct (clearnet, optionally via the user's AppConfig proxy).
-///
-/// Tor is process-global and one relay pool serves the whole wallet, so this
-/// single flag is the honest home for the choice. `run_service` mirrors the
-/// open wallet's resolved `NostrConfig::tor_enabled()` into it before any
-/// network work (like `nip05::set_home_domain`), so free-function HTTP callers
-/// on worker threads read the right transport without threading a wallet handle
-/// through every call site. A Tor-off wallet never hard-fails on "Tor not
-/// bootstrapped" — it simply takes the clearnet branch.
-static ROUTE_OVER_TOR: AtomicBool = AtomicBool::new(true);
-
-/// Mirror the open wallet's resolved Tor routing choice. Called by
-/// `run_service` on start/restart; a settings toggle takes effect after the
-/// `NostrService::restart()` that rebuilds the pool on the new transport.
-pub fn set_route_over_tor(enabled: bool) {
-	ROUTE_OVER_TOR.store(enabled, Ordering::Release);
+/// The network path of one HTTP request. The caller always names it: a request
+/// made for a wallet passes THAT wallet's resolved `NostrConfig::tor_enabled()`.
+/// No process-wide flag decides it, because several wallets can be open at once
+/// with different settings, and one wallet's Tor-off choice must never send
+/// another wallet's signed request out from the real IP.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Route {
+	/// Over the embedded Tor client. When Tor is not ready the request is
+	/// dropped; it never falls back to clearnet.
+	Tor,
+	/// Direct (clearnet, optionally via the user's AppConfig proxy). Never waits
+	/// on, or fails because of, the Tor bootstrap.
+	Clearnet,
 }
 
-/// Whether the open wallet currently routes over Tor (see [`set_route_over_tor`]).
-pub fn route_over_tor() -> bool {
-	ROUTE_OVER_TOR.load(Ordering::Acquire)
+impl From<bool> for Route {
+	/// A wallet's resolved Tor setting: `true` = [`Route::Tor`].
+	fn from(over_tor: bool) -> Route {
+		if over_tor {
+			Route::Tor
+		} else {
+			Route::Clearnet
+		}
+	}
+}
+
+/// Whether a request takes the clearnet branch. Decided by the request's own
+/// route only, never by the open-wallet registry (split out so a test can hold
+/// that line).
+fn goes_clearnet(route: Route) -> bool {
+	route == Route::Clearnet
+}
+
+lazy_static::lazy_static! {
+	/// Tor setting of every wallet whose nostr service runs, keyed by wallet id
+	/// (`WalletConfig::id`, fixed for the life of the wallet). Only
+	/// [`app_route`] reads it, for requests that belong to no wallet.
+	static ref WALLET_ROUTES: RwLock<HashMap<i64, bool>> = RwLock::new(HashMap::new());
+}
+
+/// Record a wallet's Tor setting. Called when its nostr service starts, and by
+/// the Tor toggles so the app-level answer follows the new choice at once.
+pub fn set_wallet_route(wallet_id: i64, over_tor: bool) {
+	WALLET_ROUTES.write().insert(wallet_id, over_tor);
+}
+
+/// Forget a wallet's Tor setting (its wallet closed).
+pub fn remove_wallet_route(wallet_id: i64) {
+	WALLET_ROUTES.write().remove(&wallet_id);
+}
+
+/// Route for a request that belongs to no wallet (update check, price): Tor
+/// unless at least one wallet is open and every open wallet has Tor off.
+pub fn app_route() -> Route {
+	app_route_of(WALLET_ROUTES.read().values().copied())
+}
+
+/// The app-level rule over the open wallets' settings (pure, for tests). With
+/// no wallet open the answer is Tor; one Tor-on wallet is enough for Tor.
+fn app_route_of(mut open_wallets: impl Iterator<Item = bool>) -> Route {
+	match open_wallets.next() {
+		None => Route::Tor,
+		Some(first) => Route::from(first || open_wallets.any(|over_tor| over_tor)),
+	}
 }
 
 // --- Tor data directories -----------------------------------------------------
@@ -115,23 +160,25 @@ pub(crate) fn cache_path() -> String {
 
 // --- HTTP over Tor ------------------------------------------------------------
 
-/// An HTTP request routed over Tor: dial the host over Tor (an onion via a real
-/// onion circuit, a clearnet host via a Tor exit — arti resolves the name
-/// internally, so nothing leaks a clearnet DNS lookup), then rustls (webpki
-/// roots) for https, then HTTP/1.1. Follows redirects. Returns `(status, body)`.
+/// An HTTP request on the given [`Route`]. On [`Route::Tor`]: dial the host over
+/// Tor (an onion via a real onion circuit, a clearnet host via a Tor exit; arti
+/// resolves the name internally, so nothing leaks a clearnet DNS lookup), then
+/// rustls (webpki roots) for https, then HTTP/1.1. Follows redirects. Returns
+/// `(status, body)`. On [`Route::Clearnet`] the same request goes direct.
 ///
 /// For now clearnet-over-Tor is fine for the small lookups (names at goblin.st,
 /// relay hints, pool refresh, price, avatars); pinning those behind onions is a
 /// later pass.
 pub async fn http_request_bytes(
+	route: Route,
 	method: &str,
 	url: String,
 	body: Option<Vec<u8>>,
 	headers: Vec<(String, String)>,
 ) -> Option<(u16, Vec<u8>)> {
-	// Tor-off wallet: go direct (clearnet, honoring the user's AppConfig proxy).
+	// Tor-off route: go direct (clearnet, honoring the user's AppConfig proxy).
 	// Never wait on / hard-fail against the Tor bootstrap in this mode.
-	if !route_over_tor() {
+	if goes_clearnet(route) {
 		return crate::http::clearnet_request_bytes(method, url, body, headers).await;
 	}
 	if !wait_ready(TUNNEL_WAIT).await {
@@ -171,12 +218,13 @@ pub async fn http_request_bytes(
 
 /// String-bodied convenience wrapper around [`http_request_bytes`].
 pub async fn http_request(
+	route: Route,
 	method: &str,
 	url: String,
 	body: Option<String>,
 	headers: Vec<(String, String)>,
 ) -> Option<String> {
-	http_request_bytes(method, url, body.map(|b| b.into_bytes()), headers)
+	http_request_bytes(route, method, url, body.map(|b| b.into_bytes()), headers)
 		.await
 		.map(|(_, raw)| String::from_utf8_lossy(&raw).to_string())
 }
@@ -316,5 +364,62 @@ mod tests {
 		assert!(!DEFAULT_USER_AGENT.contains('\n'));
 		// The old identifying string is gone.
 		assert!(!DEFAULT_USER_AGENT.to_lowercase().contains("goblin"));
+	}
+
+	#[test]
+	fn route_follows_the_wallet_setting() {
+		assert_eq!(Route::from(true), Route::Tor);
+		assert_eq!(Route::from(false), Route::Clearnet);
+	}
+
+	#[test]
+	fn app_route_rule_over_open_wallets() {
+		// No wallet open: Tor (the historical default).
+		assert_eq!(app_route_of(std::iter::empty()), Route::Tor);
+		// One Tor-on wallet and one Tor-off wallet: Tor, in either order.
+		assert_eq!(app_route_of([true, false].into_iter()), Route::Tor);
+		assert_eq!(app_route_of([false, true].into_iter()), Route::Tor);
+		// Every open wallet has Tor off: clearnet.
+		assert_eq!(app_route_of([false].into_iter()), Route::Clearnet);
+		assert_eq!(app_route_of([false, false].into_iter()), Route::Clearnet);
+		// Every open wallet has Tor on: Tor.
+		assert_eq!(app_route_of([true, true].into_iter()), Route::Tor);
+	}
+
+	/// The only test that touches the process-wide registry, so parallel tests
+	/// cannot disturb it. Wallet ids are far outside real ones (unix seconds).
+	#[test]
+	fn registry_tracks_open_wallets_and_never_routes_a_wallet_request() {
+		const TOR_ON: i64 = -1_690_001;
+		const TOR_OFF: i64 = -1_690_002;
+		WALLET_ROUTES.write().clear();
+		assert_eq!(app_route(), Route::Tor);
+
+		// Only a Tor-off wallet open: app-level requests go direct.
+		set_wallet_route(TOR_OFF, false);
+		assert_eq!(app_route(), Route::Clearnet);
+		// F1: even then, a request made for a Tor-on wallet keeps the Tor branch.
+		// The branch follows the request's own route, not the registry.
+		assert!(!goes_clearnet(Route::Tor));
+		assert!(goes_clearnet(Route::Clearnet));
+
+		// A Tor-on wallet opens: app-level requests ride Tor again.
+		set_wallet_route(TOR_ON, true);
+		assert_eq!(app_route(), Route::Tor);
+		// And a request made for the Tor-off wallet still goes direct.
+		assert!(goes_clearnet(Route::Clearnet));
+
+		// The Tor-on wallet's toggle flips it off: every open wallet is off.
+		set_wallet_route(TOR_ON, false);
+		assert_eq!(app_route(), Route::Clearnet);
+		set_wallet_route(TOR_ON, true);
+
+		// The Tor-on wallet closes: its entry is removed.
+		remove_wallet_route(TOR_ON);
+		assert!(!WALLET_ROUTES.read().contains_key(&TOR_ON));
+		assert_eq!(app_route(), Route::Clearnet);
+		// The last wallet closes: no wallet open, back to Tor.
+		remove_wallet_route(TOR_OFF);
+		assert_eq!(app_route(), Route::Tor);
 	}
 }

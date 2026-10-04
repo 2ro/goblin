@@ -13,10 +13,11 @@
 // limitations under the License.
 
 //! Relay candidate pool: a maintained list of vetted public relays fetched
-//! from the project gist over Tor, cached on disk, with a pinned
-//! copy compiled in for first-run/offline. Pool relays are gated LAZILY: a
-//! NIP-11 probe (also over Tor) runs only right before a relay is actually
-//! used — no background sweeps.
+//! from the project gist, cached on disk, with a pinned copy compiled in for
+//! first-run/offline. Pool relays are gated LAZILY: a NIP-11 probe runs only
+//! right before a relay is actually used (no background sweeps). The gist fetch
+//! and every probe take the [`Route`] of the wallet they run for: over Tor when
+//! that wallet has Tor on, direct when it has Tor off.
 
 use lazy_static::lazy_static;
 use log::{info, warn};
@@ -29,6 +30,7 @@ use std::time::Duration;
 
 use crate::Settings;
 use crate::nostr::types::unix_time;
+use crate::tor::Route;
 
 /// Raw gist URL serving the maintained candidate pool (schema v1). Fetched
 /// UNSIGNED: authenticity rests on the gist account's public edit history.
@@ -144,10 +146,10 @@ pub fn load() -> RelayPool {
 		.unwrap_or_else(|| RelayPool::parse(PINNED_POOL).expect("pinned pool parses"))
 }
 
-/// Refresh the disk cache from the gist — over Tor, like all other
-/// HTTP — when it is absent or older than 7 days. At most one attempt per app
-/// run; call only once Tor is up.
-pub async fn refresh_if_stale() {
+/// Refresh the disk cache from the gist, on the calling wallet's `route`, when
+/// it is absent or older than 7 days. At most one attempt per app run; on Tor,
+/// call only once Tor is up.
+pub async fn refresh_if_stale(route: Route) {
 	static TRIED: AtomicBool = AtomicBool::new(false);
 	if TRIED.swap(true, Ordering::SeqCst) {
 		return;
@@ -162,7 +164,8 @@ pub async fn refresh_if_stale() {
 	if fresh {
 		return;
 	}
-	let Some(raw) = crate::tor::http_request("GET", POOL_URL.to_string(), None, vec![]).await
+	let Some(raw) =
+		crate::tor::http_request(route, "GET", POOL_URL.to_string(), None, vec![]).await
 	else {
 		warn!("relay pool: refresh fetch failed, keeping current pool");
 		return;
@@ -213,11 +216,11 @@ fn nip11_pass(doc: &serde_json::Value, min_len: u64) -> bool {
 			.unwrap_or(true)
 }
 
-/// Lazy per-use probe: fetch the relay's NIP-11 document (HTTP over Tor,
-/// `Accept: application/nostr+json`) and apply the gate. Results are cached
-/// for 24 h; an unreachable or unparseable document fails, which just skips
-/// the relay this time.
-pub async fn probe(url: &str) -> bool {
+/// Lazy per-use probe: fetch the relay's NIP-11 document (HTTP on the calling
+/// wallet's `route`, `Accept: application/nostr+json`) and apply the gate.
+/// Results are cached for 24 h; an unreachable or unparseable document fails,
+/// which just skips the relay this time.
+pub async fn probe(route: Route, url: &str) -> bool {
 	let now = unix_time();
 	if let Some(&(ok, at)) = PROBES.read().get(url)
 		&& now - at < PROBE_TTL_SECS
@@ -231,7 +234,7 @@ pub async fn probe(url: &str) -> bool {
 	let headers = vec![("Accept".to_string(), "application/nostr+json".to_string())];
 	let ok = tokio::time::timeout(
 		PROBE_TIMEOUT,
-		crate::tor::http_request("GET", http_url, None, headers),
+		crate::tor::http_request(route, "GET", http_url, None, headers),
 	)
 	.await
 	.ok()
@@ -246,14 +249,15 @@ pub async fn probe(url: &str) -> bool {
 	ok
 }
 
-/// The pool's "discovery" relays that pass the lazy NIP-11 gate right now.
-pub async fn usable_discovery_relays() -> Vec<String> {
+/// The pool's "discovery" relays that pass the lazy NIP-11 gate right now,
+/// probed on the calling wallet's `route`.
+pub async fn usable_discovery_relays(route: Route) -> Vec<String> {
 	// Probe every candidate CONCURRENTLY (each is a NIP-11 HTTP round trip over
 	// Tor — sequentially this cost ~N × a full round trip). The PROBES
 	// cache is RwLock-safe under concurrent access. Zip the pass/fail results back
 	// to the urls and keep the passing ones in the original pool order.
 	let urls = load().discovery_relays();
-	let results = futures::future::join_all(urls.iter().map(|url| probe(url))).await;
+	let results = futures::future::join_all(urls.iter().map(|url| probe(route, url))).await;
 	urls.into_iter()
 		.zip(results)
 		.filter_map(|(url, ok)| ok.then_some(url))

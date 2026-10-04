@@ -1639,10 +1639,10 @@ impl GoblinWalletView {
 		if handle.is_empty() || handle.starts_with("npub1") {
 			return None;
 		}
-		let server = wallet
+		let (server, route) = wallet
 			.nostr_service()
-			.map(|s| s.config.read().nip05_server())?;
-		self.avatars.texture_for(ctx, &server, handle)
+			.map(|s| (s.config.read().nip05_server(), s.tor_routing().into()))?;
+		self.avatars.texture_for(ctx, &server, route, handle)
 	}
 
 	/// The user's OWN avatar as shown top-right on the front surfaces (home,
