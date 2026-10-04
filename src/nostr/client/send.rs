@@ -148,7 +148,8 @@ impl NostrService {
 			.map_err(|e| format!("receipt sign failed: {e}"))?;
 		let urls: Vec<String> = self.relays();
 		match tokio::time::timeout(SEND_TIMEOUT, client.send_event_to(&urls, &event)).await {
-			Ok(Ok(_)) => Ok(()),
+			Ok(Ok(out)) => relay_accepted(&out.success, &out.failed)
+				.map_err(|e| format!("receipt publish failed: {e}")),
 			Ok(Err(e)) => Err(format!("receipt publish failed: {e}")),
 			Err(_) => Err("receipt publish timeout".to_string()),
 		}
@@ -193,7 +194,8 @@ impl NostrService {
 		let urls: Vec<String> = self.relays();
 		connect_relays(&client, &urls).await;
 		match tokio::time::timeout(SEND_TIMEOUT, client.send_event_to(&urls, &wrap)).await {
-			Ok(Ok(_)) => Ok(()),
+			Ok(Ok(out)) => relay_accepted(&out.success, &out.failed)
+				.map_err(|e| format!("proof delivery failed: {e}")),
 			Ok(Err(e)) => Err(format!("proof delivery failed: {e}")),
 			Err(_) => Err("proof delivery timeout".to_string()),
 		}
@@ -225,6 +227,7 @@ impl NostrService {
 		let res = sent
 			.map_err(|_| "send timeout".to_string())?
 			.map_err(|e| format!("send failed: {e}"))?;
+		relay_accepted(&res.success, &res.failed).map_err(|e| format!("send failed: {e}"))?;
 		let event_id = res.val;
 
 		// The write already succeeded (a relay accepted the wrap for delivery),
@@ -395,5 +398,68 @@ impl NostrService {
 			self.store.save_contact(&contact);
 		}
 		(out, v3)
+	}
+}
+
+/// Whether a relay publish counts as sent: at least one relay accepted the
+/// event. The relay pool answers Ok even when no relay took it (a timeout, a
+/// relay that is not connected or a refusal is only listed among the failed
+/// relays), so an empty accepted set is a failed send, never "Sent". One
+/// accepting relay is enough, as before.
+fn relay_accepted(
+	success: &HashSet<RelayUrl>,
+	failed: &HashMap<RelayUrl, String>,
+) -> Result<(), String> {
+	if !success.is_empty() {
+		return Ok(());
+	}
+	if failed.is_empty() {
+		return Err("no relay accepted it".to_string());
+	}
+	// Sorted so the log line is stable.
+	let mut reasons: Vec<String> = failed.iter().map(|(u, e)| format!("{u}: {e}")).collect();
+	reasons.sort();
+	Err(format!("no relay accepted it ({})", reasons.join("; ")))
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	fn url(s: &str) -> RelayUrl {
+		RelayUrl::parse(s).unwrap()
+	}
+
+	/// H2: the pool's Ok with an empty accepted set (every relay timed out, was
+	/// not connected, or refused) is a failed send; one accepting relay among
+	/// failures is still a send.
+	#[test]
+	fn a_publish_no_relay_accepted_is_a_failed_send() {
+		let a = url("wss://relay.floonet.dev");
+		let b = url("wss://relay.nostr.net");
+
+		// No relay connected or every relay timed out.
+		let mut failed = HashMap::new();
+		failed.insert(a.clone(), "timeout".to_string());
+		failed.insert(b.clone(), "relay not connected".to_string());
+		let err = relay_accepted(&HashSet::new(), &failed).unwrap_err();
+		assert!(
+			err.contains("timeout") && err.contains("not connected"),
+			"{err}"
+		);
+
+		// Nothing tried and nothing accepted.
+		assert!(relay_accepted(&HashSet::new(), &HashMap::new()).is_err());
+
+		// One relay accepted, the other failed: a send.
+		let mut success = HashSet::new();
+		success.insert(a.clone());
+		let mut failed = HashMap::new();
+		failed.insert(b.clone(), "timeout".to_string());
+		assert!(relay_accepted(&success, &failed).is_ok());
+
+		// Every relay accepted.
+		success.insert(b);
+		assert!(relay_accepted(&success, &HashMap::new()).is_ok());
 	}
 }
