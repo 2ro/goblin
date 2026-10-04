@@ -4857,6 +4857,135 @@ mod open_tests {
 		}
 	}
 
+	/// The only file in `dir` whose name starts with `prefix`, as bytes.
+	fn only_file_starting(dir: &PathBuf, prefix: &str) -> Vec<u8> {
+		let names: Vec<String> = aside_names(dir)
+			.into_iter()
+			.filter(|n| n.starts_with(prefix))
+			.collect();
+		assert_eq!(names.len(), 1, "exactly one {prefix}* file");
+		fs::read(dir.join(&names[0])).unwrap()
+	}
+
+	/// A torn identity.json in a wallet that holds identities #1 and #2. The
+	/// wallet opens, #2's file is byte-identical, the torn bytes are kept aside,
+	/// and nostr runs with #2 held. With #2 active, #2 stays active.
+	fn torn_identity_json_with_two_held(name: &str, second_active: bool) {
+		let _serialised = serialised();
+		let password = ZeroingString::from("torn-two-password");
+		let wallet = sandbox_wallet(name, &password);
+		let nostr_dir = wallet.get_config().get_nostr_path();
+		let (first, _) = NostrIdentity::create_random(&password).unwrap();
+		first.save(&nostr_dir).unwrap();
+		let mut index = HeldIdentities::from_legacy(&first).unwrap();
+		index.save(&nostr_dir).unwrap();
+		let (second, _) = NostrIdentity::create_random(&password).unwrap();
+		let hex2 = index.add(&nostr_dir, &second).unwrap();
+		if second_active {
+			index.set_active(&nostr_dir, &hex2).unwrap();
+		}
+		let second_path = index.entry(&hex2).unwrap().abs_path(&nostr_dir);
+		let second_bytes = fs::read(&second_path).unwrap();
+		let full = fs::read(NostrIdentity::path(&nostr_dir)).unwrap();
+		let torn = full[..full.len() / 2].to_vec();
+		fs::write(NostrIdentity::path(&nostr_dir), &torn).unwrap();
+
+		wallet
+			.open(password.clone())
+			.expect("a torn identity.json must not stop the wallet opening");
+		assert!(wallet.is_open(), "wallet must report itself open");
+		assert_eq!(
+			fs::read(&second_path).unwrap(),
+			second_bytes,
+			"identity #2's file must be byte-identical"
+		);
+		assert_eq!(
+			only_file_starting(&nostr_dir, "identity.json.unreadable-"),
+			torn,
+			"the torn bytes are kept aside"
+		);
+		let svc = wallet.nostr_service().expect("nostr must run");
+		assert!(
+			svc.recv_pubkeys().iter().any(|pk| pk.to_hex() == hex2),
+			"identity #2 must be held and listening"
+		);
+		assert!(
+			wallet
+				.nostr_identities()
+				.iter()
+				.any(|i| i.pubkey_hex == hex2),
+			"identity #2 must be listed"
+		);
+		if second_active {
+			assert_eq!(svc.public_key().to_hex(), hex2, "#2 stays active");
+		}
+		wallet.close();
+	}
+
+	#[test]
+	fn a_torn_identity_json_keeps_identity_two_when_two_is_active() {
+		torn_identity_json_with_two_held("torn-two-active-2", true);
+	}
+
+	#[test]
+	fn a_torn_identity_json_keeps_identity_two_when_one_is_active() {
+		torn_identity_json_with_two_held("torn-two-active-1", false);
+	}
+
+	/// A torn index in a wallet that holds three identities. The wallet opens on
+	/// identity #1, every identity file (identity.json and each
+	/// identities/<hex>/identity.json) is byte-identical, and the torn bytes are
+	/// kept aside.
+	#[test]
+	fn a_torn_index_with_three_held_identities_keeps_every_identity_file() {
+		let _serialised = serialised();
+		let password = ZeroingString::from("torn-index-three-password");
+		let wallet = sandbox_wallet("torn-index-three", &password);
+		let nostr_dir = wallet.get_config().get_nostr_path();
+		let (first, _) = NostrIdentity::create_random(&password).unwrap();
+		first.save(&nostr_dir).unwrap();
+		let mut index = HeldIdentities::from_legacy(&first).unwrap();
+		index.save(&nostr_dir).unwrap();
+		for _ in 0..2 {
+			let (extra, _) = NostrIdentity::create_random(&password).unwrap();
+			index.add(&nostr_dir, &extra).unwrap();
+		}
+		let files: Vec<(PathBuf, Vec<u8>)> = index
+			.identities
+			.iter()
+			.map(|e| {
+				let p = e.abs_path(&nostr_dir);
+				let b = fs::read(&p).unwrap();
+				(p, b)
+			})
+			.collect();
+		assert_eq!(files.len(), 3);
+		let full = fs::read(HeldIdentities::index_path(&nostr_dir)).unwrap();
+		let torn = full[..full.len() / 2].to_vec();
+		fs::write(HeldIdentities::index_path(&nostr_dir), &torn).unwrap();
+
+		wallet
+			.open(password.clone())
+			.expect("a torn index must not stop the wallet opening");
+		assert!(wallet.is_open(), "wallet must report itself open");
+		for (path, bytes) in &files {
+			assert_eq!(
+				&fs::read(path).unwrap(),
+				bytes,
+				"{} must be byte-identical",
+				path.display()
+			);
+		}
+		assert_eq!(
+			only_file_starting(&nostr_dir, "identities.json.unreadable-"),
+			torn,
+			"the torn bytes are kept aside"
+		);
+		let svc = wallet.nostr_service().expect("nostr must run");
+		assert_eq!(svc.npub(), first.npub, "the wallet opens on identity #1");
+		wallet.close();
+	}
+
 	/// Rapid fee requests coalesce to the newest amount instead of queueing one
 	/// calculation per keystroke.
 	///
