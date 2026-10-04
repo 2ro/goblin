@@ -22,7 +22,10 @@ use nostr_sdk::nips::nip49::{EncryptedSecretKey, KeySecurity};
 use nostr_sdk::{FromBech32, Keys, SecretKey, ToBech32};
 use serde_derive::{Deserialize, Serialize};
 use std::fs;
-use std::path::PathBuf;
+use std::io::Write;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Where the keys came from. The legacy NIP-06 `Derived` source is gone: a
 /// pre-Build-8 `"source":"Derived"` file no longer parses, so `load()` returns
@@ -71,27 +74,101 @@ pub struct NostrIdentity {
 /// NIP-49 scrypt work factor (~64 MiB, interactive-grade).
 const NCRYPTSEC_LOG_N: u8 = 16;
 
-/// Write a file with owner-only (0600) permissions on Unix.
-fn write_private(path: &PathBuf, data: &[u8]) -> std::io::Result<()> {
+/// Counter that keeps two staged writes apart when they start in the same
+/// nanosecond: the service thread and a GUI worker can save at the same time.
+static STAGE_SEQ: AtomicU64 = AtomicU64::new(0);
+
+/// A fresh temp path beside `target` for [`write_private`]: same directory,
+/// because a rename is only atomic inside one filesystem. The name is
+/// `<target name, at most 32 chars>.tmp-<pid>-<nanos>-<counter>`: unique per
+/// write, so two writers never share a temp file and a temp left by a crash is
+/// never reused, and short whatever the target's name. It never ends in
+/// `.json`, and no loader opens it: every loader reads an exact file name.
+pub(crate) fn staging_path(target: &Path) -> PathBuf {
+	let nanos = SystemTime::now()
+		.duration_since(UNIX_EPOCH)
+		.map(|d| d.as_nanos())
+		.unwrap_or(0);
+	let seq = STAGE_SEQ.fetch_add(1, Ordering::Relaxed);
+	let name: String = target
+		.file_name()
+		.map(|n| n.to_string_lossy().chars().take(32).collect())
+		.unwrap_or_default();
+	target.with_file_name(format!("{name}.tmp-{}-{nanos}-{seq}", std::process::id()))
+}
+
+/// Stage `data` in the temp file `tmp` (beside its target) for an atomic
+/// replace: owner-only (0600 on Unix) before any byte lands in it, and flushed
+/// to disk. [`commit_staged`] then moves it over the target. On any error the
+/// temp file is removed and the target is not touched.
+pub(crate) fn stage_private(tmp: &Path, data: &[u8]) -> std::io::Result<()> {
+	let written = (|| -> std::io::Result<()> {
+		let mut opts = fs::OpenOptions::new();
+		opts.write(true).create(true).truncate(true);
+		#[cfg(unix)]
+		{
+			use std::os::unix::fs::OpenOptionsExt;
+			opts.mode(0o600);
+		}
+		let mut f = opts.open(tmp)?;
+		#[cfg(unix)]
+		{
+			use std::os::unix::fs::PermissionsExt;
+			// The create mode does not apply to a file that was already there;
+			// set it on the open handle as well, before the data is written.
+			let _ = f.set_permissions(fs::Permissions::from_mode(0o600));
+		}
+		f.write_all(data)?;
+		f.sync_all()
+	})();
+	if written.is_err() {
+		let _ = fs::remove_file(tmp);
+	}
+	written
+}
+
+/// Move a temp file from [`stage_private`] over `target`. The rename is atomic:
+/// a reader finds the old file or the new one, never a cut one. The directory
+/// is then flushed so the rename itself survives a power cut. Some Android
+/// filesystems refuse that flush; it is logged and the write still counts,
+/// because the rename has already happened. If the rename fails, the temp file
+/// is removed and the target keeps its previous content.
+pub(crate) fn commit_staged(tmp: &Path, target: &Path) -> std::io::Result<()> {
+	if let Err(e) = fs::rename(tmp, target) {
+		let _ = fs::remove_file(tmp);
+		return Err(e);
+	}
+	sync_parent_dir(target);
+	Ok(())
+}
+
+/// Flush the directory that holds `path`, so a rename in it is on disk. Unix
+/// only: a directory cannot be opened as a file on Windows. A failure is only
+/// logged (see [`commit_staged`]).
+fn sync_parent_dir(path: &Path) {
 	#[cfg(unix)]
 	{
-		use std::io::Write;
-		use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
-		let mut f = std::fs::OpenOptions::new()
-			.write(true)
-			.create(true)
-			.truncate(true)
-			.mode(0o600)
-			.open(path)?;
-		f.write_all(data)?;
-		// Also fix the mode if the file already existed with looser perms.
-		let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
-		Ok(())
+		let dir = match path.parent() {
+			Some(d) if !d.as_os_str().is_empty() => d,
+			_ => Path::new("."),
+		};
+		if let Err(e) = fs::File::open(dir).and_then(|d| d.sync_all()) {
+			log::warn!("nostr: could not flush directory {}: {e}", dir.display());
+		}
 	}
 	#[cfg(not(unix))]
 	{
-		std::fs::write(path, data)
+		let _ = path;
 	}
+}
+
+/// Write a file atomically with owner-only (0600) permissions on Unix: stage it
+/// in a temp file beside the target, then rename that over the target. A crash
+/// or a full disk during the write leaves the previous file whole.
+pub(crate) fn write_private(path: &Path, data: &[u8]) -> std::io::Result<()> {
+	let tmp = staging_path(path);
+	stage_private(&tmp, data)?;
+	commit_staged(&tmp, path)
 }
 
 /// Restrict a directory to owner-only access on Unix.
@@ -138,7 +215,8 @@ impl NostrIdentity {
 
 	/// Persist the identity file with owner-only permissions (the ncryptsec
 	/// blob must not be world-readable: a local attacker could grind the
-	/// wallet password offline otherwise).
+	/// wallet password offline otherwise). The write is atomic, so a crash
+	/// mid-save leaves the previous key file whole.
 	pub fn save(&self, nostr_dir: &PathBuf) -> Result<(), IdentityError> {
 		fs::create_dir_all(nostr_dir)?;
 		restrict_dir(nostr_dir);
@@ -164,8 +242,8 @@ impl NostrIdentity {
 	/// Persist this identity to an explicit file path with owner-only (0600)
 	/// permissions, creating (and 0700-restricting) the parent directory. Used
 	/// by the held identity set for the non-legacy identities; the ncryptsec
-	/// blob must never be world-readable.
-	pub fn save_at(&self, path: &PathBuf) -> Result<(), IdentityError> {
+	/// blob must never be world-readable. Atomic, like [`Self::save`].
+	pub fn save_at(&self, path: &Path) -> Result<(), IdentityError> {
 		if let Some(dir) = path.parent() {
 			fs::create_dir_all(dir)?;
 			restrict_dir(&dir.to_path_buf());
@@ -723,6 +801,170 @@ mod tests {
 			"identity.json must be 0600"
 		);
 		let _ = std::fs::remove_dir_all(&dir);
+	}
+
+	/// A fresh, unique scratch directory for one test.
+	fn test_dir(tag: &str) -> PathBuf {
+		let d = std::env::temp_dir().join(format!(
+			"goblin-id-test-{tag}-{}-{}",
+			std::process::id(),
+			SystemTime::now()
+				.duration_since(UNIX_EPOCH)
+				.unwrap()
+				.as_nanos()
+		));
+		fs::create_dir_all(&d).unwrap();
+		d
+	}
+
+	/// File names in `dir` that contain `needle`.
+	fn names_with(dir: &Path, needle: &str) -> Vec<String> {
+		fs::read_dir(dir)
+			.unwrap()
+			.filter_map(|e| e.ok())
+			.map(|e| e.file_name().to_string_lossy().into_owned())
+			.filter(|n| n.contains(needle))
+			.collect()
+	}
+
+	#[test]
+	fn atomic_write_keeps_the_old_file_until_the_rename() {
+		// A crash after the new bytes are staged but before the rename must leave
+		// the target holding the OLD content, whole. The abandoned temp must not
+		// stop the next write.
+		let dir = test_dir("atomic");
+		let target = dir.join(NostrIdentity::FILE_NAME);
+		write_private(&target, b"old").unwrap();
+		let tmp = staging_path(&target);
+		stage_private(&tmp, b"new").unwrap();
+		assert_eq!(
+			fs::read(&target).unwrap(),
+			b"old",
+			"staging must not touch the target"
+		);
+		assert_eq!(fs::read(&tmp).unwrap(), b"new");
+		// The process dies here: the temp is never renamed. The next write still
+		// lands in full, on a temp of its own.
+		write_private(&target, b"newer").unwrap();
+		assert_eq!(fs::read(&target).unwrap(), b"newer");
+		assert_eq!(
+			fs::read(&tmp).unwrap(),
+			b"new",
+			"a leftover temp is never reused"
+		);
+		let _ = fs::remove_dir_all(&dir);
+	}
+
+	#[test]
+	fn a_save_never_rewrites_the_old_file_in_place() {
+		// The Build 169 writer truncated identity.json and wrote into the same
+		// file, so a kill or a full disk mid-write left it empty or cut. A hard
+		// link to the old file shows whether its bytes were ever rewritten: with
+		// the atomic writer the new key lands in a new file and the old one is
+		// left whole until the rename replaces it.
+		let dir = test_dir("inplace");
+		let (first, _) = NostrIdentity::create_random("pw").unwrap();
+		first.save(&dir).unwrap();
+		let before = fs::read(NostrIdentity::path(&dir)).unwrap();
+		let witness = dir.join("witness");
+		fs::hard_link(NostrIdentity::path(&dir), &witness).unwrap();
+		let mut changed = first.clone();
+		changed.dm_relays = vec!["wss://relay.example".to_string()];
+		changed.save(&dir).unwrap();
+		assert_eq!(
+			fs::read(&witness).unwrap(),
+			before,
+			"the old identity file must never be rewritten in place"
+		);
+		assert_eq!(
+			NostrIdentity::load(&dir).unwrap().dm_relays,
+			vec!["wss://relay.example"]
+		);
+		let _ = fs::remove_dir_all(&dir);
+	}
+
+	#[test]
+	fn a_failed_rename_keeps_the_target_and_removes_the_temp() {
+		// Force the commit to fail: a file cannot be renamed over a non-empty
+		// directory. The caller gets the error, the target is untouched, and no
+		// temp file is left behind.
+		let dir = test_dir("failcommit");
+		let target = dir.join(NostrIdentity::FILE_NAME);
+		fs::create_dir_all(target.join("keep")).unwrap();
+		assert!(write_private(&target, b"new").is_err());
+		assert!(target.join("keep").is_dir(), "the target must be untouched");
+		assert!(
+			names_with(&dir, ".tmp-").is_empty(),
+			"a failed write must remove its temp"
+		);
+		let _ = fs::remove_dir_all(&dir);
+	}
+
+	// Unix only: the test needs the 255-byte file name limit, and a Windows temp
+	// path this deep can hit MAX_PATH before it.
+	#[cfg(unix)]
+	#[test]
+	fn the_write_temp_name_stays_short_for_a_long_target() {
+		// The temp name must not grow with the target's name: a target near the
+		// 255-byte file name limit must still be writable.
+		let dir = test_dir("longname");
+		let target = dir.join(format!("{}.json", "a".repeat(230)));
+		let tmp = staging_path(&target);
+		assert!(tmp.file_name().unwrap().len() < 100);
+		assert_eq!(
+			tmp.parent(),
+			target.parent(),
+			"the temp is beside its target"
+		);
+		write_private(&target, b"data").unwrap();
+		assert_eq!(fs::read(&target).unwrap(), b"data");
+		let _ = fs::remove_dir_all(&dir);
+	}
+
+	#[test]
+	fn identity_round_trips_through_the_atomic_writer() {
+		// Both identity writers (legacy path and explicit path) go through the
+		// atomic writer, read back identically, and leave no temp behind.
+		let dir = test_dir("roundtrip");
+		let (identity, _) = NostrIdentity::create_random("pw").unwrap();
+		identity.save(&dir).unwrap();
+		let loaded = NostrIdentity::load(&dir).unwrap();
+		assert_eq!(loaded.npub, identity.npub);
+		assert_eq!(loaded.ncryptsec, identity.ncryptsec);
+		let nested = dir
+			.join("identities")
+			.join("abc")
+			.join(NostrIdentity::FILE_NAME);
+		identity.save_at(&nested).unwrap();
+		let loaded_at = NostrIdentity::load_at(&nested).unwrap();
+		assert_eq!(loaded_at.npub, identity.npub);
+		assert_eq!(loaded_at.ncryptsec, identity.ncryptsec);
+		assert!(names_with(&dir, ".tmp-").is_empty());
+		assert!(names_with(nested.parent().unwrap(), ".tmp-").is_empty());
+		let _ = fs::remove_dir_all(&dir);
+	}
+
+	#[cfg(unix)]
+	#[test]
+	fn staged_temp_is_owner_only_before_the_rename() {
+		use std::os::unix::fs::PermissionsExt;
+		let mode = |p: &Path| fs::metadata(p).unwrap().permissions().mode() & 0o777;
+		let dir = test_dir("tmpmode");
+		let target = dir.join(NostrIdentity::FILE_NAME);
+		// A target left with looser permissions by some earlier writer.
+		fs::write(&target, b"old").unwrap();
+		fs::set_permissions(&target, fs::Permissions::from_mode(0o644)).unwrap();
+		let tmp = staging_path(&target);
+		stage_private(&tmp, b"secret").unwrap();
+		assert_eq!(
+			mode(&tmp),
+			0o600,
+			"the temp is owner-only before the rename"
+		);
+		commit_staged(&tmp, &target).unwrap();
+		assert_eq!(mode(&target), 0o600, "the committed file is owner-only");
+		assert!(!tmp.exists());
+		let _ = fs::remove_dir_all(&dir);
 	}
 
 	#[test]

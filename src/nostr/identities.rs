@@ -38,7 +38,7 @@
 //! legacy `identity.json` is deliberately never overwritten, so an older build
 //! that ignores this index still opens the wallet on identity #1 (clean rollback).
 
-use crate::nostr::identity::NostrIdentity;
+use crate::nostr::identity::{NostrIdentity, commit_staged, stage_private, write_private};
 use serde_derive::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
@@ -136,12 +136,13 @@ impl HeldIdentities {
 
 	/// Persist the index with owner-only (0600) permissions. It carries no
 	/// secret, but a consistent 0700/0600 posture across the nostr dir is
-	/// simplest to reason about.
+	/// simplest to reason about. The write is atomic (the same writer as the
+	/// identity files), so a crash mid-save leaves the previous index whole.
 	pub fn save(&self, nostr_dir: &PathBuf) -> std::io::Result<()> {
 		fs::create_dir_all(nostr_dir)?;
 		let raw = serde_json::to_string_pretty(self)
 			.map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
-		write_private_0600(&Self::index_path(nostr_dir), raw.as_bytes())
+		write_private(&Self::index_path(nostr_dir), raw.as_bytes())
 	}
 
 	/// The active entry, if the pointer resolves to a held identity.
@@ -425,8 +426,9 @@ impl HeldIdentities {
 	/// sibling temp file first and only commits (renames into place) once EVERY
 	/// identity has re-encrypted cleanly. Any phase-1 failure deletes the temps
 	/// and leaves every identity untouched on the old password. A file named by
-	/// two entries is staged once: a second staging would reuse the same temp
-	/// path, and its rename would then fail after the first one committed.
+	/// two entries is staged once, so it is re-encrypted and committed once.
+	/// Staging and commit use the same atomic writer as every identity save;
+	/// only the temp name is this function's own (unchanged since Build 169).
 	pub fn reencrypt_all(
 		&self,
 		nostr_dir: &PathBuf,
@@ -465,7 +467,10 @@ impl HeldIdentities {
 			}
 			let tmp =
 				abs.with_extension(format!("reencrypt-tmp-{}-{}", std::process::id(), suffix));
-			if let Err(e) = id.save_at(&tmp) {
+			let written = serde_json::to_string_pretty(&id)
+				.map_err(std::io::Error::other)
+				.and_then(|raw| stage_private(&tmp, raw.as_bytes()));
+			if let Err(e) = written {
 				cleanup(&staged);
 				return Err(HeldError::Io(e.to_string()));
 			}
@@ -473,9 +478,11 @@ impl HeldIdentities {
 		}
 		// Phase 2: every identity re-encrypted cleanly; commit by renaming each
 		// temp over its target. This window is small; a rename that still fails
-		// returns an explicit error rather than pretending the change succeeded.
-		for (tmp, abs) in &staged {
-			if let Err(e) = fs::rename(tmp, abs) {
+		// returns an explicit error rather than pretending the change succeeded,
+		// and removes the temps that were not committed.
+		for (i, (tmp, abs)) in staged.iter().enumerate() {
+			if let Err(e) = commit_staged(tmp, abs) {
+				cleanup(&staged[i + 1..]);
 				return Err(HeldError::Io(format!(
 					"committing re-encrypted identity {}: {e}",
 					abs.display()
@@ -532,31 +539,10 @@ pub fn catchup_since(
 	(base - lookback).max(0)
 }
 
-/// Write a file with owner-only (0600) permissions on Unix.
-fn write_private_0600(path: &PathBuf, data: &[u8]) -> std::io::Result<()> {
-	#[cfg(unix)]
-	{
-		use std::io::Write;
-		use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
-		let mut f = std::fs::OpenOptions::new()
-			.write(true)
-			.create(true)
-			.truncate(true)
-			.mode(0o600)
-			.open(path)?;
-		f.write_all(data)?;
-		let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
-		Ok(())
-	}
-	#[cfg(not(unix))]
-	{
-		std::fs::write(path, data)
-	}
-}
-
 #[cfg(test)]
 mod tests {
 	use super::*;
+	use crate::nostr::identity::staging_path;
 
 	fn tmpdir(tag: &str) -> PathBuf {
 		let d = std::env::temp_dir().join(format!(
@@ -1024,6 +1010,97 @@ mod tests {
 			.filter(|e| e.file_name().to_string_lossy().contains("reencrypt-tmp"))
 			.collect();
 		assert!(leftovers.is_empty(), "no temp file may be left behind");
+		let _ = std::fs::remove_dir_all(&dir);
+	}
+
+	#[test]
+	fn a_leftover_temp_never_breaks_a_write_or_a_load() {
+		// A crash between staging and rename leaves a temp file beside its target.
+		// It must never be read as an identity or as the index, and later writes
+		// of both must still succeed.
+		let dir = tmpdir("leftover");
+		let (legacy, _) = NostrIdentity::create_random("pw").unwrap();
+		legacy.save(&dir).unwrap();
+		let (mut idx, _) = HeldIdentities::load_or_migrate(&dir, &legacy).unwrap();
+		// Torn leftovers, named exactly as the writer names its temps.
+		let id_tmp = staging_path(&NostrIdentity::path(&dir));
+		stage_private(&id_tmp, b"{torn").unwrap();
+		let idx_tmp = staging_path(&HeldIdentities::index_path(&dir));
+		stage_private(&idx_tmp, b"{torn").unwrap();
+		assert_eq!(NostrIdentity::load(&dir).unwrap().npub, legacy.npub);
+		assert_eq!(HeldIdentities::load(&dir).unwrap().active, idx.active);
+
+		// Writes go on: an add (identity file + index) and a primary save.
+		let (second, _) = NostrIdentity::create_random("pw").unwrap();
+		let second_hex = idx.add(&dir, &second).unwrap();
+		legacy.save(&dir).unwrap();
+		let (reidx, active) = HeldIdentities::load_or_migrate(&dir, &legacy).unwrap();
+		assert_eq!(reidx.len(), 2);
+		assert!(reidx.contains(&second_hex));
+		assert_eq!(active.npub, legacy.npub);
+		// The leftovers were neither read nor overwritten.
+		assert_eq!(std::fs::read(&id_tmp).unwrap(), b"{torn");
+		assert_eq!(std::fs::read(&idx_tmp).unwrap(), b"{torn");
+		let _ = std::fs::remove_dir_all(&dir);
+	}
+
+	#[test]
+	fn index_round_trips_through_the_atomic_writer_owner_only() {
+		let dir = tmpdir("indexwrite");
+		let index_path = HeldIdentities::index_path(&dir);
+		// An index left with looser permissions by some earlier writer.
+		std::fs::write(&index_path, b"{}").unwrap();
+		#[cfg(unix)]
+		{
+			use std::os::unix::fs::PermissionsExt;
+			std::fs::set_permissions(&index_path, std::fs::Permissions::from_mode(0o644)).unwrap();
+		}
+		let idx = HeldIdentities {
+			ver: 1,
+			active: "ab".to_string(),
+			order: vec!["ab".to_string(), "cd".to_string()],
+			identities: vec![
+				HeldEntry {
+					pubkey: "ab".to_string(),
+					path: LEGACY_FILE.to_string(),
+					label: "alice".to_string(),
+				},
+				HeldEntry {
+					pubkey: "cd".to_string(),
+					path: HeldIdentities::rel_path_for("cd"),
+					label: String::new(),
+				},
+			],
+		};
+		idx.save(&dir).unwrap();
+		let back = HeldIdentities::load(&dir).unwrap();
+		assert_eq!(back.ver, idx.ver);
+		assert_eq!(back.active, idx.active);
+		assert_eq!(back.order, idx.order);
+		assert_eq!(back.identities, idx.identities);
+		#[cfg(unix)]
+		{
+			use std::os::unix::fs::PermissionsExt;
+			let mode = std::fs::metadata(&index_path).unwrap().permissions().mode() & 0o777;
+			assert_eq!(mode, 0o600, "identities.json must be 0600");
+		}
+		let leftovers: Vec<_> = std::fs::read_dir(&dir)
+			.unwrap()
+			.filter_map(|e| e.ok())
+			.filter(|e| e.file_name().to_string_lossy().contains(".tmp-"))
+			.collect();
+		assert!(leftovers.is_empty(), "a good write leaves no temp behind");
+
+		// The index is never rewritten in place either: a hard link to the old
+		// file keeps the old bytes after the next save (see the identity test).
+		let before = std::fs::read(&index_path).unwrap();
+		let witness = dir.join("witness");
+		std::fs::hard_link(&index_path, &witness).unwrap();
+		let mut moved = idx.clone();
+		moved.active = "cd".to_string();
+		moved.save(&dir).unwrap();
+		assert_eq!(std::fs::read(&witness).unwrap(), before);
+		assert_eq!(HeldIdentities::load(&dir).unwrap().active, "cd");
 		let _ = std::fs::remove_dir_all(&dir);
 	}
 
