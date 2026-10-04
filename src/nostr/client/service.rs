@@ -26,8 +26,9 @@ impl NostrService {
 	/// - Outgoing sends and invoices we paid (or built a reply for) LOCK our
 	///   outputs, so they go through `nostr_cancel_slate`: authoritative tx
 	///   lookup, finalize lock, cancel-safety rule. The row turns Cancelled only
-	///   when its outputs are free (or nothing was locked); otherwise it is left
-	///   for the next cycle (wallet data not loaded yet, no node sync yet).
+	///   when its outputs are free (or nothing was locked), and Finalized when
+	///   its tx is confirmed; otherwise it is left for the next cycle (wallet
+	///   data not loaded yet, no node sync yet).
 	/// - Incoming payments and invoices we issued lock nothing of ours, so we
 	///   only annotate the metadata `Cancelled`; if a payment posts late,
 	///   on-chain confirmation still wins (the UI only shows "canceled" while
@@ -49,12 +50,16 @@ impl NostrService {
 		// older build expired it before the wallet data loaded, or a cancel
 		// failed). Candidates come from the loaded tx list, so a cycle with
 		// nothing stuck costs no extra lookup; the helper re-checks each one
-		// authoritatively under the finalize lock.
-		if let Some(txs) = data.and_then(|d| d.txs) {
+		// authoritatively under the finalize lock. A grin cancel needs the node
+		// (`cancel_tx` refreshes first), so the pass waits for a good node sync;
+		// a cancel that failed is then retried on later cycles.
+		if let Some(txs) = data.and_then(|d| d.txs)
+			&& crate::wallet::nostr_cancel_node_ready(wallet)
+		{
 			let synced = wallet.synced_from_node();
 			let live: HashMap<String, _> = txs
 				.iter()
-				.filter(|t| t.action.is_none())
+				.filter(|t| heal_candidate(t))
 				.filter_map(|t| t.data.tx_slate_id.map(|u| (u.to_string(), t)))
 				.collect();
 			for meta in &metas {
@@ -108,9 +113,8 @@ impl NostrService {
 				ExpireStep::Cancel => {
 					let outcome =
 						crate::wallet::nostr_cancel_slate(wallet, self, &meta.slate_id, false);
-					if expire_marks_after(outcome) {
-						self.store
-							.update_tx_status(&meta.slate_id, NostrSendStatus::Cancelled);
+					if let Some(status) = expire_status_after(outcome) {
+						self.store.update_tx_status(&meta.slate_id, status);
 					}
 					if !cancel_deferred(outcome) {
 						info!(
@@ -842,12 +846,17 @@ fn expire_step(
 	}
 }
 
-/// Whether expiry itself must mark the row Cancelled after the helper ran. A
-/// confirmed tx locks nothing, so the stale row ends (the UI shows confirmed).
-/// The helper already marked every row it cancelled or found unlocked, and
-/// leaves the rest for the next cycle.
-fn expire_marks_after(outcome: NostrCancelResult) -> bool {
-	outcome == NostrCancelResult::Confirmed
+/// The status expiry itself writes after the helper ran, if any. A confirmed
+/// tx went through (its reply finalized it even if our post seemed to fail),
+/// so the row ends Finalized, exactly as a seen finalize would leave it: the
+/// reconcile pass can then still deliver a proof-mode receipt and proof, and
+/// a duplicate reply is dropped. The helper already marked every row it
+/// cancelled or found unlocked, and leaves the rest for the next cycle.
+fn expire_status_after(outcome: NostrCancelResult) -> Option<NostrSendStatus> {
+	match outcome {
+		NostrCancelResult::Confirmed => Some(NostrSendStatus::Finalized),
+		_ => None,
+	}
 }
 
 /// Whether the helper left the row for a later cycle (no lookup, no node sync
@@ -860,6 +869,15 @@ fn cancel_deferred(outcome: NostrCancelResult) -> bool {
 			| NostrCancelResult::Unavailable
 			| NostrCancelResult::Finalized
 	)
+}
+
+/// Whether the heal pass may try a tx, judged by its in-memory action. A tx
+/// with no action is idle. A cancel that failed leaves the action at
+/// Cancelling with an error (`Wallet::cancel` returns early, every cancel path
+/// records the error), so it is retried. A cancel still running has no error
+/// yet and is never entered twice; finalize and post are left alone.
+fn heal_candidate(tx: &crate::wallet::types::WalletTx) -> bool {
+	tx.action.is_none() || (tx.cancelling() && tx.action_error.is_some())
 }
 
 /// Heal predicate: a row marked Cancelled whose grin tx still locks our
@@ -1065,10 +1083,12 @@ async fn reconcile(svc: &Arc<NostrService>, wallet: &Wallet) {
 			ReconcileAction::Resend(state) => state,
 			ReconcileAction::Heal => {
 				// Failure is final: a dispatch failure (left by an older build) is
-				// never re-sent, because the user saw "Couldn't send" and may have
-				// paid again. Free its inputs instead. The catch-up fetch above ran
-				// first, so a reply already waiting on a relay has finalized it.
-				let outcome = crate::wallet::nostr_cancel_slate(wallet, svc, &meta.slate_id, false);
+				// never re-sent or finalized (decide() drops its reply), because
+				// the user saw "Couldn't send" and may have paid again. Close it:
+				// the row ends Cancelled even when the grin cancel cannot run yet
+				// (no node sync, unknown state), and the heal pass frees its
+				// inputs later.
+				let outcome = crate::wallet::nostr_cancel_slate(wallet, svc, &meta.slate_id, true);
 				info!(
 					"nostr: reconcile closed failed dispatch {} ({:?})",
 					meta.slate_id, outcome
@@ -2232,15 +2252,107 @@ mod tests {
 		// untouched for a later cycle, never marked Cancelled blind.
 		for outcome in [Unavailable, NotSafeYet, Finalized] {
 			assert!(cancel_deferred(outcome), "{outcome:?}");
-			assert!(!expire_marks_after(outcome), "{outcome:?}");
+			assert_eq!(expire_status_after(outcome), None, "{outcome:?}");
 		}
-		// A confirmed tx locks nothing: expiry ends the stale row.
-		assert!(expire_marks_after(Confirmed));
 		// The helper itself marked these (cancelled, or nothing was locked, or
 		// the grin cancel failed and the heal pass retries).
 		for outcome in [Cancelled, NothingLocked, CancelFailed] {
 			assert!(!cancel_deferred(outcome), "{outcome:?}");
-			assert!(!expire_marks_after(outcome), "{outcome:?}");
+			assert_eq!(expire_status_after(outcome), None, "{outcome:?}");
+		}
+	}
+
+	/// V1-4: a stale row whose tx is confirmed went through (a proof-mode send
+	/// whose post "failed" but was mined). It ends Finalized, never Cancelled,
+	/// so the reconcile pass still owes and delivers its receipt and proof.
+	#[test]
+	fn expiry_of_a_confirmed_payment_finalizes_it() {
+		assert_eq!(
+			expire_status_after(NostrCancelResult::Confirmed),
+			Some(NostrSendStatus::Finalized)
+		);
+		let mut m = sample_send_meta(NostrSendStatus::AwaitingS2);
+		m.status = expire_status_after(NostrCancelResult::Confirmed).unwrap();
+		assert!(expiry_terminal(m.status));
+		assert!(receipt_retry_due(&m));
+		assert!(proof_delivery_due(&m));
+		// Each is still owed only once: the flags stop a second delivery.
+		m.receipt_sent = true;
+		m.proof_delivered = true;
+		assert!(!receipt_retry_due(&m));
+		assert!(!proof_delivery_due(&m));
+		// The heal pass never touches a Finalized row.
+		assert!(!heal_due(
+			NostrTxDirection::Sent,
+			m.status,
+			&grin_wallet_libwallet::TxLogEntryType::TxSent,
+			Some(&grin_wallet_libwallet::SlateState::Standard3),
+			true,
+			true
+		));
+	}
+
+	/// V1-1: a grin cancel that failed (no node) is retried by the heal pass in
+	/// the same session, while a cancel still running is never entered twice.
+	/// Drives the real `WalletData` action bookkeeping the cancel paths use.
+	#[test]
+	fn heal_retries_a_failed_cancel_but_never_a_running_one() {
+		use crate::wallet::types::{WalletData, WalletTx, WalletTxAction};
+		use grin_wallet_libwallet::{Error, TxLogEntry, TxLogEntryType, WalletInfo};
+		let mut entry =
+			TxLogEntry::new(grin_keychain::Identifier::zero(), TxLogEntryType::TxSent, 7);
+		entry.tx_slate_state = Some(grin_wallet_libwallet::SlateState::Standard1);
+		let tx = WalletTx {
+			data: entry,
+			proof: None,
+			amount: 1,
+			receiver: None,
+			sender: None,
+			height: None,
+			broadcasting_height: None,
+			action: None,
+			action_error: None,
+		};
+		let mut data = WalletData {
+			info: WalletInfo {
+				last_confirmed_height: 0,
+				minimum_confirmations: 10,
+				total: 0,
+				amount_awaiting_finalization: 0,
+				amount_awaiting_confirmation: 0,
+				amount_immature: 0,
+				amount_currently_spendable: 0,
+				amount_locked: 0,
+				amount_reverted: 0,
+			},
+			txs: Some(vec![tx]),
+			txs_limit: 30,
+		};
+		let row = |d: &WalletData| d.txs.as_ref().unwrap()[0].clone();
+		// Idle tx: a candidate.
+		assert!(heal_candidate(&row(&data)));
+		// `Wallet::cancel` starts: Cancelling, no error. Running: not entered.
+		data.on_tx_action(7, Some(WalletTxAction::Cancelling));
+		assert!(!heal_candidate(&row(&data)));
+		// `cancel_tx` refused (node unreachable): the cancel path records the
+		// error while the action stays Cancelling. Over: retried next cycle.
+		data.on_tx_error(
+			7,
+			Some(Error::GenericError(
+				"Can't contact running Grin node".into(),
+			)),
+		);
+		assert!(row(&data).cancelling());
+		assert!(heal_candidate(&row(&data)));
+		// The retry starts: the error clears, so it is running again.
+		data.on_tx_action(7, Some(WalletTxAction::Cancelling));
+		assert!(!heal_candidate(&row(&data)));
+		// A finalize or post in progress (or failed) is never a heal candidate.
+		for action in [WalletTxAction::Finalizing, WalletTxAction::Posting] {
+			data.on_tx_action(7, Some(action));
+			assert!(!heal_candidate(&row(&data)));
+			data.on_tx_error(7, Some(Error::GenericError("x".into())));
+			assert!(!heal_candidate(&row(&data)));
 		}
 	}
 
