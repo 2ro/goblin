@@ -241,6 +241,23 @@ impl GoblinWalletView {
 									w::info_row(ui, &t!("goblin.receipt.transaction"), &short);
 								}
 							});
+							// The one cancel-safety rule, exactly as the tx list: a
+							// cancel the wallet would refuse (a row the counterparty
+							// may already have finalized, before a node sync) is not
+							// offered, so no button ever does nothing.
+							let cancel_allowed = wallet
+								.get_data()
+								.and_then(|data| data.txs)
+								.and_then(|txs| txs.into_iter().find(|t| t.data.id == d.tx_id))
+								.map(|t| {
+									crate::wallet::types::cancel_safe(
+										&t.data.tx_type,
+										t.data.tx_slate_state.as_ref(),
+										wallet.synced_from_node(),
+										t.data.confirmed,
+									)
+								})
+								.unwrap_or(false);
 							// Withdraw a request we sent that hasn't been paid yet:
 							// cancel the local invoice and tell the payer (a void
 							// message). Requests are messages; payments are final.
@@ -259,7 +276,7 @@ impl GoblinWalletView {
 										)
 								})
 								.unwrap_or(false) && !d.canceled
-								&& !d.confirmed;
+								&& !d.confirmed && cancel_allowed;
 							if cancelable_request {
 								ui.add_space(16.0);
 								if w::big_action(ui, &t!("goblin.receipt.cancel_request"), true)
@@ -301,8 +318,9 @@ impl GoblinWalletView {
 									) || crate::nostr::unix_time() - m.created_at > grace)
 								})
 								.unwrap_or(false) && !d.canceled
-								&& !d.confirmed;
-							// A manual Cancel is ALWAYS available for a stuck pending. The
+								&& !d.confirmed && cancel_allowed;
+							// A manual Cancel is available for a stuck pending the rule
+							// above allows. The
 							// nostr-aware path above (after the grace window) also voids
 							// the counterparty's DM; this fallback covers every other
 							// cancellable pending it missed — e.g. a tx orphaned by an
@@ -310,8 +328,9 @@ impl GoblinWalletView {
 							// store) or one left by an older build. Both run the plain
 							// libwallet cancel that unlocks our reserved inputs; nothing
 							// auto-fires on a timer.
-							let fallback_cancel =
-								!cancelable_request && !cancelable_send && d.can_cancel;
+							let fallback_cancel = !cancelable_request
+								&& !cancelable_send && d.can_cancel
+								&& cancel_allowed;
 							if cancelable_send || fallback_cancel {
 								// Soft nudge that this pending has been waiting a long
 								// time (a hint; the Cancel button sits right below).
