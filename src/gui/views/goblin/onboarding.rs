@@ -212,6 +212,9 @@ impl OnboardingContent {
 					ui.add_space(View::get_bottom_inset() + 24.0);
 				});
 			});
+		// The seed words (shown on create, typed on restore and confirm) must not
+		// reach screenshots, screen recordings or the app switcher.
+		cb.set_secure_screen(matches!(self.step, Step::Words | Step::ConfirmWords));
 		done
 	}
 

@@ -20,6 +20,7 @@ use std::fs::File;
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 
 use jni::JNIEnv;
 use jni::objects::{JByteArray, JObject, JString, JValue};
@@ -308,7 +309,17 @@ impl PlatformCallbacks for Android {
 		// so the OS brings the app that deep-linked into us back to the front.
 		let _ = self.call_java_method("returnToCaller", "()V", &[]);
 	}
+
+	fn set_secure_screen(&self, secure: bool) {
+		// Views report this every frame; cross into Java only on a change.
+		if crate::gui::platform::secure_screen_changed(&SECURE_SCREEN, secure) {
+			let _ = self.call_java_method("setSecureScreen", "(Z)V", &[JValue::Bool(secure as u8)]);
+		}
+	}
 }
+
+/// Last secure-screen state handed to Java (FLAG_SECURE on the window).
+static SECURE_SCREEN: AtomicBool = AtomicBool::new(false);
 
 lazy_static! {
 	/// Last image data from camera.

@@ -121,6 +121,9 @@ pub struct GoblinWalletView {
 	node_tab_back: SettingsPage,
 	/// Inline state for the Advanced settings page (recovery/repair/delete).
 	advanced: AdvancedState,
+	/// The egui pass this view was last drawn in. A gap means it was off screen
+	/// (wallet locked or closed, sync screen), which hides Advanced secrets.
+	drawn_pass: Option<u64>,
 	/// One-shot signal to the wallet host: deselect this wallet (return to the
 	/// chooser) without locking it, so another can be picked. Consumed by
 	/// [`WalletContent::take_switch_request`].
@@ -290,6 +293,23 @@ struct AdvancedState {
 	delete_wrong: bool,
 }
 
+impl AdvancedState {
+	/// Whether the page shows a secret: the seed words, or the nsec (its QR is
+	/// only drawn while the nsec is revealed).
+	fn secret_shown(&self) -> bool {
+		self.revealed.is_some() || self.nsec_revealed.is_some()
+	}
+}
+
+/// Whether the Advanced page state survives into this frame: only while the
+/// page is on screen (`on_advanced`) and the view was also drawn in the pass
+/// before (`last_drawn`). Leaving the page, or a gap in drawing (the wallet was
+/// locked or closed, or another surface replaced this view), resets it, so a
+/// revealed secret is hidden when the user comes back.
+fn advanced_state_kept(on_advanced: bool, last_drawn: Option<u64>, pass: u64) -> bool {
+	on_advanced && last_drawn.is_none_or(|last| pass <= last + 1)
+}
+
 /// Inputs and last result for the manual slatepack page (GRIM's native flow,
 /// surfaced as an advanced fallback under Settings → Wallet).
 #[derive(Default)]
@@ -332,6 +352,7 @@ impl Default for GoblinWalletView {
 			node_tab: Box::new(crate::gui::views::network::NetworkNode),
 			node_tab_back: SettingsPage::Main,
 			advanced: AdvancedState::default(),
+			drawn_pass: None,
 			switch_requested: false,
 			node_url_input: String::new(),
 			node_secret_input: String::new(),
@@ -737,8 +758,10 @@ impl GoblinWalletView {
 			if self.settings_page == SettingsPage::Identities {
 				self.identity_switch = IdentitySwitchState::default();
 			}
-			// TODO(audit L4): reset AdvancedState on back navigation too, so a
-			// revealed nsec/password does not survive leaving the Advanced page.
+			// Nor a revealed seed, nsec or typed password after leaving Advanced.
+			if self.settings_page == SettingsPage::Advanced {
+				self.advanced = AdvancedState::default();
+			}
 			self.settings_page = SettingsPage::Main;
 			return false;
 		}
@@ -784,6 +807,25 @@ impl GoblinWalletView {
 		// leave/enter boundary — deep links that open a sub-page set the tab to Me
 		// in the same frame, so they are unaffected (the tab is Me by next frame).
 		self.settings_page = settings_page_after(self.tab, self.settings_page);
+
+		// Secrets on the Advanced page (seed words, nsec, nsec QR) live only while
+		// that page is on screen. Leaving it in any way (back, another tab or
+		// sub-page, an overlay, or this view not being drawn at all, as when the
+		// wallet is locked or closed) drops them, so they come back hidden.
+		let pass = ui.ctx().cumulative_pass_nr();
+		let on_advanced = self.tab == Tab::Me
+			&& self.settings_page == SettingsPage::Advanced
+			&& self.send.is_none()
+			&& self.receipt.is_none()
+			&& self.profile.is_none()
+			&& self.approve_review.is_none();
+		if !advanced_state_kept(on_advanced, self.drawn_pass, pass) {
+			self.advanced = AdvancedState::default();
+		}
+		self.drawn_pass = Some(pass);
+		// Keep the window out of screenshots, screen recordings and the app
+		// switcher while a secret is on screen (Android FLAG_SECURE).
+		cb.set_secure_screen(self.advanced.secret_shown());
 
 		// Transient login-outcome toast (drawn as a Foreground area, so it rides
 		// above whatever surface or overlay is showing).
@@ -1707,5 +1749,47 @@ mod anon_censor_tests {
 			settings_page_after(Tab::Me, SettingsPage::Main),
 			SettingsPage::Main
 		);
+	}
+}
+
+#[cfg(test)]
+mod advanced_secret_tests {
+	use super::{AdvancedState, advanced_state_kept};
+
+	/// The Advanced state (and with it a revealed seed or nsec) survives only
+	/// while the page stays on screen frame after frame.
+	#[test]
+	fn advanced_state_kept_only_while_page_on_screen() {
+		// On the page, drawn in the previous pass (or twice in one pass).
+		assert!(advanced_state_kept(true, Some(41), 42));
+		assert!(advanced_state_kept(true, Some(42), 42));
+		// First draw ever: nothing to drop.
+		assert!(advanced_state_kept(true, None, 7));
+		// Left the page (back, other tab or sub-page, overlay): dropped.
+		assert!(!advanced_state_kept(false, Some(41), 42));
+		assert!(!advanced_state_kept(false, None, 42));
+		// Back on the page after the view was not drawn for a while (wallet
+		// locked or closed, sync screen): dropped.
+		assert!(!advanced_state_kept(true, Some(30), 42));
+	}
+
+	/// The secure-screen flag follows exactly the revealed secrets.
+	#[test]
+	fn secret_shown_tracks_revealed_secrets() {
+		let mut adv = AdvancedState::default();
+		assert!(!adv.secret_shown());
+		// A typed (masked) password is not a secret on screen.
+		adv.reveal_pass = "pw".to_string();
+		adv.nsec_pass = "pw".to_string();
+		assert!(!adv.secret_shown());
+		adv.revealed = Some("abandon ability able".to_string());
+		assert!(adv.secret_shown());
+		adv.revealed = None;
+		adv.nsec_revealed = Some("nsec1test".to_string());
+		adv.nsec_qr = true;
+		assert!(adv.secret_shown());
+		// Reset (what leaving the page does) hides everything.
+		adv = AdvancedState::default();
+		assert!(!adv.secret_shown());
 	}
 }

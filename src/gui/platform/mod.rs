@@ -14,6 +14,8 @@
 
 pub use self::platform::*;
 
+use std::sync::atomic::{AtomicBool, Ordering};
+
 #[cfg(target_os = "android")]
 #[path = "android/mod.rs"]
 pub mod platform;
@@ -84,4 +86,39 @@ pub trait PlatformCallbacks {
 	/// and a no-op off Android, where there is no clean "return focus" primitive
 	/// (egui/winit); desktop leaves the window where it is.
 	fn return_to_caller(&self) {}
+
+	/// Keep the window out of screenshots, screen recordings and the app
+	/// switcher thumbnail while `secure` is true, i.e. while a secret (seed
+	/// words, nsec, nsec QR) is on screen. Callers may report the state every
+	/// frame; only a change reaches the OS. No-op off Android.
+	fn set_secure_screen(&self, _secure: bool) {}
+}
+
+/// Record the wanted secure-screen state in `last` and return true when it
+/// differs from the state recorded before, i.e. when the OS window flag must
+/// change now. Views report the state every frame; this keeps the platform
+/// call to the frames where it actually changes.
+pub fn secure_screen_changed(last: &AtomicBool, secure: bool) -> bool {
+	last.swap(secure, Ordering::Relaxed) != secure
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	/// Only a change of the wanted state is reported, so a view that reports
+	/// "secret on screen" every frame causes one platform call, not one a frame.
+	#[test]
+	fn secure_screen_reports_only_changes() {
+		let last = AtomicBool::new(false);
+		// Starts off: reporting off again is no change.
+		assert!(!secure_screen_changed(&last, false));
+		// A secret appears: one change, then steady.
+		assert!(secure_screen_changed(&last, true));
+		assert!(!secure_screen_changed(&last, true));
+		assert!(!secure_screen_changed(&last, true));
+		// It leaves the screen: one change, then steady.
+		assert!(secure_screen_changed(&last, false));
+		assert!(!secure_screen_changed(&last, false));
+	}
 }

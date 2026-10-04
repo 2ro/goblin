@@ -449,5 +449,8 @@ impl GoblinWalletView {
 			self.node_tab_back = SettingsPage::Advanced;
 			self.settings_page = SettingsPage::IntegratedNode;
 		}
+		// Apply this frame's reveal, hide or leave to the secure-screen flag now,
+		// so it is set before a newly revealed secret is first drawn.
+		cb.set_secure_screen(self.advanced.secret_shown());
 	}
 }

@@ -15,6 +15,7 @@ import android.system.Os;
 import android.util.Log;
 import android.view.KeyEvent;
 import android.view.View;
+import android.view.WindowManager;
 
 import androidx.activity.result.ActivityResultLauncher;
 import androidx.activity.result.contract.ActivityResultContracts;
@@ -93,6 +94,11 @@ public class MainActivity extends GameActivity {
         clearSecretClipIfDue();
     };
 
+    // Native code asked to keep the window out of screenshots, screen
+    // recordings and the Recents thumbnail (a secret is on screen). Static so a
+    // recreated activity applies it again. Main thread only.
+    private static boolean sSecureScreen = false;
+
     @SuppressLint("UnspecifiedRegisterReceiverFlag")
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -119,6 +125,10 @@ public class MainActivity extends GameActivity {
         }
 
         super.onCreate(null);
+
+        if (sSecureScreen) {
+            applySecureScreen();
+        }
 
         // Register receiver to finish activity from the BackgroundService.
         ContextCompat.registerReceiver(this, mBroadcastReceiver, new IntentFilter(STOP_APP_ACTION), ContextCompat.RECEIVER_NOT_EXPORTED);
@@ -747,6 +757,24 @@ public class MainActivity extends GameActivity {
             // isAppearanceLightStatusBars == true means DARK icons.
             c.setAppearanceLightStatusBars(!white);
         });
+    }
+
+    // Called from native code when a secret (seed words, nsec, nsec QR) comes on
+    // or leaves the screen: FLAG_SECURE blocks screenshots, screen recording and
+    // the Recents thumbnail while it is set.
+    public void setSecureScreen(boolean secure) {
+        runOnUiThread(() -> {
+            sSecureScreen = secure;
+            applySecureScreen();
+        });
+    }
+
+    private void applySecureScreen() {
+        if (sSecureScreen) {
+            getWindow().addFlags(WindowManager.LayoutParams.FLAG_SECURE);
+        } else {
+            getWindow().clearFlags(WindowManager.LayoutParams.FLAG_SECURE);
+        }
     }
 
     // Called from native code to check if device is using dark theme.
