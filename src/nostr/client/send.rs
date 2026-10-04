@@ -83,6 +83,38 @@ impl NostrService {
 			.unwrap_or_else(|| self.public_key().to_hex())
 	}
 
+	/// Move a tx row on after its message went out (Created to AwaitingS2 or
+	/// AwaitingI2, ReceivedNoReply to RepliedS2 or PaidAwaitingFinalize), only
+	/// while it is still in `left_at`, the status the sending task left it in.
+	/// The publish can take a while: a fast reply may have finalized the row
+	/// meanwhile, or the user cancelled it, and that must stand (a Finalized row
+	/// still owes its proof; a Cancelled one must not reopen). Re-read under the
+	/// finalize lock, as reconcile does. True when the row moved on.
+	pub fn advance_after_dispatch(
+		&self,
+		slate_id: &str,
+		left_at: NostrSendStatus,
+		next: NostrSendStatus,
+		event_id: String,
+	) -> bool {
+		let _lock = self.lock_finalize();
+		let Some(mut meta) = self.store.tx_meta(slate_id) else {
+			return false;
+		};
+		if meta.status != left_at {
+			info!(
+				"nostr: {slate_id} is {:?} now, not moved to {:?}",
+				meta.status, next
+			);
+			return false;
+		}
+		meta.status = next;
+		meta.sent_event_id = Some(event_id);
+		meta.updated_at = unix_time();
+		self.store.save_tx_meta(&meta);
+		true
+	}
+
 	/// Record that the plain receipt of a send landed. Re-read under the
 	/// finalize lock and only that flag changes, so a status written meanwhile
 	/// (a fast reply finalized it, the user cancelled it) is kept.
@@ -1293,6 +1325,59 @@ mod tests {
 			tags_of(&rumors[0])[0],
 			vec!["p".to_string(), receiver.public_key().to_hex()]
 		);
+	}
+
+	/// A dispatch result moves a row on only from the status its task left it
+	/// in: a row a fast reply finalized, or the user cancelled, during the
+	/// publish stays as it is.
+	#[tokio::test]
+	async fn a_dispatch_result_never_overwrites_a_newer_status() {
+		let (id_a, a) = NostrIdentity::create_random("pw").unwrap();
+		let (svc, dir) = service_with(&[(id_a, a.clone())], &a);
+		let row = |slate: &str, direction, status| {
+			let mut m = payer_meta("cd");
+			m.slate_id = slate.to_string();
+			m.direction = direction;
+			m.status = status;
+			m
+		};
+		use NostrSendStatus::*;
+		use NostrTxDirection::*;
+
+		svc.store.save_tx_meta(&row("finalized", Sent, Finalized));
+		assert!(!svc.advance_after_dispatch("finalized", Created, AwaitingS2, "e1".into()));
+		let m = svc.store.tx_meta("finalized").unwrap();
+		assert_eq!(m.status, Finalized);
+		assert_eq!(m.sent_event_id, None);
+
+		svc.store
+			.save_tx_meta(&row("cancelled", RequestedByUs, Cancelled));
+		assert!(!svc.advance_after_dispatch("cancelled", Created, AwaitingI2, "e2".into()));
+		assert_eq!(svc.store.tx_meta("cancelled").unwrap().status, Cancelled);
+
+		svc.store
+			.save_tx_meta(&row("paid", RequestedOfUs, Cancelled));
+		assert!(!svc.advance_after_dispatch(
+			"paid",
+			ReceivedNoReply,
+			PaidAwaitingFinalize,
+			"e3".into()
+		));
+		assert_eq!(svc.store.tx_meta("paid").unwrap().status, Cancelled);
+
+		// Still where the task left it: moved on, with the event id.
+		svc.store.save_tx_meta(&row("fresh", Sent, Created));
+		assert!(svc.advance_after_dispatch("fresh", Created, AwaitingS2, "e4".into()));
+		let m = svc.store.tx_meta("fresh").unwrap();
+		assert_eq!(m.status, AwaitingS2);
+		assert_eq!(m.sent_event_id.as_deref(), Some("e4"));
+
+		// The receipt flag alone changes; the status written meanwhile stays.
+		svc.mark_receipt_sent("finalized");
+		let m = svc.store.tx_meta("finalized").unwrap();
+		assert!(m.receipt_sent);
+		assert_eq!(m.status, Finalized);
+		let _ = std::fs::remove_dir_all(dir);
 	}
 
 	/// The plain receipt is signed by the identity that paid, with the frozen

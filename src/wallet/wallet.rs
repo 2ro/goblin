@@ -3296,12 +3296,14 @@ async fn handle_task(w: &Wallet, t: WalletTask) {
 							.await
 						{
 							Ok(event_id) => {
-								if let Some(mut meta) = service.store.tx_meta(&s.id.to_string()) {
-									meta.status = crate::nostr::NostrSendStatus::AwaitingS2;
-									meta.sent_event_id = Some(event_id);
-									meta.updated_at = crate::nostr::unix_time();
-									service.store.save_tx_meta(&meta);
-								}
+								// Only while the row is still where this task left it: a
+								// fast reply may have finalized it meanwhile.
+								service.advance_after_dispatch(
+									&s.id.to_string(),
+									crate::nostr::NostrSendStatus::Created,
+									crate::nostr::NostrSendStatus::AwaitingS2,
+									event_id,
+								);
 								// Record/refresh the contact so someone you PAY shows up
 								// under Suggested (sends used to create no contact — only
 								// incoming payments did — so a person you paid first never
@@ -3469,12 +3471,14 @@ async fn handle_task(w: &Wallet, t: WalletTask) {
 							.await
 						{
 							Ok(event_id) => {
-								if let Some(mut meta) = service.store.tx_meta(&s.id.to_string()) {
-									meta.status = crate::nostr::NostrSendStatus::AwaitingI2;
-									meta.sent_event_id = Some(event_id);
-									meta.updated_at = crate::nostr::unix_time();
-									service.store.save_tx_meta(&meta);
-								}
+								// Only while the row is still where this task left it: the
+								// payer may have paid, or the user cancelled, meanwhile.
+								service.advance_after_dispatch(
+									&s.id.to_string(),
+									crate::nostr::NostrSendStatus::Created,
+									crate::nostr::NostrSendStatus::AwaitingI2,
+									event_id,
+								);
 								if let Some(mut contact) = service.store.contact(receiver) {
 									contact.unknown = false;
 									service.store.save_contact(&contact);
@@ -3590,9 +3594,14 @@ async fn handle_task(w: &Wallet, t: WalletTask) {
 					w.on_tx_error(tx_id, Some(e));
 				}
 			}
-			service
-				.store
-				.update_tx_status(slate_id, crate::nostr::NostrSendStatus::Cancelled);
+			// Under the finalize lock, like the dispatch result that may be
+			// written for this row at the same time.
+			{
+				let _lock = service.lock_finalize();
+				service
+					.store
+					.update_tx_status(slate_id, crate::nostr::NostrSendStatus::Cancelled);
+			}
 			if let Err(e) = service
 				.send_control_dm(&meta.recipient_pubkey, &meta.npub, slate_id, &[])
 				.await
@@ -3797,14 +3806,12 @@ async fn handle_task(w: &Wallet, t: WalletTask) {
 							.await
 						{
 							Ok(event_id) => {
-								if let Some(mut meta) = service.store.tx_meta(&reply.id.to_string())
-								{
-									meta.status =
-										crate::nostr::NostrSendStatus::PaidAwaitingFinalize;
-									meta.sent_event_id = Some(event_id);
-									meta.updated_at = crate::nostr::unix_time();
-									service.store.save_tx_meta(&meta);
-								}
+								service.advance_after_dispatch(
+									&reply.id.to_string(),
+									crate::nostr::NostrSendStatus::ReceivedNoReply,
+									crate::nostr::NostrSendStatus::PaidAwaitingFinalize,
+									event_id,
+								);
 							}
 							Err(e) => error!("nostr pay reply dispatch failed: {e}"),
 						}
@@ -3855,14 +3862,12 @@ async fn handle_task(w: &Wallet, t: WalletTask) {
 								.await
 							{
 								Ok(event_id) => {
-									if let Some(mut meta) =
-										service.store.tx_meta(&reply.id.to_string())
-									{
-										meta.status = crate::nostr::NostrSendStatus::RepliedS2;
-										meta.sent_event_id = Some(event_id);
-										meta.updated_at = crate::nostr::unix_time();
-										service.store.save_tx_meta(&meta);
-									}
+									service.advance_after_dispatch(
+										&reply.id.to_string(),
+										crate::nostr::NostrSendStatus::ReceivedNoReply,
+										crate::nostr::NostrSendStatus::RepliedS2,
+										event_id,
+									);
 								}
 								Err(e) => error!("nostr accept reply dispatch failed: {e}"),
 							}

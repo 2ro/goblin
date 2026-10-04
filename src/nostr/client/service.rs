@@ -2149,8 +2149,13 @@ async fn handle_wrap(svc: &Arc<NostrService>, wallet: &Wallet, event: Event) {
 			wallet.resume_node_polling();
 			match wallet.nostr_finalize_post(&slate) {
 				Ok(true) => {
-					svc.store
-						.update_tx_status(&slate.id.to_string(), NostrSendStatus::Finalized);
+					// Under the finalize lock, so a send's dispatch result written
+					// at the same time cannot overwrite Finalized.
+					{
+						let _lock = svc.lock_finalize();
+						svc.store
+							.update_tx_status(&slate.id.to_string(), NostrSendStatus::Finalized);
+					}
 					// Finalize+post committed; mark dedup before the sync tail so a
 					// crash can't re-finalize on catch-up (grin rejects a second
 					// finalize and the meta is now Finalized, which decide() drops —
