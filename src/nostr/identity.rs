@@ -28,10 +28,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Where the keys came from. The legacy NIP-06 `Derived` source is gone: a
-/// pre-Build-8 `"source":"Derived"` file no longer parses, so wallet init moves
-/// it aside (see `NostrIdentity::load_or_set_aside`) and writes a fresh random
-/// identity (the wanted behavior; binding a messaging identity to the money
-/// seed was the dangerous design).
+/// pre-Build-8 `"source":"Derived"` file no longer parses. Builds 8 to 169
+/// replaced it with a fresh random identity (binding a messaging identity to
+/// the money seed was the dangerous design); from Build 170 it is left in place
+/// with nostr off (see `NostrIdentity::looks_like_identity`).
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug)]
 pub enum IdentitySource {
 	/// Imported nsec.
@@ -212,14 +212,39 @@ fn set_aside(path: &Path) -> std::io::Result<PathBuf> {
 ///   damaged (it does not parse, or is not even text, as a torn write can
 ///   leave it) and it has been renamed aside (see [`set_aside`]) with its
 ///   bytes unchanged and an error logged that names both paths.
-/// - `Err`: the file is there but could not be read (permissions, an I/O
-///   error). Its content is unknown, so it is left in place and the caller
-///   must not write over it.
+/// - `Err`: the file is there but this build cannot use it, so it is left in
+///   place and the caller must not write over it. Either it could not be read
+///   (permissions, an I/O error), or it is a well-formed JSON object of the
+///   right kind (`looks_like`) in a format this build does not know: written
+///   by a newer build, before a roll back to this one. Such a file is not
+///   damaged, and replacing it would swap the user's identity for a new one.
 pub(crate) fn read_or_set_aside<T: serde::de::DeserializeOwned>(
 	path: &Path,
+	looks_like: fn(&serde_json::Map<String, serde_json::Value>) -> bool,
 ) -> std::io::Result<Option<T>> {
 	let parsed = match fs::read_to_string(path) {
-		Ok(raw) => serde_json::from_str::<T>(&raw).ok(),
+		Ok(raw) => match serde_json::from_str::<T>(&raw) {
+			Ok(value) => Some(value),
+			Err(e) => {
+				// Empty, torn, BOM, trailing bytes, not an object: never valid
+				// JSON of the right kind, so only those are set aside below.
+				let known_kind = matches!(
+					serde_json::from_str::<serde_json::Value>(&raw),
+					Ok(serde_json::Value::Object(ref map)) if looks_like(map)
+				);
+				if known_kind {
+					log::error!(
+						"nostr: {} looks like it was written by a different build ({e}); left in place",
+						path.display()
+					);
+					return Err(std::io::Error::new(
+						std::io::ErrorKind::InvalidData,
+						"format written by a different build; left in place",
+					));
+				}
+				None
+			}
+		},
 		Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
 		Err(e) if e.kind() == std::io::ErrorKind::InvalidData => None,
 		Err(e) => return Err(e),
@@ -286,10 +311,24 @@ impl NostrIdentity {
 	///   text, as a torn write can leave it) and it has been renamed aside to
 	///   `identity.json.unreadable-<unix time>` with its bytes unchanged.
 	/// - `Err`: the file is there but could not be read (permissions, an I/O
-	///   error). Its content is unknown, so it is left in place and the caller
-	///   must not write a new identity over it.
+	///   error), or it is an identity record in a format this build does not
+	///   know (see [`Self::looks_like_identity`]). It is left in place and the
+	///   caller must not write a new identity over it.
 	pub fn load_or_set_aside(nostr_dir: &Path) -> std::io::Result<Option<NostrIdentity>> {
-		read_or_set_aside(&nostr_dir.join(Self::FILE_NAME))
+		read_or_set_aside(&nostr_dir.join(Self::FILE_NAME), Self::looks_like_identity)
+	}
+
+	/// True if a JSON object is an identity record, whatever its format version:
+	/// it has a string `npub`. Every identity record carries its npub (the UI
+	/// shows it before unlock); `ncryptsec` is not required, so a future record
+	/// without one (a remote signer) is still recognised.
+	///
+	/// Trade-off: a pre-Build-8 `"source":"Derived"` file is such a record too,
+	/// so it is now left in place with nostr off instead of being replaced by a
+	/// random identity. Every build from 8 on replaced such a file on its first
+	/// open, so one remains only in a wallet no build since then has opened.
+	pub(crate) fn looks_like_identity(map: &serde_json::Map<String, serde_json::Value>) -> bool {
+		map.get("npub").is_some_and(|v| v.is_string())
 	}
 
 	/// Persist the identity file with owner-only permissions (the ncryptsec
@@ -1126,6 +1165,169 @@ mod tests {
 		assert!(NostrIdentity::path(&dir).join("keep").is_dir());
 		assert!(aside_files(&dir).is_empty());
 		let _ = fs::remove_dir_all(&dir);
+	}
+
+	/// What [`read_or_set_aside`] did with one file's bytes.
+	#[derive(Debug, PartialEq)]
+	enum Verdict {
+		/// Parsed; the file is left byte-identical.
+		Parsed,
+		/// Renamed aside with every byte kept; nothing left at the path.
+		SetAside,
+		/// Refused and left byte-identical at its path; nothing set aside.
+		LeftInPlace,
+	}
+
+	/// Write `bytes` as `name` in a fresh directory, run the reader on it, check
+	/// that the bytes were kept wherever they ended up, and say what happened.
+	fn verdict<T: serde::de::DeserializeOwned>(
+		name: &str,
+		bytes: &[u8],
+		looks_like: fn(&serde_json::Map<String, serde_json::Value>) -> bool,
+	) -> Verdict {
+		let dir = test_dir("verdict");
+		let path = dir.join(name);
+		fs::write(&path, bytes).unwrap();
+		let v = match read_or_set_aside::<T>(&path, looks_like) {
+			Ok(Some(_)) => {
+				assert_eq!(
+					fs::read(&path).unwrap(),
+					bytes,
+					"a parsed file is untouched"
+				);
+				Verdict::Parsed
+			}
+			Ok(None) => {
+				assert!(!path.exists());
+				let aside = names_with(&dir, ".unreadable-");
+				assert_eq!(aside.len(), 1);
+				assert_eq!(fs::read(dir.join(&aside[0])).unwrap(), bytes, "bytes kept");
+				Verdict::SetAside
+			}
+			Err(_) => {
+				assert_eq!(fs::read(&path).unwrap(), bytes, "left as it was");
+				assert!(names_with(&dir, ".unreadable-").is_empty());
+				Verdict::LeftInPlace
+			}
+		};
+		let _ = fs::remove_dir_all(&dir);
+		v
+	}
+
+	/// The damaged shapes a torn or foreign write can leave, built from `good`.
+	fn damaged_shapes(good: &str) -> Vec<(&'static str, Vec<u8>)> {
+		let mut bom = vec![0xef, 0xbb, 0xbf];
+		bom.extend_from_slice(good.as_bytes());
+		let mut nul = good.as_bytes().to_vec();
+		nul.extend_from_slice(b"\0\0");
+		vec![
+			("empty", Vec::new()),
+			("bom", bom),
+			("trailing nul", nul),
+			("not utf-8", vec![0xff, 0xfe, 0x00, 0x7b]),
+			("torn", good.as_bytes()[..good.len() / 2].to_vec()),
+			("null", b"null".to_vec()),
+			("number", b"42".to_vec()),
+			("array", b"[1,2]".to_vec()),
+		]
+	}
+
+	#[test]
+	fn identity_file_byte_table() {
+		let (identity, _) = NostrIdentity::create_random("pw").unwrap();
+		let good = serde_json::to_string_pretty(&identity).unwrap();
+		let mut v: serde_json::Value = serde_json::from_str(&good).unwrap();
+		let obj = v.as_object_mut().unwrap();
+		for k in ["nip05", "prev_npubs", "dm_relays", "private_tag"] {
+			obj.remove(k);
+		}
+		let missing_optional = serde_json::to_string(&v).unwrap();
+		let check = |bytes: &[u8]| {
+			verdict::<NostrIdentity>("identity.json", bytes, NostrIdentity::looks_like_identity)
+		};
+
+		// Must parse and stay.
+		for (what, bytes) in [
+			("as written", good.clone()),
+			("crlf", good.replace('\n', "\r\n")),
+			("trailing newline", format!("{good}\n")),
+			(
+				"unknown field",
+				good.replacen('{', "{\"future_field\":1,", 1),
+			),
+			("missing optional fields", missing_optional),
+		] {
+			assert_eq!(check(bytes.as_bytes()), Verdict::Parsed, "{what}");
+		}
+		// Must be set aside, bytes kept.
+		for (what, bytes) in damaged_shapes(&good) {
+			assert_eq!(check(&bytes), Verdict::SetAside, "{what}");
+		}
+		// An identity record in a format this build does not know: left in place.
+		for (what, bytes) in [
+			(
+				"unknown source",
+				good.replace("\"source\": \"Random\"", "\"source\": \"SomethingNew\""),
+			),
+			(
+				"no ncryptsec",
+				format!(
+					"{{\"ver\":2,\"source\":\"Remote\",\"npub\":\"{}\",\"anonymous\":true}}",
+					identity.npub
+				),
+			),
+			(
+				"pre-Build-8 derived",
+				good.replace("\"source\": \"Random\"", "\"source\": \"Derived\""),
+			),
+		] {
+			assert_ne!(bytes, good, "{what}: the test must change the record");
+			assert_eq!(check(bytes.as_bytes()), Verdict::LeftInPlace, "{what}");
+		}
+	}
+
+	#[test]
+	fn index_file_byte_table() {
+		use crate::nostr::identities::HeldIdentities;
+		let good = "{\n  \"ver\": 1,\n  \"active\": \"ab\",\n  \"order\": [\n    \"ab\"\n  ],\n  \"identities\": [\n    {\n      \"pubkey\": \"ab\",\n      \"path\": \"identity.json\",\n      \"label\": \"\"\n    }\n  ]\n}";
+		let check = |bytes: &[u8]| {
+			verdict::<HeldIdentities>("identities.json", bytes, HeldIdentities::looks_like_index)
+		};
+
+		// Must parse and stay.
+		for (what, bytes) in [
+			("as written", good.to_string()),
+			("crlf", good.replace('\n', "\r\n")),
+			("trailing newline", format!("{good}\n")),
+			(
+				"unknown field",
+				good.replacen('{', "{\"future_field\":1,", 1),
+			),
+			("empty object", "{}".to_string()),
+			(
+				"zero entries",
+				"{\"ver\":1,\"active\":\"\",\"order\":[],\"identities\":[]}".to_string(),
+			),
+		] {
+			assert_eq!(check(bytes.as_bytes()), Verdict::Parsed, "{what}");
+		}
+		// Must be set aside, bytes kept.
+		for (what, bytes) in damaged_shapes(good) {
+			assert_eq!(check(&bytes), Verdict::SetAside, "{what}");
+		}
+		// An index in a format this build does not know: left in place.
+		for (what, bytes) in [
+			(
+				"order as object",
+				"{\"ver\":1,\"active\":\"ab\",\"order\":{},\"identities\":[]}",
+			),
+			(
+				"identities as map",
+				"{\"ver\":1,\"identities\":{\"ab\":{}}}",
+			),
+		] {
+			assert_eq!(check(bytes.as_bytes()), Verdict::LeftInPlace, "{what}");
+		}
 	}
 
 	#[test]

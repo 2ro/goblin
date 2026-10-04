@@ -4764,6 +4764,99 @@ mod open_tests {
 		wallet.close();
 	}
 
+	/// Create a sandbox wallet for an open test, refusing to go on if the sandbox
+	/// HOME did not take effect. A wallet's id is its creation second, so this
+	/// waits for a second no earlier wallet from here was created in: two
+	/// wallets in one second would share a directory.
+	fn sandbox_wallet(name: &str, password: &ZeroingString) -> Wallet {
+		static LAST: AtomicI64 = AtomicI64::new(0);
+		while Utc::now().timestamp() <= LAST.load(Ordering::Relaxed) {
+			thread::sleep(Duration::from_millis(50));
+		}
+		let sandbox = sandbox();
+		let wallet = Wallet::create(
+			&name.to_string(),
+			password,
+			&Mnemonic::default(),
+			&ConnectionMethod::Integrated,
+		)
+		.expect("wallet creation must succeed");
+		LAST.store(wallet.get_config().id, Ordering::Relaxed);
+		let data_path = PathBuf::from(wallet.get_config().get_data_path());
+		assert!(
+			data_path.starts_with(sandbox),
+			"sandbox did not take effect (wallet at {}); refusing to touch real data",
+			data_path.display()
+		);
+		wallet
+	}
+
+	/// Names in `dir` that a set-aside would create.
+	fn aside_names(dir: &PathBuf) -> Vec<String> {
+		fs::read_dir(dir)
+			.unwrap()
+			.filter_map(|e| e.ok())
+			.map(|e| e.file_name().to_string_lossy().into_owned())
+			.filter(|n| n.contains(".unreadable-"))
+			.collect()
+	}
+
+	/// Files from a newer build (valid JSON in a format this build does not
+	/// know, left there before a roll back) are not damaged: they are left in
+	/// place byte for byte, nothing is minted or set aside, nostr is off for the
+	/// session, and the wallet still opens. Once for identity.json, once for the
+	/// index.
+	#[test]
+	fn files_from_a_newer_build_are_left_in_place_and_the_wallet_still_opens() {
+		let _serialised = serialised();
+		let password = ZeroingString::from("newer-build-password");
+		for (name, newer_identity) in [("newer-identity-test", true), ("newer-index-test", false)] {
+			let wallet = sandbox_wallet(name, &password);
+			let nostr_dir = wallet.get_config().get_nostr_path();
+			let (first, _) = NostrIdentity::create_random(&password).unwrap();
+			first.save(&nostr_dir).unwrap();
+			HeldIdentities::from_legacy(&first)
+				.unwrap()
+				.save(&nostr_dir)
+				.unwrap();
+			if newer_identity {
+				let raw = fs::read_to_string(NostrIdentity::path(&nostr_dir)).unwrap();
+				let newer = raw.replace("\"source\": \"Random\"", "\"source\": \"SomethingNew\"");
+				assert_ne!(newer, raw);
+				fs::write(NostrIdentity::path(&nostr_dir), newer).unwrap();
+			} else {
+				let newer = format!(
+					"{{\"ver\":2,\"active\":\"{}\",\"order\":{{}},\"identities\":[]}}",
+					first.pubkey_hex().unwrap()
+				);
+				fs::write(HeldIdentities::index_path(&nostr_dir), newer).unwrap();
+			}
+			let identity_before = fs::read(NostrIdentity::path(&nostr_dir)).unwrap();
+			let index_before = fs::read(HeldIdentities::index_path(&nostr_dir)).unwrap();
+
+			wallet
+				.open(password.clone())
+				.expect("a file from a newer build must not stop the wallet opening");
+			assert!(wallet.is_open(), "{name}: wallet must report itself open");
+			assert!(wallet.nostr_service().is_none(), "{name}: nostr is off");
+			assert_eq!(
+				fs::read(NostrIdentity::path(&nostr_dir)).unwrap(),
+				identity_before,
+				"{name}: identity.json is left as it was"
+			);
+			assert_eq!(
+				fs::read(HeldIdentities::index_path(&nostr_dir)).unwrap(),
+				index_before,
+				"{name}: the index is left as it was"
+			);
+			assert!(
+				aside_names(&nostr_dir).is_empty(),
+				"{name}: nothing set aside"
+			);
+			wallet.close();
+		}
+	}
+
 	/// Rapid fee requests coalesce to the newest amount instead of queueing one
 	/// calculation per keystroke.
 	///
