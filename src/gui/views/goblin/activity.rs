@@ -487,13 +487,12 @@ impl GoblinWalletView {
 									// request card; dispatch the actual payment.
 									self.approving.insert(req.rumor_id.clone());
 									self.request_error = None;
-									// A new send turn: only this approval's result
-									// may change the phase read here.
-									if let Some(service) = wallet.nostr_service() {
-										service.begin_send();
-									}
+									// A new send turn, carried by the task: only this
+									// approval's result may change the phase.
+									let turn = wallet.nostr_service().map(|s| s.begin_send());
 									wallet.task(crate::wallet::types::WalletTask::NostrPayRequest(
 										req.rumor_id.clone(),
+										turn,
 									));
 									close = true;
 								}

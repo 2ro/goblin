@@ -3234,14 +3234,14 @@ async fn handle_task(w: &Wallet, t: WalletTask) {
 				w.on_tx_error(*id, Some(e));
 			}
 		},
-		WalletTask::NostrSend(a, receiver, note, relay_hints, proof, order, notify) => {
+		WalletTask::NostrSend(a, receiver, note, relay_hints, proof, order, notify, turn) => {
 			let Some(service) = w.nostr_service() else {
 				error!("nostr send: service not available");
 				return;
 			};
-			// The send turn this task writes the screen's phase with (see
-			// `NostrService::begin_send`).
-			let turn = service.send_turn();
+			// The send turn this task writes the screen's phase with, given by
+			// the screen that queued it (see `NostrService::begin_send`).
+			let turn = *turn;
 			// The identity this payment goes out as: the active one, read once
 			// here and used for the record, the payment and its receipt.
 			let from_hex = service.public_key().to_hex();
@@ -3419,13 +3419,14 @@ async fn handle_task(w: &Wallet, t: WalletTask) {
 				}
 			}
 		}
-		WalletTask::NostrRequest(a, receiver, note, relay_hints, proof_address) => {
+		WalletTask::NostrRequest(a, receiver, note, relay_hints, proof_address, turn) => {
 			let Some(service) = w.nostr_service() else {
 				error!("nostr request: service not available");
 				return;
 			};
-			// The send turn this task writes the screen's phase with.
-			let turn = service.send_turn();
+			// The send turn this task writes the screen's phase with (None for a
+			// batch request: no screen waits on it).
+			let turn = *turn;
 			// The identity this request goes out as: the active one, read once.
 			let from_hex = service.public_key().to_hex();
 			service.set_send_phase_for(turn, crate::nostr::send_phase::WORKING);
@@ -3769,12 +3770,13 @@ async fn handle_task(w: &Wallet, t: WalletTask) {
 				}
 			}
 		}
-		WalletTask::NostrPayRequest(request_id) => {
+		WalletTask::NostrPayRequest(request_id, turn) => {
 			let Some(service) = w.nostr_service() else {
 				return;
 			};
-			// The send turn this task writes the screen's phase with.
-			let turn = service.send_turn();
+			// The send turn this task writes the screen's phase with, given by
+			// the screen that queued it.
+			let turn = *turn;
 			let Some(mut request) = service.store.request(request_id) else {
 				error!("nostr pay: request not found");
 				return;

@@ -1480,33 +1480,29 @@ mod tests {
 		let (id_a, a) = NostrIdentity::create_random("pw").unwrap();
 		let (svc, dir) = service_with(&[(id_a, a.clone())], &a);
 
-		// Send #1: the screen begins a turn, the task takes it first thing.
-		let one = svc.begin_send();
-		let task_one = svc.send_turn();
-		assert_eq!(task_one, one);
-		assert!(svc.set_send_phase_for(task_one, WORKING));
+		// Send #1: the screen begins a turn and the task carries it.
+		let one = Some(svc.begin_send());
+		assert!(svc.set_send_phase_for(one, WORKING));
 
 		// Back, then send #2.
-		let two = svc.begin_send();
-		let task_two = svc.send_turn();
-		assert_eq!(task_two, two);
-		assert_ne!(task_one, task_two);
+		let two = Some(svc.begin_send());
+		assert_ne!(one, two);
 		assert_eq!(svc.send_phase(), WORKING);
 
 		// #1 reaches its failure verdict: its money work is its own, the
 		// screen is not.
-		assert!(!svc.fail_send_for(task_one, "no relay accepted it"));
-		assert!(!svc.set_send_phase_for(task_one, FAILED));
+		assert!(!svc.fail_send_for(one, "no relay accepted it"));
+		assert!(!svc.set_send_phase_for(one, FAILED));
 		assert_eq!(svc.send_phase(), WORKING);
 		assert_eq!(svc.last_send_error(), None);
 
 		// #2 completes: shown.
-		assert!(svc.set_send_phase_for(task_two, SENT));
+		assert!(svc.set_send_phase_for(two, SENT));
 		assert_eq!(svc.send_phase(), SENT);
 
 		// The reverse: a stale SENT never shows over a later send.
-		let three = svc.begin_send();
-		assert!(!svc.set_send_phase_for(task_two, SENT));
+		let three = Some(svc.begin_send());
+		assert!(!svc.set_send_phase_for(two, SENT));
 		assert_eq!(svc.send_phase(), WORKING);
 		assert!(svc.fail_send_for(three, "why"));
 		assert_eq!(svc.send_phase(), FAILED);
@@ -1515,6 +1511,46 @@ mod tests {
 		// A new turn clears the reason.
 		svc.begin_send();
 		assert_eq!(svc.last_send_error(), None);
+		let _ = std::fs::remove_dir_all(dir);
+	}
+
+	/// The turn travels inside the task: a task carrying an old turn cannot
+	/// change the phase even when it starts after a newer `begin_send`, a
+	/// batch request (no turn) never does, and a send flow reads the phase and
+	/// its failure text only while its own turn is current.
+	#[tokio::test]
+	async fn a_task_carrying_an_old_turn_never_changes_the_screen() {
+		use super::super::turn_is_current;
+		use crate::nostr::send_phase::{FAILED, SENT, WORKING};
+		let (id_a, a) = NostrIdentity::create_random("pw").unwrap();
+		let (svc, dir) = service_with(&[(id_a, a.clone())], &a);
+
+		// The reader rule.
+		assert!(turn_is_current(Some(3), 3));
+		assert!(!turn_is_current(Some(2), 3));
+		assert!(!turn_is_current(None, 3));
+		assert!(!turn_is_current(None, 0));
+
+		// A batch approve queued requests (no turn), then the user began a
+		// send; the batch tasks start only now.
+		let send = svc.begin_send();
+		assert!(!svc.fail_send_for(None, "batch request failed"));
+		assert!(!svc.set_send_phase_for(None, SENT));
+		assert_eq!(svc.send_phase(), WORKING);
+
+		// An approval queued with turn `old`, then another send began; the
+		// approval's task starts after that and still carries `old`.
+		let old = send;
+		let newer = svc.begin_send();
+		assert!(!svc.fail_send_for(Some(old), "late"));
+		assert_eq!(svc.send_phase(), WORKING);
+		assert!(svc.set_send_phase_for(Some(newer), FAILED));
+
+		// The flow of `old` no longer reads the phase or the text; the flow of
+		// `newer` does.
+		assert_eq!(svc.send_phase_for(old), None);
+		assert_eq!(svc.send_error_for(old), None);
+		assert_eq!(svc.send_phase_for(newer), Some(FAILED));
 		let _ = std::fs::remove_dir_all(dir);
 	}
 

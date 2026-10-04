@@ -153,9 +153,8 @@ impl GoblinWalletView {
 		}
 		if approve {
 			if let Some(b) = self.batch_invoice.take() {
-				if let Some(service) = wallet.nostr_service() {
-					service.begin_send();
-				}
+				// No send turn: no screen waits on a batch, so its requests never
+				// change the send phase another screen may be reading.
 				let w = wallet.clone();
 				std::thread::spawn(move || {
 					for _ in 0..b.count {
@@ -169,6 +168,7 @@ impl GoblinWalletView {
 									b.memo.clone(),
 									b.relay_hints.clone(),
 									Some(addr),
+									None,
 								));
 							}
 							Err(e) => {

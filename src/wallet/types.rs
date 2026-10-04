@@ -487,6 +487,8 @@ pub enum WalletTask {
 	///   present (frozen contract W2); threaded as `payment_proof_recipient_address`
 	/// * optional order handle (the `order=` URI param, echoed into delivery events)
 	/// * optional watcher npub (the `notify=` URI param, gift-wrap target)
+	/// * the send turn the screen began for it (`NostrService::begin_send`): only
+	///   that turn's result may change the screen
 	NostrSend(
 		u64,
 		String,
@@ -495,13 +497,15 @@ pub enum WalletTask {
 		Option<String>,
 		Option<String>,
 		Option<String>,
+		Option<u64>,
 	),
 	/// Re-dispatch the pending nostr message for transaction.
 	/// * tx id
 	NostrResend(u32),
 	/// Pay an APPROVED incoming payment request (explicit user action).
 	/// * request id (rumor event id hex)
-	NostrPayRequest(String),
+	/// * the send turn the screen began for it (`NostrService::begin_send`)
+	NostrPayRequest(String, Option<u64>),
 	/// Request an amount FROM a nostr contact: issue a grin Invoice1 slate and
 	/// deliver it as a NIP-17 DM. The recipient sees an approve-to-pay card.
 	/// * amount
@@ -510,7 +514,16 @@ pub enum WalletTask {
 	/// * relay hints
 	/// * optional fresh per-sale proof address minted for this request (batch
 	///   invoicing), recorded on the request's metadata
-	NostrRequest(u64, String, Option<String>, Vec<String>, Option<String>),
+	/// * the send turn the screen began for it (`NostrService::begin_send`);
+	///   `None` for a batch request, which never changes the screen
+	NostrRequest(
+		u64,
+		String,
+		Option<String>,
+		Vec<String>,
+		Option<String>,
+		Option<u64>,
+	),
 	/// Republish our kind-0 profile (e.g. after toggling the incoming-requests
 	/// preference) so the change propagates to relays immediately.
 	NostrRepublishProfile,
