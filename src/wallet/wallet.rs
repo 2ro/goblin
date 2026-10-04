@@ -447,6 +447,14 @@ impl Wallet {
 					// service is guaranteed present when start_sync runs.
 					self.init_nostr(&nostr_password);
 
+					// Mark the wallet open BEFORE the sync thread starts or wakes. The
+					// sync loop exits at once when it sees the wallet closed, so a
+					// thread that ran ahead of this store would stop and leave the
+					// wallet on "Updating" with no payment processing until a reopen.
+					// Nothing between this store and the thread start can fail, so no
+					// error path leaves it open without a thread.
+					self.is_open.store(true, Ordering::Relaxed);
+
 					// Start new synchronization thread or wake up existing one.
 					let mut thread_w = self.sync_thread.write();
 					if thread_w.is_none() {
@@ -455,7 +463,6 @@ impl Wallet {
 					} else {
 						thread_w.clone().unwrap().unpark();
 					}
-					self.is_open.store(true, Ordering::Relaxed);
 				}
 				Err(e) => {
 					if !self.syncing() {
@@ -1998,10 +2005,12 @@ impl Wallet {
 		}
 		// A prior attempt may have finalized but then failed to post (a transient
 		// node outage). Re-finalizing errors on the already-finalized tx, so when
-		// the finalized (Standard3) slatepack is already on disk we parse and
-		// re-post it instead of finalizing again — a post failure then recovers on
-		// the next retry rather than getting permanently stuck.
-		let finalized = match self.read_slatepack_text(slate.id, &SlateState::Standard3) {
+		// the finalized slatepack is already on disk we parse and re-post it
+		// instead of finalizing again, so a post failure recovers on the next
+		// retry rather than getting permanently stuck. The file is named by the
+		// finalized state of this slate's flow (see `finalized_state_for`).
+		let finalized_state = Self::finalized_state_for(&slate.state);
+		let finalized = match self.read_slatepack_text(slate.id, &finalized_state) {
 			Some(text) => {
 				self.parse_slatepack(&text)
 					.map_err(|e| Error::GenericError(format!("reload finalized slate: {e}")))?
@@ -2011,6 +2020,19 @@ impl Wallet {
 		};
 		self.post(&finalized, Some(tx.id))?;
 		Ok(true)
+	}
+
+	/// The state a finalized slate of this slate's flow is saved under. libwallet
+	/// finalizes an Invoice2 into Invoice3 and a Standard2 into Standard3, and
+	/// [`Self::finalize`] saves the slatepack under that state. Looking for
+	/// Standard3 only made a paid request never re-post after a failed post.
+	fn finalized_state_for(state: &SlateState) -> SlateState {
+		match state {
+			SlateState::Invoice1 | SlateState::Invoice2 | SlateState::Invoice3 => {
+				SlateState::Invoice3
+			}
+			_ => SlateState::Standard3,
+		}
 	}
 
 	/// Pay an APPROVED payment request (Invoice1). Only ever called from the
@@ -2407,31 +2429,55 @@ impl Wallet {
 	}
 
 	/// Change wallet password.
+	///
+	/// The seed and every held nostr identity must end on the same password,
+	/// otherwise the next open unlocks the seed but no identity and nostr is off
+	/// with no hint. So the identities are checked before the seed moves, and the
+	/// seed is moved back when the identities still fail to follow it.
 	pub fn change_password(&self, old: String, new: String) -> Result<(), Error> {
+		let nostr_dir = self.get_config().get_nostr_path();
+		let index = HeldIdentities::load(&nostr_dir);
+		// Dry run while nothing has moved: an identity file that cannot be read,
+		// or does not unlock with the old password, would fail the re-encryption
+		// below after the seed had already moved. Refuse the whole change here.
+		if let Some(index) = &index
+			&& let Err(e) = index.verify_all_unlock(&nostr_dir, &old)
 		{
-			let r_inst = self.instance.as_ref().read();
-			let instance = r_inst.clone().unwrap();
-			let mut wallet_lock = instance.lock();
-			let lc = wallet_lock.lc_provider()?;
-			lc.change_password(
-				None,
-				ZeroingString::from(old.clone()),
-				ZeroingString::from(new.clone()),
-			)?;
+			// Repair of a wallet an earlier failed change left split: the seed on
+			// `old`, every identity already on `new`. The identities are where the
+			// user wants them, so only the seed moves. Nothing in memory needs a
+			// refresh: any copy the service holds was read from these files, which
+			// are already on `new`.
+			if index.verify_all_unlock(&nostr_dir, &new).is_ok() {
+				info!("nostr: identities already on the new password, moving the seed only");
+				return self.change_seed_password(&old, &new);
+			}
+			error!("nostr: password change refused, held identity check failed: {e}");
+			return Err(Error::GenericError(format!(
+				"nostr identity re-encryption failed: {e}"
+			)));
 		}
+		self.change_seed_password(&old, &new)?;
 		// The grin seed password changed; re-encrypt EVERY held nostr identity's
 		// ncryptsec from old to new through the same NIP-49 path, so all front
-		// doors follow the one wallet password. This is ALL-OR-NOTHING: a partial
-		// move would leave some identities on the old password and some on the new
-		// (a split the user cannot open with one password), so on any failure we
-		// surface a hard error rather than silently continuing. Every identity is
-		// then left untouched on the old password.
-		let nostr_dir = self.get_config().get_nostr_path();
-		if let Some(index) = HeldIdentities::load(&nostr_dir) {
-			index.reencrypt_all(&nostr_dir, &old, &new).map_err(|e| {
+		// doors follow the one wallet password. This is ALL-OR-NOTHING across the
+		// identities: on failure every identity is left on the old password, so
+		// the seed is moved back to the old password as well.
+		if let Some(index) = index {
+			if let Err(e) = index.reencrypt_all(&nostr_dir, &old, &new) {
 				error!("nostr: re-encrypting held identities after password change: {e}");
-				Error::GenericError(format!("nostr identity re-encryption failed: {e}"))
-			})?;
+				if let Err(back) = self.change_seed_password(&new, &old) {
+					error!("wallet: moving the seed back to the old password failed: {back}");
+					return Err(Error::GenericError(format!(
+						"password change failed and could not be undone: the wallet seed is \
+						 on the new password and the nostr identities are on the old password \
+						 (identities: {e}; seed: {back})"
+					)));
+				}
+				return Err(Error::GenericError(format!(
+					"nostr identity re-encryption failed: {e}"
+				)));
+			}
 			// Keep the running service in sync so same-session gated ops (which
 			// re-unlock with the new password) work without a wallet reopen. The
 			// decrypted keys are unchanged by a password change, so this only
@@ -2441,6 +2487,27 @@ impl Wallet {
 			}
 		}
 		Ok(())
+	}
+
+	/// Move the seed from the `old` to the `new` password, then make the seed
+	/// file owner-only (0600) again: the upstream rewrite creates it with default
+	/// permissions, so another local user could copy it and grind the password
+	/// offline. Done after a failed change too, as the rewrite may have run.
+	fn change_seed_password(&self, old: &str, new: &str) -> Result<(), Error> {
+		let r_inst = self.instance.as_ref().read();
+		let instance = r_inst.clone().unwrap();
+		let mut wallet_lock = instance.lock();
+		let lc = wallet_lock.lc_provider()?;
+		let changed = lc.change_password(None, ZeroingString::from(old), ZeroingString::from(new));
+		#[cfg(unix)]
+		{
+			use std::os::unix::fs::PermissionsExt;
+			let _ = fs::set_permissions(
+				self.get_config().seed_path(),
+				fs::Permissions::from_mode(0o600),
+			);
+		}
+		changed
 	}
 
 	/// Initiate wallet repair by scanning its outputs.
@@ -4638,6 +4705,297 @@ mod open_tests {
 			wallet.parse_slatepack(&to_other).is_err(),
 			"nobody but the named recipient may decode the Slatepack"
 		);
+
+		wallet.close();
+	}
+
+	/// The re-post after a failed post looks for the finalized slatepack under
+	/// the state its flow is saved with: Invoice3 for a paid request, Standard3
+	/// for a send. Looking for Standard3 only left a paid request unbroadcast for
+	/// ever once its first post failed.
+	#[test]
+	fn repost_looks_for_the_finalized_state_of_the_flow() {
+		assert_eq!(
+			Wallet::finalized_state_for(&SlateState::Invoice2),
+			SlateState::Invoice3,
+			"a paid request is finalized and saved as Invoice3"
+		);
+		assert_eq!(
+			Wallet::finalized_state_for(&SlateState::Standard2),
+			SlateState::Standard3,
+			"a send reply is finalized and saved as Standard3"
+		);
+		for s in [SlateState::Invoice1, SlateState::Invoice3] {
+			assert_eq!(Wallet::finalized_state_for(&s), SlateState::Invoice3);
+		}
+		for s in [
+			SlateState::Standard1,
+			SlateState::Standard3,
+			SlateState::Unknown,
+		] {
+			assert_eq!(Wallet::finalized_state_for(&s), SlateState::Standard3);
+		}
+	}
+
+	/// A password change moves the seed and every held nostr identity together,
+	/// or neither moves. Three cases on one wallet:
+	/// - a held identity that does not unlock: refused before the seed moves;
+	/// - the identity step fails after the seed moved: the seed is moved back;
+	/// - a clean change: both move.
+	/// The seed file is owner-only (0600) after a rollback and after a change.
+	///
+	/// Extra identities are copies of the first one's file under other paths, so
+	/// the test needs no new scrypt key (each scrypt run is slow in debug).
+	///
+	/// Builds a real wallet under the module's sandbox HOME. Documented run:
+	///   cargo test --lib open_tests -- --test-threads=1
+	#[test]
+	fn password_change_moves_seed_and_identities_together_or_not_at_all() {
+		use crate::nostr::identities::HeldEntry;
+
+		let _serialised = serialised();
+		let sandbox = sandbox();
+
+		let old = "pw-change-old".to_string();
+		let new = "pw-change-new".to_string();
+		let wallet = Wallet::create(
+			&"pw-change-test".to_string(),
+			&ZeroingString::from(old.clone()),
+			&Mnemonic::default(),
+			&ConnectionMethod::Integrated,
+		)
+		.expect("wallet creation must succeed");
+
+		// Hard guard: refuse to continue if the sandbox did not take effect.
+		let data_path = PathBuf::from(wallet.get_config().get_data_path());
+		assert!(
+			data_path.starts_with(sandbox),
+			"sandbox did not take effect (wallet at {}); refusing to touch real data",
+			data_path.display()
+		);
+		wallet
+			.open(ZeroingString::from(old.clone()))
+			.expect("wallet must open");
+
+		let nostr_dir = wallet.get_config().get_nostr_path();
+		let seed_file = || fs::read(wallet.get_config().seed_path()).unwrap();
+		let seed_on = |pass: &String| wallet.get_recovery(pass.clone()).is_ok();
+		let files = |index: &HeldIdentities| -> Vec<Option<String>> {
+			index
+				.identities
+				.iter()
+				.map(|e| fs::read_to_string(e.abs_path(&nostr_dir)).ok())
+				.collect()
+		};
+		#[cfg(unix)]
+		let seed_mode = || {
+			use std::os::unix::fs::PermissionsExt;
+			fs::metadata(wallet.get_config().seed_path())
+				.unwrap()
+				.permissions()
+				.mode() & 0o777
+		};
+		let first = NostrIdentity::load(&nostr_dir).expect("identity.json must exist after open");
+		let mut index = HeldIdentities::load(&nostr_dir).expect("index must exist after open");
+
+		// Neither: a corrupt second identity refuses the change before the seed
+		// moves. The seed file keeps its bytes (a move and a move back would
+		// rewrite it with a fresh salt), and no identity file is touched.
+		let broken = HeldEntry {
+			pubkey: "broken".to_string(),
+			path: "identities/broken/identity.json".to_string(),
+			label: String::new(),
+		};
+		let mut broken_id = first.clone();
+		broken_id.ncryptsec = "ncryptsec1qqqqqbroken".to_string();
+		broken_id.save_at(&broken.abs_path(&nostr_dir)).unwrap();
+		index.identities.push(broken);
+		index.save(&nostr_dir).unwrap();
+		let before = files(&index);
+		let seed_before = seed_file();
+		assert!(
+			wallet.change_password(old.clone(), new.clone()).is_err(),
+			"a change the identities cannot follow must fail"
+		);
+		assert!(
+			seed_file() == seed_before,
+			"the seed file must not be touched when the change is refused"
+		);
+		assert!(
+			seed_on(&old) && !seed_on(&new),
+			"the seed must stay on the old password"
+		);
+		assert_eq!(files(&index), before, "no identity file may change");
+
+		index.identities.retain(|e| e.pubkey != "broken");
+
+		// Rolled back: an identity whose file name leaves no room for the
+		// re-encryption's temp name passes the check, so the seed moves, and then
+		// the identity step fails. The seed must go back to the old password.
+		// Unix only: the injection needs a 255-byte file name limit, and a
+		// Windows temp path this deep can hit MAX_PATH before it.
+		#[cfg(unix)]
+		{
+			let long = HeldEntry {
+				pubkey: "long".to_string(),
+				path: format!("identities/long/{}.json", "a".repeat(230)),
+				label: String::new(),
+			};
+			first.save_at(&long.abs_path(&nostr_dir)).unwrap();
+			index.identities.insert(0, long);
+			index.save(&nostr_dir).unwrap();
+			let before = files(&index);
+			assert!(
+				wallet.change_password(old.clone(), new.clone()).is_err(),
+				"a failing identity step must fail the change"
+			);
+			assert!(
+				seed_on(&old) && !seed_on(&new),
+				"the seed must be moved back to the old password"
+			);
+			assert_eq!(
+				files(&index),
+				before,
+				"every identity must still be on the old password"
+			);
+			assert_eq!(
+				seed_mode(),
+				0o600,
+				"the seed must be owner-only after a rollback"
+			);
+		}
+
+		// Both: a clean change moves the seed and the identity.
+		index.identities.retain(|e| e.pubkey != "long");
+		index.save(&nostr_dir).unwrap();
+		wallet
+			.change_password(old.clone(), new.clone())
+			.expect("a clean change must succeed");
+		assert!(
+			seed_on(&new) && !seed_on(&old),
+			"the seed must be on the new password"
+		);
+		let moved = NostrIdentity::load(&nostr_dir).unwrap();
+		assert!(
+			moved.unlock(&new).is_ok(),
+			"the identity must be on the new password"
+		);
+		#[cfg(unix)]
+		assert_eq!(
+			seed_mode(),
+			0o600,
+			"the seed must be owner-only after a change"
+		);
+
+		wallet.close();
+	}
+
+	/// A wallet an earlier failed change left split (seed on P2, every identity
+	/// still on P1) is repaired by the natural action: change P2 to P1. The
+	/// identities already unlock with P1, so only the seed moves. An identity on
+	/// neither password still refuses the change and leaves the seed untouched.
+	///
+	/// Builds a real wallet under the module's sandbox HOME. Documented run:
+	///   cargo test --lib open_tests -- --test-threads=1
+	#[test]
+	fn password_change_repairs_a_split_wallet() {
+		use crate::nostr::identities::HeldEntry;
+
+		let _serialised = serialised();
+		let sandbox = sandbox();
+
+		let p1 = "pw-split-one".to_string();
+		let p2 = "pw-split-two".to_string();
+		let wallet = Wallet::create(
+			&"pw-split-test".to_string(),
+			&ZeroingString::from(p1.clone()),
+			&Mnemonic::default(),
+			&ConnectionMethod::Integrated,
+		)
+		.expect("wallet creation must succeed");
+
+		// Hard guard: refuse to continue if the sandbox did not take effect.
+		let data_path = PathBuf::from(wallet.get_config().get_data_path());
+		assert!(
+			data_path.starts_with(sandbox),
+			"sandbox did not take effect (wallet at {}); refusing to touch real data",
+			data_path.display()
+		);
+		wallet
+			.open(ZeroingString::from(p1.clone()))
+			.expect("wallet must open");
+
+		// Two identities on P1: the first, and a copy of its file under another
+		// path (no new scrypt key).
+		let nostr_dir = wallet.get_config().get_nostr_path();
+		let first = NostrIdentity::load(&nostr_dir).expect("identity.json must exist after open");
+		let mut index = HeldIdentities::load(&nostr_dir).expect("index must exist after open");
+		let copy = HeldEntry {
+			pubkey: "copy".to_string(),
+			path: "identities/copy/identity.json".to_string(),
+			label: String::new(),
+		};
+		first.save_at(&copy.abs_path(&nostr_dir)).unwrap();
+		index.identities.push(copy);
+
+		// The split the 168 bug left: the seed alone moved to P2.
+		wallet
+			.change_seed_password(&p1, &p2)
+			.expect("the seed must move to P2");
+		let seed_file = || fs::read(wallet.get_config().seed_path()).unwrap();
+		let seed_on = |pass: &String| wallet.get_recovery(pass.clone()).is_ok();
+		assert!(seed_on(&p2) && !seed_on(&p1), "the seed must be on P2");
+
+		// An identity on neither password: refused, the seed is not touched.
+		let broken = HeldEntry {
+			pubkey: "broken".to_string(),
+			path: "identities/broken/identity.json".to_string(),
+			label: String::new(),
+		};
+		let mut broken_id = first.clone();
+		broken_id.ncryptsec = "ncryptsec1qqqqqbroken".to_string();
+		broken_id.save_at(&broken.abs_path(&nostr_dir)).unwrap();
+		index.identities.push(broken);
+		index.save(&nostr_dir).unwrap();
+		let seed_before = seed_file();
+		assert!(
+			wallet.change_password(p2.clone(), p1.clone()).is_err(),
+			"a split the identities cannot settle must be refused"
+		);
+		assert!(
+			seed_file() == seed_before,
+			"the seed file must not be touched when the repair is refused"
+		);
+
+		// Repair: every identity already unlocks with P1, so the seed follows.
+		index.identities.retain(|e| e.pubkey != "broken");
+		index.save(&nostr_dir).unwrap();
+		#[cfg(unix)]
+		{
+			use std::os::unix::fs::PermissionsExt;
+			fs::set_permissions(
+				wallet.get_config().seed_path(),
+				fs::Permissions::from_mode(0o644),
+			)
+			.unwrap();
+		}
+		wallet
+			.change_password(p2.clone(), p1.clone())
+			.expect("a split wallet must be repaired by changing back");
+		assert!(seed_on(&p1) && !seed_on(&p2), "the seed must be on P1");
+		for e in &index.identities {
+			let id = e.load(&nostr_dir).expect("identity file must load");
+			assert!(id.unlock(&p1).is_ok(), "every identity must unlock with P1");
+		}
+		#[cfg(unix)]
+		{
+			use std::os::unix::fs::PermissionsExt;
+			let mode = fs::metadata(wallet.get_config().seed_path())
+				.unwrap()
+				.permissions()
+				.mode() & 0o777;
+			assert_eq!(mode, 0o600, "the seed must be owner-only after the repair");
+		}
 
 		wallet.close();
 	}
