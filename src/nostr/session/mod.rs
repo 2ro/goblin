@@ -1199,6 +1199,40 @@ mod tests {
 		assert!(out.response.unwrap().contains("\"error\":\"malformed\""));
 	}
 
+	/// Goblin-to-Goblin payment wraps are NIP-44 v3 (wrapv3.rs). A session can
+	/// not open them today only because the nostr SDK's nip44::decrypt refuses
+	/// the 0x03 version byte before any key agreement. This test pins that: an
+	/// SDK upgrade that adds v3 decrypt would silently re-open both layers (the
+	/// seal names the payer, the rumor carries the slate), and it must then fail
+	/// here until the session refuses the v3 shapes as it refuses v2.
+	#[tokio::test]
+	async fn v3_goblin_payment_never_opens_through_a_session() {
+		let now = 1_751_800_000u64;
+		let (mut s, me) = mk_session(MAGICK_KINDS, now);
+		let payer = Keys::generate();
+		let wrap = crate::nostr::wrapv3::wrap(
+			&payer,
+			&me.public_key(),
+			protocol::build_payment_content(ARMOR),
+			protocol::build_rumor_tags(Some("lunch")),
+		)
+		.unwrap();
+		// The fixture is a real payment to this identity: the wallet opens it.
+		let opened = crate::nostr::wrapv3::unwrap(&me, &wrap).await.unwrap();
+		assert!(opened.rumor.content.contains("BEGINSLATEPACK"));
+		// Through the session, the outer layer never opens.
+		let out = serve_decrypt(
+			&mut s,
+			&mk_decrypt("v3", now, &wrap.pubkey, &wrap.content),
+			&me,
+			now,
+		);
+		let json = out.response.unwrap();
+		assert!(json.contains("\"error\":\"malformed\""), "{json}");
+		assert!(!json.contains(&payer.public_key().to_hex()));
+		assert!(!json.contains("plaintext"));
+	}
+
 	#[tokio::test]
 	async fn real_gift_wraps_open_for_orders_not_for_goblin_payments() {
 		let now = 1_751_800_000u64;
