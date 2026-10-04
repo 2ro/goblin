@@ -3286,7 +3286,7 @@ async fn handle_task(w: &Wallet, t: WalletTask) {
 					w.send_creating.store(false, Ordering::Relaxed);
 					if let Some(text) = w.read_slatepack_text(s.id, &s.state) {
 						match service
-							.send_payment_dm(
+							.send_payment_dm_on_screen(
 								&from_hex,
 								receiver,
 								&text,
@@ -3296,34 +3296,9 @@ async fn handle_task(w: &Wallet, t: WalletTask) {
 							.await
 						{
 							Ok(event_id) => {
-								// Proof-on-request (frozen contract 4.3.1): publish the
-								// plain "payment sent" receipt HERE at S1 dispatch, the
-								// same moment the payment envelope was accepted by a relay
-								// and the wallet UI flips to "sent", not at finalize. This
-								// closes the buyer's double-send window: an offline merchant
-								// leaves finalize hours away, and until this receipt lands
-								// the order page still shows a scannable QR for a payment
-								// already made. The encrypted PROOF stays at finalize (it
-								// does not exist before then). On failure we leave
-								// receipt_sent=false so the reconcile pass retries it.
-								let mut receipt_sent = false;
-								if crate::nostr::receipt_due_at_dispatch(
-									proof_mode,
-									order.as_deref(),
-								) {
-									let ord = order.as_deref().unwrap_or_default();
-									match service.publish_receipt_sent(&from_hex, ord, *a).await {
-										Ok(()) => receipt_sent = true,
-										Err(e) => log::warn!(
-											"nostr: dispatch receipt publish failed for {}: {e}",
-											s.id
-										),
-									}
-								}
 								if let Some(mut meta) = service.store.tx_meta(&s.id.to_string()) {
 									meta.status = crate::nostr::NostrSendStatus::AwaitingS2;
 									meta.sent_event_id = Some(event_id);
-									meta.receipt_sent = receipt_sent;
 									meta.updated_at = crate::nostr::unix_time();
 									service.store.save_tx_meta(&meta);
 								}
@@ -3356,6 +3331,31 @@ async fn handle_task(w: &Wallet, t: WalletTask) {
 								// show their name, not a bare npub.
 								service.resolve_contact_identity(receiver);
 								service.set_send_phase(crate::nostr::send_phase::SENT);
+								// Proof-on-request (frozen contract 4.3.1): publish the
+								// plain "payment sent" receipt at S1 dispatch, right after
+								// the payment envelope was accepted by a relay and the
+								// wallet UI flipped to "sent", not at finalize. This
+								// closes the buyer's double-send window: an offline merchant
+								// leaves finalize hours away, and until this receipt lands
+								// the order page still shows a scannable QR for a payment
+								// already made. It goes out after the screen shows "sent",
+								// so the spinner never waits for it. The encrypted PROOF
+								// stays at finalize (it does not exist before then). On
+								// failure receipt_sent stays false and the reconcile pass
+								// retries it.
+								if crate::nostr::receipt_due_at_dispatch(
+									proof_mode,
+									order.as_deref(),
+								) {
+									let ord = order.as_deref().unwrap_or_default();
+									match service.publish_receipt_sent(&from_hex, ord, *a).await {
+										Ok(()) => service.mark_receipt_sent(&s.id.to_string()),
+										Err(e) => log::warn!(
+											"nostr: dispatch receipt publish failed for {}: {e}",
+											s.id
+										),
+									}
+								}
 							}
 							Err(e) => {
 								error!("nostr send dispatch failed: {e}");
@@ -3459,7 +3459,7 @@ async fn handle_task(w: &Wallet, t: WalletTask) {
 					w.invoice_creating.store(false, Ordering::Relaxed);
 					if let Some(text) = w.read_slatepack_text(s.id, &s.state) {
 						match service
-							.send_payment_dm(
+							.send_payment_dm_on_screen(
 								&from_hex,
 								receiver,
 								&text,
@@ -3793,7 +3793,7 @@ async fn handle_task(w: &Wallet, t: WalletTask) {
 							proof_address: None,
 						});
 						match service
-							.send_payment_dm(&from_hex, &request.npub, &text, None, &[])
+							.send_payment_dm_on_screen(&from_hex, &request.npub, &text, None, &[])
 							.await
 						{
 							Ok(event_id) => {
@@ -3845,7 +3845,13 @@ async fn handle_task(w: &Wallet, t: WalletTask) {
 								proof_address: None,
 							});
 							match service
-								.send_payment_dm(&from_hex, &request.npub, &text, None, &[])
+								.send_payment_dm_on_screen(
+									&from_hex,
+									&request.npub,
+									&text,
+									None,
+									&[],
+								)
 								.await
 							{
 								Ok(event_id) => {
