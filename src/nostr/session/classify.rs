@@ -17,6 +17,7 @@
 //! kind-to-category display mapping. Security-critical, I/O-free.
 
 use super::*;
+use crate::nostr::authuri::has_interior_dot;
 use crate::nostr::protocol;
 use crate::nostr::relays::HOME_NIP05_DOMAIN;
 // ---------------------------------------------------------------------------
@@ -289,13 +290,15 @@ pub fn http_auth_target(
 	if authority_hosts.iter().any(|a| within(a)) {
 		return HttpAuthTarget::NameAuthority;
 	}
-	// The session domain is the trust URI's `d`; in development it carries a
-	// port (`localhost:3000`), which the host comparison leaves out.
+	// The session domain is the trust URI's `d`; a `:port` on it is left out of
+	// the host comparison.
 	let site_host = match site_domain.rsplit_once(':') {
 		Some((h, port)) if !port.is_empty() && port.bytes().all(|b| b.is_ascii_digit()) => h,
 		_ => site_domain,
 	};
-	if within(site_host) {
+	// A single-label site domain (`market`, or the `localhost` dev domain) is
+	// never a site of its own: it would cover every `*.market` host.
+	if has_interior_dot(site_host) && within(site_host) {
 		return HttpAuthTarget::OwnSite;
 	}
 	HttpAuthTarget::OtherHost

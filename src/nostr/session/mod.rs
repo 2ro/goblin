@@ -1152,7 +1152,8 @@ mod tests {
 		let wrap = EventBuilder::gift_wrap(&alice, &bob.public_key(), rumor, [])
 			.await
 			.unwrap();
-		// Layer 1 (gift wrap -> seal) still opens: the seal content is opaque.
+		// Layer 1 (gift wrap -> seal) is refused too: the seal carries no slate,
+		// but its pubkey would tell the site who paid the user.
 		let out = serve_decrypt(
 			&mut s,
 			&mk_decrypt("l1", now, &wrap.pubkey, &wrap.content),
@@ -1160,9 +1161,14 @@ mod tests {
 			now,
 		);
 		let json = out.response.unwrap();
-		assert!(json.contains("\"ok\":true"), "{json}");
-		let v: serde_json::Value = serde_json::from_str(&json).unwrap();
-		let seal = Event::from_json(v["plaintext"].as_str().unwrap()).unwrap();
+		assert!(json.contains("\"error\":\"malformed\""), "{json}");
+		assert!(!json.contains(&alice.public_key().to_hex()));
+		assert!(!json.contains("plaintext"));
+		// The seal, opened here with the identity key directly.
+		let seal = Event::from_json(
+			nip44::decrypt(bob.secret_key(), &wrap.pubkey, &wrap.content).unwrap(),
+		)
+		.unwrap();
 		assert_eq!(seal.kind, Kind::Seal);
 		// Layer 2 (seal -> rumor) would hand the site the slate: refused, and it
 		// answers exactly like a ciphertext that does not open.
@@ -1191,6 +1197,68 @@ mod tests {
 			now,
 		);
 		assert!(out.response.unwrap().contains("\"error\":\"malformed\""));
+	}
+
+	#[tokio::test]
+	async fn real_gift_wraps_open_for_orders_not_for_goblin_payments() {
+		let now = 1_751_800_000u64;
+		let (mut s, seller) = mk_session(MAGICK_KINDS, now);
+		let buyer = Keys::generate();
+		// magick's order traffic, wrapped by the unchanged nostr-sdk v2 builder:
+		// both layers still open, back to the exact rumor.
+		for (i, json) in magick_rumors(&buyer.public_key(), &seller.public_key(), now)
+			.into_iter()
+			.enumerate()
+		{
+			let mut v: serde_json::Value = serde_json::from_str(&json).unwrap();
+			v.as_object_mut().unwrap().remove("id");
+			let rumor = UnsignedEvent::from_json(v.to_string()).unwrap();
+			let wrap = EventBuilder::gift_wrap(&buyer, &seller.public_key(), rumor.clone(), [])
+				.await
+				.unwrap();
+			let out = serve_decrypt(
+				&mut s,
+				&mk_decrypt(&format!("o1-{i}"), now, &wrap.pubkey, &wrap.content),
+				&seller,
+				now,
+			);
+			let v: serde_json::Value = serde_json::from_str(&out.response.unwrap()).unwrap();
+			assert_eq!(v["ok"], true, "case {i} wrap layer");
+			let seal = Event::from_json(v["plaintext"].as_str().unwrap()).unwrap();
+			assert_eq!((seal.kind, seal.pubkey), (Kind::Seal, buyer.public_key()));
+			let out = serve_decrypt(
+				&mut s,
+				&mk_decrypt(&format!("o2-{i}"), now, &seal.pubkey, &seal.content),
+				&seller,
+				now,
+			);
+			let v: serde_json::Value = serde_json::from_str(&out.response.unwrap()).unwrap();
+			assert_eq!(v["ok"], true, "case {i} seal layer");
+			let opened = UnsignedEvent::from_json(v["plaintext"].as_str().unwrap()).unwrap();
+			assert_eq!(opened.content, rumor.content, "case {i}");
+		}
+		// The payment S1 and the request void, wrapped the same way: refused at
+		// the first layer already.
+		for (i, rumor) in [
+			goblin_payment_rumor(&buyer, &seller.public_key()),
+			goblin_void_rumor(&buyer, &seller.public_key()),
+		]
+		.into_iter()
+		.enumerate()
+		{
+			let wrap = EventBuilder::gift_wrap(&buyer, &seller.public_key(), rumor, [])
+				.await
+				.unwrap();
+			let out = serve_decrypt(
+				&mut s,
+				&mk_decrypt(&format!("g1-{i}"), now, &wrap.pubkey, &wrap.content),
+				&seller,
+				now,
+			);
+			let json = out.response.unwrap();
+			assert!(json.contains("\"error\":\"malformed\""), "case {i}: {json}");
+			assert!(!json.contains(&buyer.public_key().to_hex()));
+		}
 	}
 
 	#[test]
@@ -1316,13 +1384,42 @@ mod tests {
 				"{t:?}"
 			);
 		}
-		// A development domain carries a port; its host still matches.
+		// A site domain with a port still matches by its host.
 		assert_eq!(
 			http_auth_target(
-				&tags(&[&["u", "http://localhost:3000/api/x"]]),
-				"localhost:3000",
+				&tags(&[&["u", "https://magick.market:8443/api/x"]]),
+				"magick.market:8443",
 				&authorities
 			),
+			OwnSite
+		);
+	}
+
+	#[test]
+	fn nip98_single_label_site_is_never_own_site() {
+		use HttpAuthTarget::*;
+		let authorities = vec!["goblin.st".to_string()];
+		let target = |site: &str, u: &str| {
+			http_auth_target(&tags(&[&["u", u], &["method", "POST"]]), site, &authorities)
+		};
+		// A session opened for `d=market` (bound to evil.market) must not cover
+		// magick.market or any other *.market host, nor `market` itself.
+		for u in [
+			"https://magick.market/api/x",
+			"https://evil.market/api/x",
+			"https://market/api/x",
+		] {
+			assert_eq!(target("market", u), OtherHost, "{u}");
+			assert_eq!(target("market.", u), OtherHost, "{u} (trailing dot)");
+		}
+		// The localhost dev domain is single-label too: no silent HTTP auth.
+		assert_eq!(
+			target("localhost:3000", "http://localhost:3000/api/x"),
+			OtherHost
+		);
+		// A real two-label site is unaffected.
+		assert_eq!(
+			target("magick.market", "https://magick.market/api/x"),
 			OwnSite
 		);
 	}

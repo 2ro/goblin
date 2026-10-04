@@ -194,18 +194,42 @@ fn validate_challenge(raw: &str) -> Option<String> {
 }
 
 /// The domain must be non-empty, printable ASCII without spaces, and within DNS
-/// length bounds. It is DISPLAY data (the user approves it by eye) plus one
-/// binding check, never a route, so a shape check is enough (same as login).
+/// length bounds, and it must name a site ([`site_domain_allowed`]). It is
+/// DISPLAY data (the user approves it by eye) plus one binding check, never a
+/// route, so a shape check is enough (same as login).
 fn validate_domain(raw: &str) -> Option<String> {
 	let decoded = String::from_utf8_lossy(&percent_decode(raw)).into_owned();
 	let decoded = decoded.trim();
 	if decoded.is_empty()
 		|| decoded.len() > MAX_DOMAIN_LEN
 		|| !decoded.chars().all(|c| c.is_ascii_graphic())
+		|| !site_domain_allowed(decoded)
 	{
 		return None;
 	}
 	Some(decoded.to_string())
+}
+
+/// True when `domain` can stand for one site: its host part (before any
+/// `:port`) has at least two non-empty labels (one trailing dot ignored), or it
+/// is the `localhost` development form accepted since the first build
+/// (`localhost`, or `localhost:` followed by anything, any ASCII case). A single
+/// label such as `market` would bind every `*.market` callback and HTTP-auth
+/// host to one approval. A multi-label public suffix (`co.uk`) still passes:
+/// telling it apart needs the public suffix list, which the wallet does not
+/// ship and could only get as a new dependency.
+///
+/// Shared by the login, authorize and trust parsers and by [`domain_bound`].
+pub(crate) fn site_domain_allowed(domain: &str) -> bool {
+	let host = domain.split(':').next().unwrap_or(domain);
+	host.eq_ignore_ascii_case("localhost") || has_interior_dot(host)
+}
+
+/// True when `host` has two or more labels, none empty (one trailing dot is
+/// ignored). Also used by the session's HTTP-auth host check.
+pub(crate) fn has_interior_dot(host: &str) -> bool {
+	let host = host.strip_suffix('.').unwrap_or(host);
+	host.contains('.') && host.split('.').all(|label| !label.is_empty())
 }
 
 /// The callback must be `https://...`, or `http://localhost[:port]...` as the
@@ -319,7 +343,8 @@ pub(crate) fn domain_bound(callback: &str, domain: &str) -> bool {
 		_ => return false,
 	}
 	let domain = domain.trim().to_ascii_lowercase();
-	if host.is_empty() || domain.is_empty() {
+	// A single-label domain (`market`) would bind every `*.market` host.
+	if host.is_empty() || domain.is_empty() || !site_domain_allowed(&domain) {
 		return false;
 	}
 	// An IP literal has no subdomains: it binds only to itself.
@@ -857,6 +882,33 @@ mod tests {
 				"expected cb={bad:?} rejected"
 			);
 		}
+	}
+
+	#[test]
+	fn single_label_domain_rejected() {
+		let uri = |d: &str, cb: &str| {
+			format!(
+				"goblin:authorize?e={}&d={d}&cb={cb}&c={C}",
+				valid_template()
+			)
+		};
+		// d=market would bind evil.market and every other *.market host.
+		for d in ["market", "market.", ".market", "magick..market"] {
+			assert_eq!(parse(&uri(d, "https://evil.market/cb")), None, "d={d:?}");
+		}
+		assert!(!domain_bound("https://evil.market/cb", "market"));
+		// The localhost dev forms accepted before are unchanged.
+		for (d, cb) in [
+			("localhost:3000", "http://localhost:3000/api/authorize"),
+			("localhost", "http://localhost/cb"),
+			("LOCALHOST:5173", "http://localhost:5173/cb"),
+		] {
+			let out = parse(&uri(d, cb)).unwrap_or_else(|| panic!("d={d:?} still accepted"));
+			assert_eq!((out.domain.as_str(), out.callback.as_str()), (d, cb));
+		}
+		// magick's production shape is unchanged.
+		let out = parse(&uri("magick.market", "https://magick.market/api/authorize")).unwrap();
+		assert_eq!(out.domain, "magick.market");
 	}
 
 	#[test]

@@ -453,9 +453,10 @@ fn perform_decrypt(d: &DecryptRequest, keys: &Keys) -> String {
 	};
 	match nip44::decrypt(keys.secret_key(), &peer, &d.ciphertext) {
 		// A wallet-protocol plaintext (an incoming payment's rumor, once the seal
-		// is opened) never leaves the wallet through a session. It answers like
-		// a ciphertext that does not open, so the site learns nothing more.
-		Ok(pt) if is_wallet_protocol_payload(&pt) => {
+		// is opened) never leaves the wallet through a session, nor does the seal
+		// around one (its pubkey names the payer). Either answers like a
+		// ciphertext that does not open, so the site learns nothing more.
+		Ok(pt) if is_wallet_protocol_payload(&pt) || seal_hides_wallet_protocol(&pt, keys) => {
 			crypto_error("decrypt_result", &d.id, SignError::Malformed)
 		}
 		Ok(pt) => {
@@ -464,6 +465,33 @@ fn perform_decrypt(d: &DecryptRequest, keys: &Keys) -> String {
 		}
 		Err(_) => crypto_error("decrypt_result", &d.id, SignError::Malformed),
 	}
+}
+
+/// True when `plaintext` is a NIP-59 seal (kind-13 event JSON) whose rumor,
+/// opened with the identity key, is a wallet-protocol payload. The seal of a
+/// Goblin payment carries no slatepack itself, but its `pubkey` tells the site
+/// who paid the user, so the gift-wrap layer is refused like the rumor. Any
+/// other seal (magick's own order wraps) is returned as before. Bounded: one
+/// extra decrypt at most, no recursion.
+fn seal_hides_wallet_protocol(plaintext: &str, keys: &Keys) -> bool {
+	let Ok(seal) = serde_json::from_str::<serde_json::Value>(plaintext.trim()) else {
+		return false;
+	};
+	if seal.get("kind").and_then(|k| k.as_u64()) != Some(u64::from(Kind::Seal.as_u16())) {
+		return false;
+	}
+	let (Some(author), Some(content)) = (
+		seal.get("pubkey").and_then(|p| p.as_str()),
+		seal.get("content").and_then(|c| c.as_str()),
+	) else {
+		return false;
+	};
+	let Ok(author) = PublicKey::from_hex(author) else {
+		return false;
+	};
+	nip44::decrypt(keys.secret_key(), &author, content)
+		.map(|rumor| is_wallet_protocol_payload(&rumor))
+		.unwrap_or(false)
 }
 
 /// Serve an encrypt or decrypt op against a live session. Both are low tier and
