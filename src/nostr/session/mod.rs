@@ -98,6 +98,13 @@ const MONEY_KINDS: &[u16] = &[17, 30402];
 /// the money tier (spec sections 5.5, 5.6, finding B).
 const FLAGGED_CONVERSATION_KINDS: &[u16] = &[13, 14, 16, 1059];
 
+/// The direct-message kinds whose grant lets a session use the identity key for
+/// NIP-44 encrypt and decrypt: the NIP-17 rumor (14), its seal (13) and the
+/// gift wrap (1059). Sealing or reading messages is a messaging capability, so
+/// a session granted only, say, posts and reactions never touches the
+/// identity's conversations.
+const DM_CRYPTO_KINDS: &[u16] = &[13, 14, 1059];
+
 /// `|a - b|` on unsigned clocks without overflow.
 fn abs_diff(a: u64, b: u64) -> u64 {
 	a.abs_diff(b)
@@ -317,8 +324,9 @@ impl Session {
 
 	/// The session-level decision for an encrypt/decrypt op (no kind/tier by
 	/// event, since there is no event): the same lifetime, pause, replay, skew,
-	/// and rate gates as [`Session::decide`], then `MoneyPrompt` when `escalate`
-	/// (a pay-committing encrypt plaintext) else `Silent`.
+	/// and rate gates as [`Session::decide`], plus the grant gate (the session
+	/// must hold a direct-message kind, [`DM_CRYPTO_KINDS`]), then `MoneyPrompt`
+	/// when `escalate` (a pay-committing encrypt plaintext) else `Silent`.
 	pub fn decide_crypto(&mut self, id: &str, ts: u64, now: u64, escalate: bool) -> Decision {
 		if self.ended {
 			return Decision::Refuse(SignError::SessionEnded);
@@ -338,6 +346,16 @@ impl Session {
 		}
 		if abs_diff(ts, now) > CREATED_AT_SKEW_SECS {
 			return Decision::Refuse(SignError::StaleRequest);
+		}
+		// Encrypt and decrypt act on the identity's conversations, so they need a
+		// direct-message grant like any other messaging capability. Checked before
+		// the escalation, so an ungranted site cannot even raise a prompt.
+		if !self
+			.silent_kind_set
+			.iter()
+			.any(|k| DM_CRYPTO_KINDS.contains(k))
+		{
+			return Decision::Refuse(SignError::KindNotInSession);
 		}
 		self.trim_rate_window(now);
 		if self.silent_times.len() >= RATE_HARD_PER_5MIN {
@@ -755,6 +773,142 @@ mod tests {
 		(s, identity)
 	}
 
+	/// The kind set magick.market really requests in its trust URI
+	/// (market/src/lib/goblin/session/protocol.ts, MAGICK_LOW_TIER_KINDS).
+	const MAGICK_KINDS: &[u16] = &[
+		0, 1, 5, 7, 13, 14, 16, 1059, 1111, 10000, 30000, 30003, 30078, 30405, 30406, 31990, 24242,
+		27235,
+	];
+
+	fn mk_encrypt(id: &str, now: u64, peer: &PublicKey, plaintext: &str) -> EncryptRequest {
+		EncryptRequest {
+			msg_type: "encrypt".to_string(),
+			id: id.to_string(),
+			ts: now,
+			peer_pubkey: peer.to_hex(),
+			plaintext: plaintext.to_string(),
+		}
+	}
+
+	fn mk_decrypt(id: &str, now: u64, peer: &PublicKey, ciphertext: &str) -> DecryptRequest {
+		DecryptRequest {
+			msg_type: "decrypt".to_string(),
+			id: id.to_string(),
+			ts: now,
+			peer_pubkey: peer.to_hex(),
+			ciphertext: ciphertext.to_string(),
+		}
+	}
+
+	#[test]
+	fn crypto_refused_without_dm_grant() {
+		let now = 1_751_800_000u64;
+		let peer = Keys::generate();
+		// A site granted only posts and reactions.
+		let (mut s, id) = mk_session(&[1, 7], now);
+		let out = serve_encrypt(
+			&mut s,
+			&mk_encrypt("e1", now, &peer.public_key(), "hello"),
+			&id,
+			now,
+		);
+		assert!(!out.money_pending);
+		assert!(
+			out.response
+				.unwrap()
+				.contains("\"error\":\"kind_not_in_session\"")
+		);
+		// Not even a pay-committing encrypt reaches the password prompt.
+		let paying = r#"{"payment":{"bolt11":"lnbc1"}}"#;
+		let out = serve_encrypt(
+			&mut s,
+			&mk_encrypt("e2", now, &peer.public_key(), paying),
+			&id,
+			now,
+		);
+		assert!(!out.money_pending);
+		assert!(
+			out.response
+				.unwrap()
+				.contains("\"error\":\"kind_not_in_session\"")
+		);
+		// Decrypt is refused and the plaintext never comes back.
+		let ct = nip44::encrypt(
+			peer.secret_key(),
+			&id.public_key(),
+			"secret",
+			nip44::Version::V2,
+		)
+		.unwrap();
+		let out = serve_decrypt(
+			&mut s,
+			&mk_decrypt("d1", now, &peer.public_key(), &ct),
+			&id,
+			now,
+		);
+		let json = out.response.unwrap();
+		assert!(json.contains("\"error\":\"kind_not_in_session\""));
+		assert!(!json.contains("secret"));
+		// Kind 16 alone (order messages) is not a direct-message grant either.
+		let (mut s16, id16) = mk_session(&[16], now);
+		let ct16 = nip44::encrypt(
+			peer.secret_key(),
+			&id16.public_key(),
+			"secret",
+			nip44::Version::V2,
+		)
+		.unwrap();
+		let out = serve_decrypt(
+			&mut s16,
+			&mk_decrypt("d2", now, &peer.public_key(), &ct16),
+			&id16,
+			now,
+		);
+		assert!(
+			out.response
+				.unwrap()
+				.contains("\"error\":\"kind_not_in_session\"")
+		);
+	}
+
+	#[test]
+	fn crypto_served_with_a_dm_grant_and_magicks_set() {
+		let now = 1_751_800_000u64;
+		let peer = Keys::generate();
+		let mut grants: Vec<&[u16]> = vec![MAGICK_KINDS];
+		grants.extend([&[13u16][..], &[14u16][..], &[1059u16][..]]);
+		for kinds in grants {
+			let (mut s, id) = mk_session(kinds, now);
+			let out = serve_encrypt(
+				&mut s,
+				&mk_encrypt("e1", now, &peer.public_key(), "hello"),
+				&id,
+				now,
+			);
+			assert!(
+				out.response.unwrap().contains("\"ok\":true"),
+				"encrypt with {kinds:?}"
+			);
+			let ct = nip44::encrypt(
+				peer.secret_key(),
+				&id.public_key(),
+				"secret",
+				nip44::Version::V2,
+			)
+			.unwrap();
+			let out = serve_decrypt(
+				&mut s,
+				&mk_decrypt("d1", now, &peer.public_key(), &ct),
+				&id,
+				now,
+			);
+			assert!(
+				out.response.unwrap().contains("\"plaintext\":\"secret\""),
+				"decrypt with {kinds:?}"
+			);
+		}
+	}
+
 	fn mk_req(identity: &Keys, kind: u16, content: &str, now: u64, id: &str) -> SignRequest {
 		SignRequest {
 			msg_type: "sign".to_string(),
@@ -1030,7 +1184,8 @@ mod tests {
 	#[test]
 	fn money_replay_cannot_reprompt_or_resign() {
 		let now = 1_751_800_000u64;
-		let (mut s, id) = mk_session(&[1], now);
+		// Kind 13 grants the encrypt op used at the end of this test.
+		let (mut s, id) = mk_session(&[1, 13], now);
 		let req = mk_req(&id, 17, "{}", now, "rp1");
 		// First delivery raises the prompt.
 		let first = serve(&mut s, &req, &id, now);
