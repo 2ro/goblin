@@ -168,12 +168,9 @@ impl NostrService {
 		};
 		let event = receipt_sent_event(&from, order, amount)?;
 		let urls: Vec<String> = self.relays();
-		match tokio::time::timeout(SEND_TIMEOUT, client.send_event_to(&urls, &event)).await {
-			Ok(Ok(out)) => relay_accepted(&out.success, &out.failed)
-				.map_err(|e| format!("receipt publish failed: {e}")),
-			Ok(Err(e)) => Err(format!("receipt publish failed: {e}")),
-			Err(_) => Err("receipt publish timeout".to_string()),
-		}
+		publish_accepted(&client, &urls, &event)
+			.await
+			.map_err(|e| format!("receipt publish failed: {e}"))
 	}
 
 	/// Gift-wrap the full proof delivery (frozen contract 4.3.2) to the watcher's
@@ -217,12 +214,9 @@ impl NostrService {
 		)?;
 		let urls: Vec<String> = self.relays();
 		connect_relays(&client, &urls).await;
-		match tokio::time::timeout(SEND_TIMEOUT, client.send_event_to(&urls, &wrap)).await {
-			Ok(Ok(out)) => relay_accepted(&out.success, &out.failed)
-				.map_err(|e| format!("proof delivery failed: {e}")),
-			Ok(Err(e)) => Err(format!("proof delivery failed: {e}")),
-			Err(_) => Err("proof delivery timeout".to_string()),
-		}
+		publish_accepted(&client, &urls, &wrap)
+			.await
+			.map_err(|e| format!("proof delivery failed: {e}"))
 	}
 
 	/// Dispatch one gift-wrapped DM built by [`build_dm_wrap`] to `urls`.
@@ -233,12 +227,10 @@ impl NostrService {
 		wrap: &Event,
 		receiver: PublicKey,
 	) -> Result<String, String> {
-		let res = tokio::time::timeout(SEND_TIMEOUT, client.send_event_to(urls.clone(), wrap))
+		publish_accepted(client, &urls, wrap)
 			.await
-			.map_err(|_| "send timeout".to_string())?
 			.map_err(|e| format!("send failed: {e}"))?;
-		relay_accepted(&res.success, &res.failed).map_err(|e| format!("send failed: {e}"))?;
-		let event_id = res.val;
+		let event_id = wrap.id;
 
 		// The write already succeeded (a relay accepted the wrap for delivery),
 		// which IS the send-level evidence the UI waits on — so return Sent NOW at
@@ -467,16 +459,101 @@ fn receipt_sent_event(from: &Keys, order: &str, amount: u64) -> Result<Event, St
 		.map_err(|e| format!("receipt sign failed: {e}"))
 }
 
+/// Least time between the starts of two publish attempts. An attempt that
+/// comes back at once (no relay could even take the event yet) waits out the
+/// rest of it, so a dead network does not spin.
+const RETRY_GAP: Duration = Duration::from_secs(2);
+
+/// What one publish attempt came back with.
+enum Attempt {
+	/// The pool answered: the relays that accepted, and the others with why.
+	Answered(HashSet<RelayUrl>, HashMap<RelayUrl, String>),
+	/// The pool refused the send outright (no relays, a relay not added).
+	Refused(String),
+	/// The attempt ran into the end of the budget.
+	TimedOut,
+}
+
+/// Publish a finished wallet event (a DM wrap, a receipt, a proof wrap) to
+/// `urls` until a relay accepts it, within SEND_TIMEOUT for the whole publish.
+///
+/// A relay that is not connected yet (cold start, a slow Tor circuit) gets the
+/// event queued by the pool, which waits 10 s for its OK and then reports the
+/// relay as failed; the queued copy still goes out once the relay connects. So
+/// an attempt that no relay accepted is sent again, the same event with the
+/// same id: a relay that already holds it answers OK (duplicate), which also
+/// collects the acknowledgement of a queued copy that landed meanwhile. The
+/// send fails only when the whole budget passed with no relay accepting it, or
+/// at once when the pool refuses it outright, as before.
+async fn publish_accepted(client: &Client, urls: &[String], event: &Event) -> Result<(), String> {
+	let start = tokio::time::Instant::now();
+	publish_until_accepted(
+		SEND_TIMEOUT,
+		|| start.elapsed(),
+		|remaining| async move {
+			match tokio::time::timeout(remaining, client.send_event_to(urls, event)).await {
+				Ok(Ok(out)) => Attempt::Answered(out.success, out.failed),
+				Ok(Err(e)) => Attempt::Refused(e.to_string()),
+				Err(_) => Attempt::TimedOut,
+			}
+		},
+		tokio::time::sleep,
+	)
+	.await
+}
+
+/// The retry rule of [`publish_accepted`], apart from the network and the
+/// clock so a test can drive it. `elapsed` is the time since the publish
+/// began, `attempt` sends once within the time it is given, `pause` waits.
+async fn publish_until_accepted<C, A, AF, P, PF>(
+	budget: Duration,
+	elapsed: C,
+	mut attempt: A,
+	mut pause: P,
+) -> Result<(), String>
+where
+	C: Fn() -> Duration,
+	A: FnMut(Duration) -> AF,
+	AF: std::future::Future<Output = Attempt>,
+	P: FnMut(Duration) -> PF,
+	PF: std::future::Future<Output = ()>,
+{
+	let mut why = "no relay accepted it".to_string();
+	loop {
+		let began = elapsed();
+		let remaining = budget.saturating_sub(began);
+		if remaining.is_zero() {
+			return Err(why);
+		}
+		match attempt(remaining).await {
+			Attempt::Refused(e) => return Err(e),
+			Attempt::TimedOut => return Err(format!("timeout ({why})")),
+			Attempt::Answered(success, failed) => match relay_accepted(&success, &failed) {
+				Ok(()) => return Ok(()),
+				Err(e) => why = e,
+			},
+		}
+		let took = elapsed().saturating_sub(began);
+		if took < RETRY_GAP {
+			pause((RETRY_GAP - took).min(budget.saturating_sub(elapsed()))).await;
+		}
+	}
+}
+
 /// Whether a relay publish counts as sent: at least one relay accepted the
 /// event. The relay pool answers Ok even when no relay took it (a timeout, a
 /// relay that is not connected or a refusal is only listed among the failed
-/// relays), so an empty accepted set is a failed send, never "Sent". One
-/// accepting relay is enough, as before.
+/// relays), so an empty accepted set is not a send. One accepting relay is
+/// enough, as before.
+///
+/// A relay that already holds the event answers OK true with a "duplicate:"
+/// message (NIP-01), which the pool counts as accepted. A relay that answers
+/// it with false still holds the event, so that counts as accepted too.
 fn relay_accepted(
 	success: &HashSet<RelayUrl>,
 	failed: &HashMap<RelayUrl, String>,
 ) -> Result<(), String> {
-	if !success.is_empty() {
+	if !success.is_empty() || failed.values().any(|e| e.starts_with("duplicate:")) {
 		return Ok(());
 	}
 	if failed.is_empty() {
@@ -527,6 +604,180 @@ mod tests {
 		// Every relay accepted.
 		success.insert(b);
 		assert!(relay_accepted(&success, &HashMap::new()).is_ok());
+
+		// A relay that answers a copy it already holds with OK false and a
+		// "duplicate:" message still holds it: accepted.
+		let mut failed = HashMap::new();
+		failed.insert(a, "duplicate: have this event".to_string());
+		assert!(relay_accepted(&HashSet::new(), &failed).is_ok());
+	}
+
+	// --- Retry of a publish no relay accepted yet (fake clock, no network) ---
+
+	use std::cell::Cell;
+	use std::rc::Rc;
+
+	const BUDGET: Duration = Duration::from_secs(40);
+	/// The pool's own OK wait per relay (relay/constants.rs WAIT_FOR_OK_TIMEOUT).
+	const OK_WAIT: Duration = Duration::from_secs(10);
+
+	fn accepted_by(relay: &str) -> Attempt {
+		let mut success = HashSet::new();
+		success.insert(url(relay));
+		Attempt::Answered(success, HashMap::new())
+	}
+
+	fn none_accepted(why: &str) -> Attempt {
+		let mut failed = HashMap::new();
+		failed.insert(url("wss://relay.floonet.dev"), why.to_string());
+		Attempt::Answered(HashSet::new(), failed)
+	}
+
+	/// Run the retry rule on a fake clock. `step` gets the attempt's start time
+	/// and the time it may use, and returns how long it took and its outcome;
+	/// a step that would outlast its time is a timeout at the deadline. Pauses
+	/// only move the clock. Returns the result, the clock at the end, and the
+	/// number of attempts.
+	async fn drive(
+		step: impl Fn(Duration, Duration) -> (Duration, Attempt),
+	) -> (Result<(), String>, Duration, usize) {
+		let clock = Rc::new(Cell::new(Duration::ZERO));
+		let attempts = Rc::new(Cell::new(0usize));
+		let result = publish_until_accepted(
+			BUDGET,
+			|| clock.get(),
+			|remaining| {
+				let (clock, attempts) = (clock.clone(), attempts.clone());
+				attempts.set(attempts.get() + 1);
+				let (took, outcome) = step(clock.get(), remaining);
+				async move {
+					if took >= remaining {
+						clock.set(clock.get() + remaining);
+						return Attempt::TimedOut;
+					}
+					clock.set(clock.get() + took);
+					outcome
+				}
+			},
+			|d| {
+				let clock = clock.clone();
+				async move { clock.set(clock.get() + d) }
+			},
+		)
+		.await;
+		(result, clock.get(), attempts.get())
+	}
+
+	/// Nothing accepted on the first attempt (the relay was still connecting),
+	/// accepted on the second: a send.
+	#[tokio::test]
+	async fn a_publish_accepted_on_a_later_attempt_is_a_send() {
+		let (result, at, attempts) = drive(|start, _| {
+			if start.is_zero() {
+				(OK_WAIT, none_accepted("timeout"))
+			} else {
+				(
+					Duration::from_millis(300),
+					accepted_by("wss://relay.floonet.dev"),
+				)
+			}
+		})
+		.await;
+		assert!(result.is_ok());
+		assert_eq!(attempts, 2);
+		assert_eq!(at, OK_WAIT + Duration::from_millis(300));
+	}
+
+	/// The re-sent copy is answered as a duplicate (the queued first copy has
+	/// landed): a send, whether the relay says OK true (the pool lists it as
+	/// accepted) or OK false with "duplicate:".
+	#[tokio::test]
+	async fn a_duplicate_acknowledgement_is_a_send() {
+		let (result, _, attempts) = drive(|start, _| {
+			if start.is_zero() {
+				(OK_WAIT, none_accepted("timeout"))
+			} else {
+				(
+					Duration::from_millis(300),
+					none_accepted("duplicate: have this event"),
+				)
+			}
+		})
+		.await;
+		assert!(result.is_ok());
+		assert_eq!(attempts, 2);
+	}
+
+	/// Truly offline: every attempt waits out the pool's OK wait, or comes
+	/// back at once and is paced. The send fails only when the budget is used,
+	/// never later than it, and a dead network does not spin.
+	#[tokio::test]
+	async fn no_acceptance_within_the_budget_is_a_failed_send() {
+		let (result, at, attempts) = drive(|_, _| (OK_WAIT, none_accepted("timeout"))).await;
+		let err = result.unwrap_err();
+		assert!(err.contains("no relay accepted it"), "{err}");
+		assert_eq!(at, BUDGET);
+		assert_eq!(attempts, 4);
+
+		let (result, at, attempts) =
+			drive(|_, _| (Duration::ZERO, none_accepted("relay not connected"))).await;
+		assert!(result.is_err());
+		assert_eq!(at, BUDGET);
+		assert_eq!(attempts, (BUDGET.as_secs() / RETRY_GAP.as_secs()) as usize);
+	}
+
+	/// The pool refusing the send outright (no relays, a relay not added) is
+	/// an error at once, as before.
+	#[tokio::test]
+	async fn a_refused_publish_fails_at_once() {
+		let (result, at, attempts) =
+			drive(|_, _| (Duration::ZERO, Attempt::Refused("relay not found".into()))).await;
+		assert_eq!(result.unwrap_err(), "relay not found");
+		assert_eq!(at, Duration::ZERO);
+		assert_eq!(attempts, 1);
+	}
+
+	/// A relay that connects `up` after the publish began: a queued copy goes
+	/// out and is acknowledged while an attempt waits, so the send is reported
+	/// at about that moment; after the budget it is a failed send.
+	#[tokio::test]
+	async fn a_relay_that_connects_late_still_gets_the_send() {
+		for up in [5u64, 15, 30, 39] {
+			let up = Duration::from_secs(up);
+			let (result, at, _) = drive(|start, remaining| {
+				let window = OK_WAIT.min(remaining);
+				if up <= start {
+					(
+						Duration::from_millis(300),
+						accepted_by("wss://relay.floonet.dev"),
+					)
+				} else if up < start + window {
+					(up - start, accepted_by("wss://relay.floonet.dev"))
+				} else {
+					(window, none_accepted("timeout"))
+				}
+			})
+			.await;
+			assert!(result.is_ok(), "relay up at {up:?}");
+			// At the moment it connects, or one round trip later when it
+			// connects right as an attempt ends.
+			assert!(
+				at >= up && at <= up + Duration::from_millis(300),
+				"relay up at {up:?}, sent at {at:?}"
+			);
+		}
+		let up = Duration::from_secs(45);
+		let (result, at, _) = drive(|start, remaining| {
+			let window = OK_WAIT.min(remaining);
+			if up < start + window {
+				(up - start, accepted_by("wss://relay.floonet.dev"))
+			} else {
+				(window, none_accepted("timeout"))
+			}
+		})
+		.await;
+		assert!(result.is_err());
+		assert_eq!(at, BUDGET);
 	}
 
 	// --- H3: every message is sealed and signed by the identity it belongs to ---
