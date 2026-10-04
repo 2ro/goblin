@@ -501,9 +501,15 @@ impl Wallet {
 		// is deliberately independent of the wallet seed: the seed must never
 		// double as identity evidence, and a rotation must not be derivable
 		// from it. The nsec backup is therefore the identity backup.
-		let legacy = match NostrIdentity::load(&nostr_dir) {
-			Some(identity) => identity,
-			None => match NostrIdentity::create_random(password) {
+		//
+		// A damaged identity.json (cut by a kill or a full disk mid-write) is
+		// never written over: it is moved aside with its bytes unchanged before a
+		// new identity #1 is made. The wallet then runs on the new key, because
+		// "no identity" is a dead end in the app: adding or importing a key (nsec
+		// or .backup) needs a running nostr service.
+		let legacy = match NostrIdentity::load_or_set_aside(&nostr_dir) {
+			Ok(Some(identity)) => identity,
+			Ok(None) => match NostrIdentity::create_random(password) {
 				Ok((identity, _)) => {
 					if let Err(e) = identity.save(&nostr_dir) {
 						error!("nostr: identity save failed: {e}");
@@ -516,6 +522,16 @@ impl Wallet {
 					return;
 				}
 			},
+			// There, but unreadable (permissions, I/O error): its content is
+			// unknown, so it stays in place and nothing is written over it. Nostr
+			// is off for this session; the wallet itself still opens.
+			Err(e) => {
+				error!(
+					"nostr: identity file {} could not be read, left in place; nostr disabled this session: {e}",
+					NostrIdentity::path(&nostr_dir).display()
+				);
+				return;
+			}
 		};
 		// Adopt the held-identity index (migrating a pre-feature wallet's bare
 		// identity.json into it) and UNLOCK EVERY held identity now: with the wallet
@@ -4658,6 +4674,138 @@ mod open_tests {
 			NostrIdentity::path(&nostr_dir),
 			"the sole identity must resolve to the legacy file"
 		);
+
+		wallet.close();
+	}
+
+	/// A damaged identity.json (cut by a kill or a full disk mid-write) never
+	/// stops the wallet from opening and is never written over: it is moved
+	/// aside with its bytes unchanged, and nostr comes up on a new identity #1.
+	///
+	/// Builds a real wallet under the module's sandbox HOME, like the test above.
+	#[test]
+	fn a_damaged_identity_file_is_set_aside_and_the_wallet_still_opens() {
+		let _serialised = serialised();
+		let sandbox = sandbox();
+
+		let password = ZeroingString::from("damaged-id-password");
+		let wallet = Wallet::create(
+			&"damaged-id-test".to_string(),
+			&password,
+			&Mnemonic::default(),
+			&ConnectionMethod::Integrated,
+		)
+		.expect("wallet creation must succeed");
+		let data_path = PathBuf::from(wallet.get_config().get_data_path());
+		assert!(
+			data_path.starts_with(sandbox),
+			"sandbox did not take effect (wallet at {}); refusing to touch real data",
+			data_path.display()
+		);
+
+		// What a torn write leaves behind: an index that names identity #1, and an
+		// identity.json cut in half.
+		let nostr_dir = wallet.get_config().get_nostr_path();
+		let (old, _) = NostrIdentity::create_random(&password).unwrap();
+		HeldIdentities::from_legacy(&old)
+			.unwrap()
+			.save(&nostr_dir)
+			.unwrap();
+		let full = serde_json::to_string_pretty(&old).unwrap();
+		let torn = full.as_bytes()[..full.len() / 2].to_vec();
+		fs::write(NostrIdentity::path(&nostr_dir), &torn).unwrap();
+
+		wallet
+			.open(password.clone())
+			.expect("a damaged identity file must not stop the wallet opening");
+		assert!(wallet.is_open(), "wallet must report itself open");
+
+		// The damaged bytes are kept aside, unchanged.
+		let aside: Vec<PathBuf> = fs::read_dir(&nostr_dir)
+			.unwrap()
+			.filter_map(|e| e.ok())
+			.map(|e| e.path())
+			.filter(|p| {
+				p.file_name()
+					.unwrap()
+					.to_string_lossy()
+					.starts_with("identity.json.unreadable-")
+			})
+			.collect();
+		assert_eq!(aside.len(), 1, "the damaged file must be set aside");
+		assert_eq!(fs::read(&aside[0]).unwrap(), torn, "every byte is kept");
+		// A new identity #1 is in its place, and nostr runs on it.
+		let fresh = NostrIdentity::load(&nostr_dir).expect("a new identity.json must exist");
+		assert_ne!(fresh.npub, old.npub);
+		let svc = wallet
+			.nostr_service()
+			.expect("nostr must run on the new identity");
+		assert_eq!(svc.npub(), fresh.npub);
+
+		wallet.close();
+	}
+
+	/// A damaged held-identity index never stops the wallet from opening and is
+	/// never written over: it is moved aside with its bytes unchanged, a fresh
+	/// index is built from identity #1, and nostr comes up on identity #1.
+	///
+	/// Builds a real wallet under the module's sandbox HOME, like the test above.
+	#[test]
+	fn a_damaged_identity_index_is_set_aside_and_the_wallet_still_opens() {
+		let _serialised = serialised();
+		let sandbox = sandbox();
+
+		let password = ZeroingString::from("damaged-index-password");
+		let wallet = Wallet::create(
+			&"damaged-index-test".to_string(),
+			&password,
+			&Mnemonic::default(),
+			&ConnectionMethod::Integrated,
+		)
+		.expect("wallet creation must succeed");
+		let data_path = PathBuf::from(wallet.get_config().get_data_path());
+		assert!(
+			data_path.starts_with(sandbox),
+			"sandbox did not take effect (wallet at {}); refusing to touch real data",
+			data_path.display()
+		);
+
+		// A good identity #1, and an index torn in half by an in-place write.
+		let nostr_dir = wallet.get_config().get_nostr_path();
+		let (first, _) = NostrIdentity::create_random(&password).unwrap();
+		first.save(&nostr_dir).unwrap();
+		HeldIdentities::from_legacy(&first)
+			.unwrap()
+			.save(&nostr_dir)
+			.unwrap();
+		let full = fs::read(HeldIdentities::index_path(&nostr_dir)).unwrap();
+		let torn = full[..full.len() / 2].to_vec();
+		fs::write(HeldIdentities::index_path(&nostr_dir), &torn).unwrap();
+
+		wallet
+			.open(password.clone())
+			.expect("a damaged index must not stop the wallet opening");
+		assert!(wallet.is_open(), "wallet must report itself open");
+
+		let aside: Vec<PathBuf> = fs::read_dir(&nostr_dir)
+			.unwrap()
+			.filter_map(|e| e.ok())
+			.map(|e| e.path())
+			.filter(|p| {
+				p.file_name()
+					.unwrap()
+					.to_string_lossy()
+					.starts_with("identities.json.unreadable-")
+			})
+			.collect();
+		assert_eq!(aside.len(), 1, "the damaged index must be set aside");
+		assert_eq!(fs::read(&aside[0]).unwrap(), torn, "every byte is kept");
+		let index = HeldIdentities::load(&nostr_dir).expect("a fresh index must be saved");
+		assert_eq!(index.active, first.pubkey_hex().unwrap());
+		let svc = wallet
+			.nostr_service()
+			.expect("nostr must run on identity #1");
+		assert_eq!(svc.npub(), first.npub);
 
 		wallet.close();
 	}
