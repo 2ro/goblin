@@ -120,12 +120,54 @@ pub(crate) fn stage_private(tmp: &Path, data: &[u8]) -> std::io::Result<()> {
 			let _ = f.set_permissions(fs::Permissions::from_mode(0o600));
 		}
 		f.write_all(data)?;
-		f.sync_all()
+		sync_file(&f, tmp)
 	})();
 	if written.is_err() {
 		let _ = fs::remove_file(tmp);
 	}
 	written
+}
+
+/// True if `e`, from a file's fsync, means the filesystem does not support
+/// fsync at all, as opposed to a flush that failed: ENOTSUP / EOPNOTSUPP,
+/// ENOTTY or EINVAL, or the error kinds std gives those. std maps ENOTTY to no
+/// kind, so the raw codes are listed per platform.
+fn fsync_unsupported(e: &std::io::Error) -> bool {
+	use std::io::ErrorKind;
+	if matches!(e.kind(), ErrorKind::Unsupported | ErrorKind::InvalidInput) {
+		return true;
+	}
+	// EOPNOTSUPP (= ENOTSUP), ENOTTY, EINVAL.
+	#[cfg(any(target_os = "linux", target_os = "android"))]
+	let codes: &[i32] = &[95, 25, 22];
+	// ENOTSUP, EOPNOTSUPP, ENOTTY, EINVAL.
+	#[cfg(any(target_os = "macos", target_os = "ios"))]
+	let codes: &[i32] = &[45, 102, 25, 22];
+	#[cfg(not(any(
+		target_os = "linux",
+		target_os = "android",
+		target_os = "macos",
+		target_os = "ios"
+	)))]
+	let codes: &[i32] = &[];
+	e.raw_os_error().is_some_and(|c| codes.contains(&c))
+}
+
+/// Flush a file to disk. On a filesystem that does not support fsync at all
+/// (see [`fsync_unsupported`]) this is a logged warning and the write goes on,
+/// as Build 169's unflushed write did; any other failure (EIO, ENOSPC) fails
+/// the write.
+fn sync_file(f: &fs::File, path: &Path) -> std::io::Result<()> {
+	match f.sync_all() {
+		Err(e) if fsync_unsupported(&e) => {
+			log::warn!(
+				"nostr: could not flush {} (fsync not supported here): {e}",
+				path.display()
+			);
+			Ok(())
+		}
+		other => other,
+	}
 }
 
 /// Move a temp file from [`stage_private`] over `target`. The rename is atomic:
@@ -135,11 +177,57 @@ pub(crate) fn stage_private(tmp: &Path, data: &[u8]) -> std::io::Result<()> {
 /// because the rename has already happened. If the rename fails, the temp file
 /// is removed and the target keeps its previous content.
 pub(crate) fn commit_staged(tmp: &Path, target: &Path) -> std::io::Result<()> {
-	if let Err(e) = fs::rename(tmp, target) {
+	#[cfg(windows)]
+	let replaced = replace_on_windows(tmp, target);
+	#[cfg(not(windows))]
+	let replaced = fs::rename(tmp, target);
+	if let Err(e) = replaced {
 		let _ = fs::remove_file(tmp);
 		return Err(e);
 	}
 	sync_parent_dir(target);
+	Ok(())
+}
+
+/// Windows: an antivirus or indexer can hold the new temp file or the target
+/// open for a moment, and the rename then fails where Build 169's in-place
+/// write did not. A busy error (access denied, sharing or lock violation) is
+/// retried 5 times in all, 10 to 100 ms apart. If the target is still busy, it
+/// is written in place as Build 169 did (logged) and the temp file removed, so
+/// a save does not fail here for a reason that did not fail it before. Any
+/// other error is returned at once.
+#[cfg(windows)]
+fn replace_on_windows(tmp: &Path, target: &Path) -> std::io::Result<()> {
+	let busy = |e: &std::io::Error| {
+		e.kind() == std::io::ErrorKind::PermissionDenied
+			|| matches!(e.raw_os_error(), Some(32) | Some(33))
+	};
+	let mut retries = 0;
+	let err = loop {
+		match fs::rename(tmp, target) {
+			Ok(()) => return Ok(()),
+			Err(e) if busy(&e) && retries < 4 => {
+				let wait_ms = [10, 25, 50, 100][retries];
+				std::thread::sleep(std::time::Duration::from_millis(wait_ms));
+				retries += 1;
+			}
+			Err(e) if busy(&e) => break e,
+			Err(e) => return Err(e),
+		}
+	};
+	log::warn!(
+		"nostr: could not replace {} ({err}); writing it in place",
+		target.display()
+	);
+	let data = fs::read(tmp)?;
+	let mut f = fs::OpenOptions::new()
+		.write(true)
+		.create(true)
+		.truncate(true)
+		.open(target)?;
+	f.write_all(&data)?;
+	sync_file(&f, target)?;
+	let _ = fs::remove_file(tmp);
 	Ok(())
 }
 
@@ -999,6 +1087,37 @@ mod tests {
 			vec!["wss://relay.example"]
 		);
 		let _ = fs::remove_dir_all(&dir);
+	}
+
+	#[test]
+	fn only_an_unsupported_fsync_is_tolerated() {
+		// A filesystem without fsync must not make every save fail; a flush that
+		// really failed (EIO, a full disk) must still fail the write.
+		use std::io::{Error, ErrorKind};
+		assert!(fsync_unsupported(&Error::from(ErrorKind::Unsupported)));
+		assert!(fsync_unsupported(&Error::from(ErrorKind::InvalidInput)));
+		assert!(!fsync_unsupported(&Error::from(ErrorKind::Other)));
+		#[cfg(any(target_os = "linux", target_os = "android"))]
+		let (tolerated, fatal) = ([95, 25, 22], [5, 28]);
+		#[cfg(any(target_os = "macos", target_os = "ios"))]
+		let (tolerated, fatal) = ([45, 102, 25, 22], [5, 28]);
+		#[cfg(any(
+			target_os = "linux",
+			target_os = "android",
+			target_os = "macos",
+			target_os = "ios"
+		))]
+		{
+			for code in tolerated {
+				assert!(fsync_unsupported(&Error::from_raw_os_error(code)), "{code}");
+			}
+			for code in fatal {
+				assert!(
+					!fsync_unsupported(&Error::from_raw_os_error(code)),
+					"{code}"
+				);
+			}
+		}
 	}
 
 	#[test]
