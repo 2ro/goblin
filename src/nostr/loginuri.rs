@@ -399,6 +399,28 @@ mod tests {
 	}
 
 	#[test]
+	fn callback_backslash_and_userinfo_rejected() {
+		// The HTTP layer sends `https://evil.com\@magick.market/cb` to evil.com, so
+		// it must never count as bound to magick.market (raw or percent-encoded).
+		for cb in [
+			"https://evil.com\\@magick.market/cb",
+			"https://evil.com%5C@magick.market/cb",
+			"https://user@magick.market/cb",
+		] {
+			let uri = format!("goblin:login?c={C}&d=magick.market&cb={cb}");
+			assert_eq!(parse(&uri), None, "expected cb={cb:?} rejected");
+		}
+		// magick's real callback shape still binds.
+		let ok = format!(
+			"goblin:login?c={C}&d=magick.market&cb=https%3A%2F%2Fmagick.market%2Fapi%2Fv1%2Flogin%2Fcallback"
+		);
+		assert_eq!(
+			parse(&ok).unwrap().callback,
+			"https://magick.market/api/v1/login/callback"
+		);
+	}
+
+	#[test]
 	fn percent_encoded_callback_decoded() {
 		let cb = "https%3A%2F%2Fmagick.market%2Fapi%2Flogin%3Fs%3D1";
 		let uri = format!("goblin:login?c={C}&d=magick.market&cb={cb}");

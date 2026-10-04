@@ -266,38 +266,65 @@ fn is_localhost_authority(rest: &str) -> bool {
 	}
 }
 
-/// The new domain binding: the callback host must equal `domain` or be a
-/// subdomain of it, matched on a label boundary (case-insensitive, ports
-/// ignored). The `http://localhost` dev callback is exempt, since a local dev
-/// server legitimately serves any domain's flow. This is what makes the
+/// The domain binding: the callback host must equal `domain` or be a subdomain
+/// of it, matched on a label boundary (case-insensitive, ports ignored). The
+/// `http://localhost` dev callback is exempt, since a local dev server
+/// legitimately serves any domain's flow. This is what makes the
 /// attacker-supplied `d` trustworthy: the signed event can only ever travel to
 /// a host that belongs to the domain the user approved.
 ///
-/// Shared with [`crate::nostr::loginuri`], which applies the exact same binding
-/// so a login callback can only reach a host belonging to the approved domain.
+/// The host comes from `url::Url::parse`, the same WHATWG parser the HTTP layer
+/// uses to send the POST (src/tor/mod.rs and src/http/client.rs), so the host
+/// checked here is the host the event actually reaches. A hand-split authority
+/// does not agree with that parser: for https a `\` ends the host, so
+/// `https://evil.com\@magick.market/cb` used to look bound to magick.market
+/// while the request went to evil.com. Fails closed on a backslash, any
+/// userinfo, a control byte, an unparsable URL, a scheme other than https (or
+/// the localhost dev http), and a raw host spelling that differs from the
+/// parsed host (percent-encoded, unicode or numeric-shorthand hosts), so no
+/// parser difference can split what is checked from where the POST goes.
+///
+/// Shared with [`crate::nostr::loginuri`] and [`crate::nostr::trusturi`], which
+/// apply the exact same binding to their callbacks.
 pub(crate) fn domain_bound(callback: &str, domain: &str) -> bool {
-	// The localhost dev callback is validated already and exempt from binding.
-	if strip_prefix_ignore_case(callback, "http://").is_some() {
-		return true;
+	if callback.contains('\\') || callback.bytes().any(|b| b < 0x20 || b == 0x7f) {
+		return false;
 	}
-	let Some(rest) = strip_prefix_ignore_case(callback, "https://") else {
+	let Ok(url) = url::Url::parse(callback) else {
 		return false;
 	};
-	let authority_end = rest
-		.find(|c| c == '/' || c == '?' || c == '#')
-		.unwrap_or(rest.len());
-	let authority = &rest[..authority_end];
-	// Drop any userinfo (`user:pass@`), keep the host:port that follows.
-	let hostport = authority.rsplit('@').next().unwrap_or(authority);
-	// Drop the port, if any (a bare host has no colon).
-	let host = match hostport.rfind(':') {
-		Some(i) => &hostport[..i],
-		None => hostport,
+	let Some((_, after_scheme)) = callback.split_once("://") else {
+		return false;
 	};
-	let host = host.trim().to_ascii_lowercase();
+	let raw_authority = &after_scheme[..after_scheme
+		.find(['/', '?', '#'])
+		.unwrap_or(after_scheme.len())];
+	// Userinfo in any form, even an empty `@`, is never part of a callback.
+	if raw_authority.contains('@') || !url.username().is_empty() || url.password().is_some() {
+		return false;
+	}
+	let Some(host) = url.host_str() else {
+		return false;
+	};
+	// The raw text must spell the parsed host itself, optionally with a port.
+	let raw_authority = raw_authority.to_ascii_lowercase();
+	if raw_authority != host && !raw_authority.starts_with(&format!("{host}:")) {
+		return false;
+	}
+	match url.scheme() {
+		"https" => {}
+		// The localhost dev callback (already gated by validate_callback) stays
+		// exempt from the binding, exactly as before.
+		"http" => return host == "localhost",
+		_ => return false,
+	}
 	let domain = domain.trim().to_ascii_lowercase();
 	if host.is_empty() || domain.is_empty() {
 		return false;
+	}
+	// An IP literal has no subdomains: it binds only to itself.
+	if !matches!(url.host(), Some(url::Host::Domain(_))) {
+		return host == domain;
 	}
 	host == domain || host.ends_with(&format!(".{domain}"))
 }
@@ -797,6 +824,113 @@ mod tests {
 			valid_template()
 		);
 		assert_eq!(parse(&bad), None);
+	}
+
+	/// An authorize URI with `d=magick.market` and the given raw `cb` value.
+	fn uri_with_cb(cb: &str) -> String {
+		format!(
+			"goblin:authorize?e={}&d=magick.market&cb={cb}&c={C}",
+			valid_template()
+		)
+	}
+
+	#[test]
+	fn callback_backslash_and_userinfo_rejected() {
+		for bad in [
+			// For https the URL parser ends the host at `\`, so this POSTs to evil.com.
+			"https://evil.com\\@magick.market/cb",
+			// The same, percent-encoded (cb is decoded once before validation).
+			"https://evil.com%5C@magick.market/cb",
+			// Double-encoded: decodes to a literal `%5C`, which then sits in userinfo.
+			"https://evil.com%255C@magick.market/cb",
+			// A backslash anywhere, even in the path, is never a callback.
+			"https://magick.market\\evil/cb",
+			// Userinfo in any shape.
+			"https://evil.com@magick.market/cb",
+			"https://user:pass@magick.market/cb",
+			"https://@magick.market/cb",
+			"https://magick.market@evil.com/cb",
+		] {
+			assert_eq!(
+				parse(&uri_with_cb(bad)),
+				None,
+				"expected cb={bad:?} rejected"
+			);
+		}
+	}
+
+	#[test]
+	fn callback_host_spelling_must_match_the_parsed_host() {
+		for bad in [
+			// Trailing dot: the parser keeps it, so it is not the approved domain.
+			"https://magick.market./cb",
+			// An empty authority the parser would silently fill from the path.
+			"https:///magick.market/cb",
+			// A percent-encoded host (cb is decoded once, so this reaches the
+			// binding as `magick%2Emarket`) decodes to another spelling.
+			"https://magick%252Emarket/cb",
+			// Unicode lookalike (Cyrillic a) and a unicode IDN host: the parser
+			// turns both into punycode, never the ASCII domain.
+			"https://m\u{0430}gick.market/cb",
+			"https://m\u{00e4}gick.market/cb",
+		] {
+			assert_eq!(
+				parse(&uri_with_cb(bad)),
+				None,
+				"expected cb={bad:?} rejected"
+			);
+		}
+		// Mixed case and an explicit port are the same host: still accepted.
+		for ok in [
+			"https://MAGICK.Market/cb",
+			"https://Shop.Magick.Market:8443/cb",
+		] {
+			assert!(
+				parse(&uri_with_cb(ok)).is_some(),
+				"expected cb={ok:?} accepted"
+			);
+		}
+	}
+
+	#[test]
+	fn callback_ip_literal_binds_only_to_itself() {
+		let ip = |d: &str, cb: &str| {
+			format!(
+				"goblin:authorize?e={}&d={d}&cb={cb}&c={C}",
+				valid_template()
+			)
+		};
+		assert!(parse(&ip("203.0.113.7", "https://203.0.113.7/cb")).is_some());
+		// No "subdomain" match on dotted IP parts.
+		assert_eq!(parse(&ip("113.7", "https://203.0.113.7/cb")), None);
+	}
+
+	#[test]
+	fn accepted_callbacks_bind_by_the_http_layer_parser() {
+		// Property: every callback the parser accepts for d=magick.market has a
+		// url::Url host (the host the POST really reaches) equal to the domain or
+		// a label-boundary subdomain of it.
+		for cb in [
+			"https://magick.market/api/authorize",
+			"https://shop.magick.market/checkout",
+			"https://magick.market:8443/cb",
+			"https://MAGICK.Market/cb",
+			"https://evil.com\\@magick.market/cb",
+			"https://evil.com%5C@magick.market/cb",
+			"https://user@magick.market/cb",
+			"https://magick.market./cb",
+		] {
+			if let Some(out) = parse(&uri_with_cb(cb)) {
+				let host = url::Url::parse(&out.callback)
+					.ok()
+					.and_then(|u| u.host_str().map(str::to_string))
+					.unwrap_or_default();
+				assert!(
+					host == "magick.market" || host.ends_with(".magick.market"),
+					"accepted cb={cb:?} reaches host {host:?}"
+				);
+			}
+		}
 	}
 
 	#[test]

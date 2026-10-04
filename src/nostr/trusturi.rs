@@ -494,6 +494,27 @@ mod tests {
 	}
 
 	#[test]
+	fn callback_backslash_and_userinfo_rejected() {
+		// A trust URI showing magick.market whose login POST would reach evil.com
+		// (the parser ends the https host at `\`) must never open a session.
+		for cb in [
+			"https://evil.com\\@magick.market/cb",
+			"https://evil.com%5C@magick.market/cb",
+			"https://user@magick.market/cb",
+		] {
+			let uri = format!(
+				"goblin:trust?c={C}&d=magick.market&cb={cb}&sk={SK}&r=wss://r.magick.market&k=1"
+			);
+			assert_eq!(parse(&uri), None, "expected cb={cb:?} rejected");
+		}
+		// magick's real trust URI shape (encodeURIComponent'd cb and r) still parses.
+		let ok = format!(
+			"goblin:trust?c={C}&d=magick.market&cb=https%3A%2F%2Fmagick.market%2Fapi%2Fv1%2Flogin%2Fcallback&sk={SK}&r=wss%3A%2F%2Frelay.floonet.dev&k=0,1,5,7,13,14,16,1059,1111,10000,30000,30003,30078,30405,30406,31990,24242,27235"
+		);
+		assert!(parse(&ok).is_some());
+	}
+
+	#[test]
 	fn duplicate_params_first_wins() {
 		let uri = format!(
 			"goblin:trust?c={C}&c={}&d=magick.market&d=evil.com&cb=https://magick.market/cb&sk={SK}&r=wss://r.magick.market&k=1&k=7",

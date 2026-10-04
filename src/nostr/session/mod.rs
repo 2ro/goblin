@@ -98,6 +98,13 @@ const MONEY_KINDS: &[u16] = &[17, 30402];
 /// the money tier (spec sections 5.5, 5.6, finding B).
 const FLAGGED_CONVERSATION_KINDS: &[u16] = &[13, 14, 16, 1059];
 
+/// The direct-message kinds whose grant lets a session use the identity key for
+/// NIP-44 encrypt and decrypt: the NIP-17 rumor (14), its seal (13) and the
+/// gift wrap (1059). Sealing or reading messages is a messaging capability, so
+/// a session granted only, say, posts and reactions never touches the
+/// identity's conversations.
+const DM_CRYPTO_KINDS: &[u16] = &[13, 14, 1059];
+
 /// `|a - b|` on unsigned clocks without overflow.
 fn abs_diff(a: u64, b: u64) -> u64 {
 	a.abs_diff(b)
@@ -301,6 +308,15 @@ impl Session {
 				if !self.silent_kind_set.contains(&req.event.kind) {
 					return Decision::Refuse(SignError::KindNotInSession);
 				}
+				// NIP-98 HTTP auth is judged by the host it authorizes: silent for
+				// the session's own site, refused for any other host, the wallet's
+				// name authority included (see http_auth_target).
+				if req.event.kind == HTTP_AUTH_KIND
+					&& http_auth_target(&req.event.tags, &self.domain, &name_authority_hosts())
+						!= HttpAuthTarget::OwnSite
+				{
+					return Decision::Refuse(SignError::Refused);
+				}
 				// Rate limiting on the silent path only.
 				self.trim_rate_window(now);
 				if self.silent_times.len() >= RATE_HARD_PER_5MIN {
@@ -317,8 +333,9 @@ impl Session {
 
 	/// The session-level decision for an encrypt/decrypt op (no kind/tier by
 	/// event, since there is no event): the same lifetime, pause, replay, skew,
-	/// and rate gates as [`Session::decide`], then `MoneyPrompt` when `escalate`
-	/// (a pay-committing encrypt plaintext) else `Silent`.
+	/// and rate gates as [`Session::decide`], plus the grant gate (the session
+	/// must hold a direct-message kind, [`DM_CRYPTO_KINDS`]), then `MoneyPrompt`
+	/// when `escalate` (a pay-committing encrypt plaintext) else `Silent`.
 	pub fn decide_crypto(&mut self, id: &str, ts: u64, now: u64, escalate: bool) -> Decision {
 		if self.ended {
 			return Decision::Refuse(SignError::SessionEnded);
@@ -338,6 +355,16 @@ impl Session {
 		}
 		if abs_diff(ts, now) > CREATED_AT_SKEW_SECS {
 			return Decision::Refuse(SignError::StaleRequest);
+		}
+		// Encrypt and decrypt act on the identity's conversations, so they need a
+		// direct-message grant like any other messaging capability. Checked before
+		// the escalation, so an ungranted site cannot even raise a prompt.
+		if !self
+			.silent_kind_set
+			.iter()
+			.any(|k| DM_CRYPTO_KINDS.contains(k))
+		{
+			return Decision::Refuse(SignError::KindNotInSession);
 		}
 		self.trim_rate_window(now);
 		if self.silent_times.len() >= RATE_HARD_PER_5MIN {
@@ -560,6 +587,8 @@ impl PendingMoney {
 #[cfg(test)]
 mod tests {
 	use super::*;
+	use crate::nostr::protocol;
+	use nostr_sdk::{JsonUtil, UnsignedEvent};
 
 	fn low_content() -> &'static str {
 		"gm"
@@ -677,7 +706,7 @@ mod tests {
 			],
 			content: "+".to_string(),
 		};
-		let signed = sign_session_event(&keys, &ev, now).expect("sign");
+		let signed = sign_session_event(&keys, &ev, "magick.market", now).expect("sign");
 		assert_eq!(
 			signed.created_at.as_secs(),
 			pinned,
@@ -689,7 +718,7 @@ mod tests {
 		assert!(signed.verify().is_ok());
 		// Recomputing NDK-style over the same fields yields the same id: build a
 		// second event with the same pinned time and compare ids.
-		let again = sign_session_event(&keys, &ev, now).expect("sign again");
+		let again = sign_session_event(&keys, &ev, "magick.market", now).expect("sign again");
 		assert_eq!(
 			signed.id, again.id,
 			"id is a pure function of pinned fields"
@@ -712,28 +741,28 @@ mod tests {
 		let mut wrong = base.clone();
 		wrong.pubkey = other.public_key().to_hex();
 		assert_eq!(
-			sign_session_event(&keys, &wrong, now),
+			sign_session_event(&keys, &wrong, "magick.market", now),
 			Err(SignError::IdentityMismatch)
 		);
 		// Login kind refused outright.
 		let mut login = base.clone();
 		login.kind = LOGIN_EVENT_KIND;
 		assert_eq!(
-			sign_session_event(&keys, &login, now),
+			sign_session_event(&keys, &login, "magick.market", now),
 			Err(SignError::Refused)
 		);
 		// Delegation tag refused outright.
 		let mut deleg = base.clone();
 		deleg.tags = vec![vec!["delegation".to_string(), "x".to_string()]];
 		assert_eq!(
-			sign_session_event(&keys, &deleg, now),
+			sign_session_event(&keys, &deleg, "magick.market", now),
 			Err(SignError::Refused)
 		);
 		// Out-of-skew created_at.
 		let mut stale = base.clone();
 		stale.created_at = now + CREATED_AT_SKEW_SECS + 5;
 		assert_eq!(
-			sign_session_event(&keys, &stale, now),
+			sign_session_event(&keys, &stale, "magick.market", now),
 			Err(SignError::StaleRequest)
 		);
 	}
@@ -753,6 +782,665 @@ mod tests {
 			now,
 		);
 		(s, identity)
+	}
+
+	/// The kind set magick.market really requests in its trust URI
+	/// (market/src/lib/goblin/session/protocol.ts, MAGICK_LOW_TIER_KINDS).
+	const MAGICK_KINDS: &[u16] = &[
+		0, 1, 5, 7, 13, 14, 16, 1059, 1111, 10000, 30000, 30003, 30078, 30405, 30406, 31990, 24242,
+		27235,
+	];
+
+	fn mk_encrypt(id: &str, now: u64, peer: &PublicKey, plaintext: &str) -> EncryptRequest {
+		EncryptRequest {
+			msg_type: "encrypt".to_string(),
+			id: id.to_string(),
+			ts: now,
+			peer_pubkey: peer.to_hex(),
+			plaintext: plaintext.to_string(),
+		}
+	}
+
+	fn mk_decrypt(id: &str, now: u64, peer: &PublicKey, ciphertext: &str) -> DecryptRequest {
+		DecryptRequest {
+			msg_type: "decrypt".to_string(),
+			id: id.to_string(),
+			ts: now,
+			peer_pubkey: peer.to_hex(),
+			ciphertext: ciphertext.to_string(),
+		}
+	}
+
+	#[test]
+	fn crypto_refused_without_dm_grant() {
+		let now = 1_751_800_000u64;
+		let peer = Keys::generate();
+		// A site granted only posts and reactions.
+		let (mut s, id) = mk_session(&[1, 7], now);
+		let out = serve_encrypt(
+			&mut s,
+			&mk_encrypt("e1", now, &peer.public_key(), "hello"),
+			&id,
+			now,
+		);
+		assert!(!out.money_pending);
+		assert!(
+			out.response
+				.unwrap()
+				.contains("\"error\":\"kind_not_in_session\"")
+		);
+		// Not even a pay-committing encrypt reaches the password prompt.
+		let paying = r#"{"payment":{"bolt11":"lnbc1"}}"#;
+		let out = serve_encrypt(
+			&mut s,
+			&mk_encrypt("e2", now, &peer.public_key(), paying),
+			&id,
+			now,
+		);
+		assert!(!out.money_pending);
+		assert!(
+			out.response
+				.unwrap()
+				.contains("\"error\":\"kind_not_in_session\"")
+		);
+		// Decrypt is refused and the plaintext never comes back.
+		let ct = nip44::encrypt(
+			peer.secret_key(),
+			&id.public_key(),
+			"secret",
+			nip44::Version::V2,
+		)
+		.unwrap();
+		let out = serve_decrypt(
+			&mut s,
+			&mk_decrypt("d1", now, &peer.public_key(), &ct),
+			&id,
+			now,
+		);
+		let json = out.response.unwrap();
+		assert!(json.contains("\"error\":\"kind_not_in_session\""));
+		assert!(!json.contains("secret"));
+		// Kind 16 alone (order messages) is not a direct-message grant either.
+		let (mut s16, id16) = mk_session(&[16], now);
+		let ct16 = nip44::encrypt(
+			peer.secret_key(),
+			&id16.public_key(),
+			"secret",
+			nip44::Version::V2,
+		)
+		.unwrap();
+		let out = serve_decrypt(
+			&mut s16,
+			&mk_decrypt("d2", now, &peer.public_key(), &ct16),
+			&id16,
+			now,
+		);
+		assert!(
+			out.response
+				.unwrap()
+				.contains("\"error\":\"kind_not_in_session\"")
+		);
+	}
+
+	#[test]
+	fn crypto_served_with_a_dm_grant_and_magicks_set() {
+		let now = 1_751_800_000u64;
+		let peer = Keys::generate();
+		let mut grants: Vec<&[u16]> = vec![MAGICK_KINDS];
+		grants.extend([&[13u16][..], &[14u16][..], &[1059u16][..]]);
+		for kinds in grants {
+			let (mut s, id) = mk_session(kinds, now);
+			let out = serve_encrypt(
+				&mut s,
+				&mk_encrypt("e1", now, &peer.public_key(), "hello"),
+				&id,
+				now,
+			);
+			assert!(
+				out.response.unwrap().contains("\"ok\":true"),
+				"encrypt with {kinds:?}"
+			);
+			let ct = nip44::encrypt(
+				peer.secret_key(),
+				&id.public_key(),
+				"secret",
+				nip44::Version::V2,
+			)
+			.unwrap();
+			let out = serve_decrypt(
+				&mut s,
+				&mk_decrypt("d1", now, &peer.public_key(), &ct),
+				&id,
+				now,
+			);
+			assert!(
+				out.response.unwrap().contains("\"plaintext\":\"secret\""),
+				"decrypt with {kinds:?}"
+			);
+		}
+	}
+
+	/// A shape-correct slatepack armor (the receiver finds it by these markers).
+	const ARMOR: &str =
+		"BEGINSLATEPACK. 4H1qx1wHe668tFW yC2gfL8PPd8kSgv pcXQhyRkHbyKHZg. ENDSLATEPACK.";
+
+	/// The kind-14 rumor a Goblin wallet seals for a payment, built the way
+	/// `send_payment_dm` builds it (protocol content and tags, receiver p tag).
+	fn goblin_payment_rumor(sender: &Keys, receiver: &PublicKey) -> UnsignedEvent {
+		let mut rumor = EventBuilder::new(
+			Kind::PrivateDirectMessage,
+			protocol::build_payment_content(ARMOR),
+		)
+		.tag(Tag::public_key(*receiver))
+		.tags(protocol::build_rumor_tags(Some("lunch")))
+		.build(sender.public_key());
+		rumor.ensure_id();
+		rumor
+	}
+
+	/// The request-void control rumor (`send_control_dm`): no slatepack, only the
+	/// wallet's control text and its `goblin-action` tag.
+	fn goblin_void_rumor(sender: &Keys, receiver: &PublicKey) -> UnsignedEvent {
+		let mut rumor = EventBuilder::new(
+			Kind::PrivateDirectMessage,
+			protocol::build_control_content(),
+		)
+		.tag(Tag::public_key(*receiver))
+		.tags(protocol::build_control_tags(
+			"0f3a9d4e-7b21-4c55-9a0e-5d1f2b3c4d5e",
+		))
+		.build(sender.public_key());
+		rumor.ensure_id();
+		rumor
+	}
+
+	/// magick.market's real NIP-17 order traffic, as the rumor JSON its NIP-59
+	/// helper hands to session encrypt (market/src/lib/orders/orderMessageRumor.ts,
+	/// privateOrderMessage.ts, nostr/nip59.ts normalizeUnsignedRumorId).
+	fn magick_rumors(sender: &PublicKey, peer: &PublicKey, now: u64) -> Vec<String> {
+		let (from, to) = (sender.to_hex(), peer.to_hex());
+		let item = format!("30402:{to}:enchanted-wand");
+		let ship = format!("30406:{to}:tracked-post");
+		let proof = r#"{"amount":"2500000000","excess":"08ab12","recipient_address":"grin1qqqq","recipient_sig":"aa","sender_address":"grin1pppp","sender_sig":"bb"}"#;
+		let shapes = vec![
+			// Order creation (kind 16, type 1) with the buyer's delivery details.
+			(
+				16,
+				"Please gift wrap it",
+				serde_json::json!([
+					["p", to],
+					["subject", "order-info"],
+					["type", "1"],
+					["order", "ord-7c1e"],
+					["amount", "2500000000"],
+					["item", item, "1"],
+					["shipping", ship],
+					["name", "Ada"],
+					["address", "1 Main St, Springfield, 12345, US"],
+					["email", "ada@example.com"],
+					["contact", "signal", "@ada.01"],
+					["phone", "+1 555 0100"]
+				]),
+			),
+			// Payment request (kind 16, type 2) carrying the seller's Grin address.
+			(
+				16,
+				"Payment request for your order",
+				serde_json::json!([
+					["p", to],
+					["subject", "order-payment"],
+					["type", "2"],
+					["order", "ord-7c1e"],
+					["amount", "2500000000"],
+					[
+						"payment",
+						"grin",
+						"grin1dhvv9mvarqwl6fgqsysaqctg8wdmt0pz0lwnc6ga6uhcmjfu08lsnaszwx"
+					],
+					["expiration", (now + 3600).to_string()]
+				]),
+			),
+			// Status (type 3) and shipping (type 4) updates.
+			(
+				16,
+				"Order status updated to confirmed",
+				serde_json::json!([
+					["p", to],
+					["subject", "order-info"],
+					["type", "3"],
+					["order", "ord-7c1e"],
+					["status", "confirmed"]
+				]),
+			),
+			(
+				16,
+				"Shipping update",
+				serde_json::json!([
+					["p", to],
+					["subject", "shipping-info"],
+					["type", "4"],
+					["order", "ord-7c1e"],
+					["status", "shipped"],
+					["tracking", "1Z999AA10123456784"],
+					["carrier", "UPS"]
+				]),
+			),
+			// Payment receipt (kind 17) carrying a Grin payment proof.
+			(
+				17,
+				"Payment confirmation",
+				serde_json::json!([
+					["p", to],
+					["subject", "order-receipt"],
+					["order", "ord-7c1e"],
+					["payment", "grin", "08ab12", proof],
+					["amount", "2500000000"]
+				]),
+			),
+			// Order chat (kind 14).
+			(
+				14,
+				"Is this still available? Happy to pay in GRIN.",
+				serde_json::json!([["p", to], ["subject", "Order ord-7c1e"]]),
+			),
+		];
+		shapes
+			.into_iter()
+			.map(|(kind, content, tags)| {
+				serde_json::json!({
+					"pubkey": from,
+					"created_at": now,
+					"kind": kind,
+					"tags": tags,
+					"content": content,
+					"id": "5c8f1e2d3c4b5a69788796a5b4c3d2e1f00112233445566778899aabbccddeeff",
+				})
+				.to_string()
+			})
+			.collect()
+	}
+
+	#[test]
+	fn wallet_protocol_detector_flags_goblin_messages_only() {
+		let now = 1_751_800_000u64;
+		let (a, b) = (Keys::generate(), Keys::generate());
+		// The wallet's own payment and control rumors.
+		assert!(is_wallet_protocol_payload(
+			&goblin_payment_rumor(&a, &b.public_key()).as_json()
+		));
+		assert!(is_wallet_protocol_payload(
+			&goblin_void_rumor(&a, &b.public_key()).as_json()
+		));
+		// Raw text forms, any ASCII case.
+		assert!(is_wallet_protocol_payload(ARMOR));
+		assert!(is_wallet_protocol_payload(&ARMOR.to_ascii_lowercase()));
+		assert!(is_wallet_protocol_payload(
+			&protocol::build_payment_content(ARMOR)
+		));
+		assert!(is_wallet_protocol_payload(protocol::PREAMBLE));
+		// The armor behind a JSON string escape is still found.
+		let escaped = r#"{"kind":14,"content":"\u0042EGINSLATEPACK. x. ENDSLATEPACK.","tags":[]}"#;
+		assert!(!escaped.contains("BEGINSLATEPACK"));
+		assert!(is_wallet_protocol_payload(escaped));
+		// Only the wallet's tags, with neutral content.
+		assert!(is_wallet_protocol_payload(
+			r#"{"kind":14,"content":"hi","tags":[["goblin","1"]]}"#
+		));
+		// Nested past the scan bound: the escaped armor is still found (fail
+		// closed), while the same depth with no marker passes.
+		let deep = |inner: &str| format!("{}{inner}{}", "[".repeat(12), "]".repeat(12));
+		assert!(is_wallet_protocol_payload(&deep(
+			r#"{"content":"\u0042EGINSLATEPACK."}"#
+		)));
+		assert!(!is_wallet_protocol_payload(&deep(r#"{"content":"hi"}"#)));
+		// magick's real order and message traffic is not wallet protocol.
+		for rumor in magick_rumors(&a.public_key(), &b.public_key(), now) {
+			assert!(!is_wallet_protocol_payload(&rumor), "{rumor}");
+		}
+		// Plain text, a grin1 address and an order-style JSON are not either.
+		assert!(!is_wallet_protocol_payload("hello there"));
+		assert!(!is_wallet_protocol_payload(
+			"pay me at grin1dhvv9mvarqwl6fgqsysaqctg8wdmt0pz0lwnc6ga6uhcmjfu08lsnaszwx"
+		));
+		assert!(!is_wallet_protocol_payload(
+			r#"{"type":"order","payment":{"bolt11":"lnbc1"}}"#
+		));
+	}
+
+	#[test]
+	fn encrypt_refuses_wallet_protocol_payloads() {
+		let now = 1_751_800_000u64;
+		let (mut s, id) = mk_session(MAGICK_KINDS, now);
+		let peer = Keys::generate();
+		let forged = [
+			// An S2 reply forged as the identity (the C2 attack payload).
+			goblin_payment_rumor(&id, &peer.public_key()).as_json(),
+			// A forged request void.
+			goblin_void_rumor(&id, &peer.public_key()).as_json(),
+			// A bare payment rumor, no preamble and no wallet tag, with the armor
+			// behind a JSON string escape (the receiver decodes it back).
+			format!(
+				r#"{{"pubkey":"{}","created_at":{now},"kind":14,"tags":[["p","{}"]],"content":"\u0042EGINSLATEPACK. 4H1qx1wHe668tFW. ENDSLATEPACK."}}"#,
+				id.public_key().to_hex(),
+				peer.public_key().to_hex()
+			),
+			// A bare slatepack.
+			ARMOR.to_string(),
+		];
+		for (i, plaintext) in forged.iter().enumerate() {
+			let e = mk_encrypt(&format!("w{i}"), now, &peer.public_key(), plaintext);
+			let out = serve_encrypt(&mut s, &e, &id, now);
+			assert!(!out.money_pending, "no prompt for case {i}");
+			let json = out.response.expect("refusal is answered");
+			assert!(json.contains("\"ok\":false"), "case {i}: {json}");
+			assert!(json.contains("\"error\":\"kind_not_in_session\""));
+			assert!(!json.contains("ciphertext"));
+			// Even a password-approved encrypt never seals it.
+			let done = complete_money(&mut s, &ChannelOp::Encrypt(e), &id, true, now);
+			assert!(done.contains("\"ok\":false"), "approved case {i}");
+		}
+	}
+
+	#[tokio::test]
+	async fn decrypt_never_returns_a_goblin_payment() {
+		let now = 1_751_800_000u64;
+		let (mut s, bob) = mk_session(MAGICK_KINDS, now);
+		let alice = Keys::generate();
+		// A real NIP-44 v2 gift wrap of a payment S1, from the unchanged nostr-sdk
+		// builder (what a v2 payer sends).
+		let rumor = goblin_payment_rumor(&alice, &bob.public_key());
+		let wrap = EventBuilder::gift_wrap(&alice, &bob.public_key(), rumor, [])
+			.await
+			.unwrap();
+		// Layer 1 (gift wrap -> seal) still opens: the seal content is opaque.
+		let out = serve_decrypt(
+			&mut s,
+			&mk_decrypt("l1", now, &wrap.pubkey, &wrap.content),
+			&bob,
+			now,
+		);
+		let json = out.response.unwrap();
+		assert!(json.contains("\"ok\":true"), "{json}");
+		let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+		let seal = Event::from_json(v["plaintext"].as_str().unwrap()).unwrap();
+		assert_eq!(seal.kind, Kind::Seal);
+		// Layer 2 (seal -> rumor) would hand the site the slate: refused, and it
+		// answers exactly like a ciphertext that does not open.
+		let out = serve_decrypt(
+			&mut s,
+			&mk_decrypt("l2", now, &seal.pubkey, &seal.content),
+			&bob,
+			now,
+		);
+		let json = out.response.unwrap();
+		assert!(json.contains("\"error\":\"malformed\""), "{json}");
+		assert!(!json.to_ascii_uppercase().contains("SLATEPACK"));
+		assert!(!json.contains("plaintext"));
+		// A plain v2 message carrying a void control is refused the same way.
+		let ct = nip44::encrypt(
+			alice.secret_key(),
+			&bob.public_key(),
+			goblin_void_rumor(&alice, &bob.public_key()).as_json(),
+			nip44::Version::V2,
+		)
+		.unwrap();
+		let out = serve_decrypt(
+			&mut s,
+			&mk_decrypt("l3", now, &alice.public_key(), &ct),
+			&bob,
+			now,
+		);
+		assert!(out.response.unwrap().contains("\"error\":\"malformed\""));
+	}
+
+	#[test]
+	fn magick_order_and_dm_traffic_still_encrypts_and_decrypts() {
+		let now = 1_751_800_000u64;
+		let ephemeral = Keys::generate();
+		// The buyer seals each message to the seller through its session.
+		let (mut buyer_s, buyer) = mk_session(MAGICK_KINDS, now);
+		let (mut seller_s, seller) = mk_session(MAGICK_KINDS, now);
+		for (i, rumor) in magick_rumors(&buyer.public_key(), &seller.public_key(), now)
+			.into_iter()
+			.enumerate()
+		{
+			let e = mk_encrypt(&format!("e{i}"), now, &seller.public_key(), &rumor);
+			let out = serve_encrypt(&mut buyer_s, &e, &buyer, now);
+			assert!(!out.money_pending, "case {i} encrypts silently");
+			let json = out.response.unwrap();
+			assert!(json.contains("\"ok\":true"), "case {i}: {json}");
+			let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+			let seal_ct = v["ciphertext"].as_str().unwrap().to_string();
+			// The seal and gift wrap the buyer's browser then builds.
+			let seal = EventBuilder::new(Kind::Seal, seal_ct)
+				.sign_with_keys(&buyer)
+				.unwrap();
+			let wrap_ct = nip44::encrypt(
+				ephemeral.secret_key(),
+				&seller.public_key(),
+				seal.as_json(),
+				nip44::Version::V2,
+			)
+			.unwrap();
+			// The seller's session opens both layers back to the same rumor.
+			let out = serve_decrypt(
+				&mut seller_s,
+				&mk_decrypt(&format!("w{i}"), now, &ephemeral.public_key(), &wrap_ct),
+				&seller,
+				now,
+			);
+			let v: serde_json::Value = serde_json::from_str(&out.response.unwrap()).unwrap();
+			assert_eq!(v["ok"], true, "case {i} wrap layer");
+			let opened = Event::from_json(v["plaintext"].as_str().unwrap()).unwrap();
+			let out = serve_decrypt(
+				&mut seller_s,
+				&mk_decrypt(&format!("s{i}"), now, &opened.pubkey, &opened.content),
+				&seller,
+				now,
+			);
+			let v: serde_json::Value = serde_json::from_str(&out.response.unwrap()).unwrap();
+			assert_eq!(v["ok"], true, "case {i} seal layer");
+			assert_eq!(v["plaintext"].as_str().unwrap(), rumor);
+		}
+	}
+
+	/// A tag list from string rows.
+	fn tags(rows: &[&[&str]]) -> Vec<Vec<String>> {
+		rows.iter()
+			.map(|r| r.iter().map(|s| s.to_string()).collect())
+			.collect()
+	}
+
+	#[test]
+	fn nip98_target_follows_the_u_host() {
+		use HttpAuthTarget::*;
+		let authorities = vec!["goblin.st".to_string(), "names.example".to_string()];
+		let target = |u: &str| {
+			http_auth_target(
+				&tags(&[&["u", u], &["method", "POST"]]),
+				"magick.market",
+				&authorities,
+			)
+		};
+		// The session's own site and its subdomains.
+		for u in [
+			"https://magick.market/api/v1/upload",
+			"https://cdn.magick.market/upload",
+			"https://MAGICK.Market:8443/x",
+		] {
+			assert_eq!(target(u), OwnSite, "{u}");
+		}
+		// The name authority in any spelling, and a configured authority.
+		for u in [
+			"https://goblin.st/api/v1/register/alice",
+			"https://GOBLIN.ST/api/v1/register/alice",
+			"https://goblin.st./api/v1/register/alice",
+			"https://api.goblin.st/x",
+			"http://goblin.st/x",
+			"https://names.example/api/v1/transfer/claim",
+		] {
+			assert_eq!(target(u), NameAuthority, "{u}");
+		}
+		// Any other host is not the site's to authorize: refused.
+		for u in [
+			"https://nostr.build/api/v2/upload",
+			"https://evilmagick.market/x",
+			"https://203.0.113.7/x",
+		] {
+			assert_eq!(target(u), OtherHost, "{u}");
+		}
+		// Unusable or ambiguous `u` values.
+		for u in [
+			"not a url",
+			"wss://magick.market/x",
+			"https://magick.market\\@goblin.st/x",
+			"https://magick.market@goblin.st/x",
+		] {
+			assert_eq!(target(u), Invalid, "{u}");
+		}
+		// No `u`, a valueless `u`, and two `u` tags (the authority honours the
+		// last one, so a harmless first one must not decide).
+		let invalid = [
+			tags(&[&["method", "POST"]]),
+			tags(&[&["u"], &["method", "POST"]]),
+			tags(&[
+				&["u", "https://magick.market/x"],
+				&["u", "https://goblin.st/api/v1/register/alice"],
+				&["method", "DELETE"],
+			]),
+		];
+		for t in invalid {
+			assert_eq!(
+				http_auth_target(&t, "magick.market", &authorities),
+				Invalid,
+				"{t:?}"
+			);
+		}
+		// A development domain carries a port; its host still matches.
+		assert_eq!(
+			http_auth_target(
+				&tags(&[&["u", "http://localhost:3000/api/x"]]),
+				"localhost:3000",
+				&authorities
+			),
+			OwnSite
+		);
+	}
+
+	#[test]
+	fn nip98_session_signs_own_site_refuses_elsewhere() {
+		let now = 1_751_800_000u64;
+		let (mut s, id) = mk_session(MAGICK_KINDS, now);
+		let http_auth = |rid: &str, rows: &[&[&str]]| {
+			let mut r = mk_req(&id, HTTP_AUTH_KIND, "", now, rid);
+			r.event.tags = tags(rows);
+			r
+		};
+		// The site's own endpoint: silent, signed.
+		let r = http_auth(
+			"h1",
+			&[
+				&["u", "https://magick.market/api/v1/upload"],
+				&["method", "POST"],
+			],
+		);
+		let out = serve(&mut s, &r, &id, now);
+		assert!(!out.money_pending);
+		assert!(out.response.unwrap().contains("\"ok\":true"));
+		// The exact event the wallet uses to release @alice (nip05::unregister),
+		// a registration with a payload hash, any other host, two `u` tags and
+		// no `u`: all refused, never a prompt.
+		let payload = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08";
+		for (rid, rows) in [
+			(
+				"h2",
+				vec![
+					vec!["u", "https://goblin.st/api/v1/register/alice"],
+					vec!["method", "DELETE"],
+				],
+			),
+			(
+				"h3",
+				vec![
+					vec!["u", "https://goblin.st/api/v1/register"],
+					vec!["method", "POST"],
+					vec!["payload", payload],
+				],
+			),
+			// Two `u` tags, the authority last.
+			(
+				"h4",
+				vec![
+					vec!["u", "https://magick.market/x"],
+					vec!["u", "https://goblin.st/api/v1/register/alice"],
+					vec!["method", "DELETE"],
+				],
+			),
+			// Another host is not the site's to authorize.
+			(
+				"h6",
+				vec![
+					vec!["u", "https://nostr.build/api/v2/upload"],
+					vec!["method", "POST"],
+				],
+			),
+			// No `u` at all.
+			("h5", vec![vec!["method", "GET"]]),
+		] {
+			let rows: Vec<&[&str]> = rows.iter().map(|r| r.as_slice()).collect();
+			let out = serve(&mut s, &http_auth(rid, &rows), &id, now);
+			assert!(!out.money_pending, "{rid} must not prompt");
+			assert!(
+				out.response
+					.unwrap()
+					.contains("\"error\":\"kind_not_in_session\""),
+				"{rid} must be refused"
+			);
+		}
+		// Defense in depth: the signer itself, which the password-approved path
+		// also uses, signs HTTP auth only for the session's own site.
+		for (rid, u) in [
+			("h7", "https://goblin.st/api/v1/register/alice"),
+			("h8", "https://nostr.build/api/v2/upload"),
+		] {
+			let r = http_auth(rid, &[&["u", u], &["method", "DELETE"]]);
+			assert_eq!(
+				sign_session_event(&id, &r.event, "magick.market", now),
+				Err(SignError::Refused),
+				"{u}"
+			);
+			let json = complete_money(&mut s, &ChannelOp::Sign(r), &id, true, now);
+			assert!(json.contains("\"ok\":false"), "{u} approved");
+		}
+		let r = http_auth(
+			"h9",
+			&[&["u", "https://magick.market/x"], &["method", "GET"]],
+		);
+		assert!(sign_session_event(&id, &r.event, "magick.market", now).is_ok());
+		// A session not granted HTTP auth refuses even its own site.
+		let (mut s2, id2) = mk_session(&[1, 7], now);
+		let mut r = mk_req(&id2, HTTP_AUTH_KIND, "", now, "h10");
+		r.event.tags = tags(&[&["u", "https://magick.market/x"], &["method", "GET"]]);
+		assert_eq!(
+			s2.decide(&r, now),
+			Decision::Refuse(SignError::KindNotInSession)
+		);
+	}
+
+	#[test]
+	fn blossom_upload_auth_is_unchanged() {
+		// NDKBlossom's real kind-24242 shape: t, x, expiration and no host tag.
+		// Uploads go to third-party Blossom servers, and the name authority only
+		// accepts kind 27235, so 24242 keeps its plain low-tier rule.
+		let now = 1_751_800_000u64;
+		let (mut s, id) = mk_session(MAGICK_KINDS, now);
+		let mut r = mk_req(&id, 24242, "Upload blob", now, "b1");
+		let hash = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08";
+		let exp = (now + 3600).to_string();
+		r.event.tags = tags(&[&["t", "upload"], &["x", hash], &["expiration", &exp]]);
+		let out = serve(&mut s, &r, &id, now);
+		assert!(!out.money_pending);
+		assert!(out.response.unwrap().contains("\"ok\":true"));
 	}
 
 	fn mk_req(identity: &Keys, kind: u16, content: &str, now: u64, id: &str) -> SignRequest {
@@ -961,6 +1649,7 @@ mod tests {
 				tags: vec![],
 				content: "hi".to_string(),
 			},
+			"magick.market",
 			1_751_800_000,
 		)
 		.unwrap();
@@ -1030,7 +1719,8 @@ mod tests {
 	#[test]
 	fn money_replay_cannot_reprompt_or_resign() {
 		let now = 1_751_800_000u64;
-		let (mut s, id) = mk_session(&[1], now);
+		// Kind 13 grants the encrypt op used at the end of this test.
+		let (mut s, id) = mk_session(&[1, 13], now);
 		let req = mk_req(&id, 17, "{}", now, "rp1");
 		// First delivery raises the prompt.
 		let first = serve(&mut s, &req, &id, now);

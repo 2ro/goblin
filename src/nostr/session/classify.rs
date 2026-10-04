@@ -17,6 +17,8 @@
 //! kind-to-category display mapping. Security-critical, I/O-free.
 
 use super::*;
+use crate::nostr::protocol;
+use crate::nostr::relays::HOME_NIP05_DOMAIN;
 // ---------------------------------------------------------------------------
 // Tier classification (the security-critical surface).
 // ---------------------------------------------------------------------------
@@ -119,6 +121,195 @@ fn value_has_payment_marker(v: &serde_json::Value, depth: usize) -> bool {
 		}
 		_ => false,
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Wallet-protocol payloads (the Goblin payment messages): never through a session.
+// ---------------------------------------------------------------------------
+
+/// The opening of Grin slatepack armor. Every Goblin payment message carries
+/// one in its kind-14 rumor content (the wallet extracts the block with
+/// `BEGINSLATEPACK\. ... ENDSLATEPACK\.`, see `protocol::extract_slatepack`).
+/// Matched without regard to ASCII case.
+const SLATEPACK_ARMOR_MARKER: &str = "BEGINSLATEPACK";
+
+/// How deep the JSON walk of a crypto plaintext looks for the wallet's own tags
+/// and strings. A rumor holds them at depth 3 (object, tags, tag); a subtree
+/// nested past this bound gets only the slatepack check, on its decoded text.
+const PROTOCOL_SCAN_DEPTH: usize = 8;
+
+/// True when `plaintext` is, or carries, a Goblin wallet-protocol payload: a
+/// Grin slatepack, the wallet's payment preamble or request-void text
+/// (`protocol::build_payment_content`, `protocol::build_control_content`), or a
+/// rumor tagged with the wallet's own `goblin` / `goblin-action` tags
+/// (`protocol::build_rumor_tags`, `protocol::build_control_tags`).
+///
+/// A session must never encrypt or decrypt these with the identity key. Two
+/// decrypts (gift wrap, then seal) open an incoming payment's S1 rumor, which
+/// lets a site build an S2 reply paying its own output; a session encrypt plus
+/// a silent kind-13 seal then sends that reply as the user, and the payer's
+/// wallet finalizes to the site.
+///
+/// The raw-text check always runs on the whole plaintext. JSON is then walked,
+/// bounded, so a marker hidden behind JSON string escapes, or the wallet's
+/// tags, are found as well. Past the depth bound the subtree is searched for
+/// the slatepack marker in its decoded form only (fail closed).
+pub fn is_wallet_protocol_payload(plaintext: &str) -> bool {
+	if text_is_wallet_protocol(plaintext) {
+		return true;
+	}
+	match serde_json::from_str::<serde_json::Value>(plaintext.trim()) {
+		Ok(v) => value_is_wallet_protocol(&v, 0),
+		Err(_) => false,
+	}
+}
+
+/// The text markers: slatepack armor, the payment preamble, the void text.
+fn text_is_wallet_protocol(s: &str) -> bool {
+	contains_ignore_ascii_case(s, SLATEPACK_ARMOR_MARKER)
+		|| s.contains(protocol::PREAMBLE)
+		|| s.contains(&protocol::build_control_content())
+}
+
+/// ASCII case-insensitive substring search.
+fn contains_ignore_ascii_case(haystack: &str, needle: &str) -> bool {
+	let needle = needle.as_bytes();
+	haystack
+		.as_bytes()
+		.windows(needle.len())
+		.any(|w| w.eq_ignore_ascii_case(needle))
+}
+
+/// Bounded walk of a parsed JSON value for the wallet's markers.
+fn value_is_wallet_protocol(v: &serde_json::Value, depth: usize) -> bool {
+	use serde_json::Value;
+	if depth > PROTOCOL_SCAN_DEPTH {
+		return serde_json::to_string(v)
+			.map(|s| contains_ignore_ascii_case(&s, SLATEPACK_ARMOR_MARKER))
+			.unwrap_or(true);
+	}
+	match v {
+		Value::String(s) => text_is_wallet_protocol(s),
+		Value::Array(items) => items.iter().any(|x| value_is_wallet_protocol(x, depth + 1)),
+		Value::Object(map) => {
+			if let Some(Value::Array(tags)) = map.get("tags")
+				&& tags.iter().any(is_wallet_tag)
+			{
+				return true;
+			}
+			map.values().any(|x| value_is_wallet_protocol(x, depth + 1))
+		}
+		_ => false,
+	}
+}
+
+/// True for a rumor tag named with the wallet's protocol marker or its control
+/// action (`["goblin", "1"]`, `["goblin-action", "void", <slate id>]`).
+fn is_wallet_tag(tag: &serde_json::Value) -> bool {
+	tag.as_array()
+		.and_then(|t| t.first())
+		.and_then(|name| name.as_str())
+		.map(|name| name == protocol::GOBLIN_TAG || name == protocol::GOBLIN_ACTION_TAG)
+		.unwrap_or(false)
+}
+
+// ---------------------------------------------------------------------------
+// NIP-98 HTTP auth (kind 27235): checked by the host it authorizes.
+// ---------------------------------------------------------------------------
+
+/// The NIP-98 HTTP auth kind. Its `u` tag names the one URL the signed event
+/// authorizes, so a session signs it only after checking that URL's host.
+pub const HTTP_AUTH_KIND: u16 = 27235;
+
+/// Where a NIP-98 HTTP auth event would let its bearer act, read from its `u`
+/// tag after `url::Url` parsing (hosts compared lowercase).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HttpAuthTarget {
+	/// The session's own site (its domain or a subdomain): signed silently,
+	/// like any granted low-tier kind.
+	OwnSite,
+	/// The wallet's name authority: refused. The wallet releases an @name with
+	/// exactly this event (`nip05::unregister`), so a site never gets one.
+	NameAuthority,
+	/// Any other host: refused. A site has no business holding the user's auth
+	/// for another service, and the password prompt cannot show the host, so
+	/// asking would be a blind approval.
+	OtherHost,
+	/// No `u` tag, more than one, or one that is not a plain http(s) URL with a
+	/// host: refused. The name authority honours the LAST `u` tag, so a second
+	/// one could carry it past a check of the first.
+	Invalid,
+}
+
+/// Classify a NIP-98 event's target host (see [`HttpAuthTarget`]). Only
+/// [`HttpAuthTarget::OwnSite`] is ever signed; every other result is refused.
+/// `site_domain` is the session's approved domain (a dev `host:port` domain is
+/// compared by its host); `authority_hosts` are the name-authority hosts, each
+/// matched with its subdomains. Pure, so it is tested without the global
+/// authority setting.
+pub fn http_auth_target(
+	tags: &[Vec<String>],
+	site_domain: &str,
+	authority_hosts: &[String],
+) -> HttpAuthTarget {
+	let mut u_tags = tags
+		.iter()
+		.filter(|t| t.first().map(|k| k == "u").unwrap_or(false));
+	let (Some(u_tag), None) = (u_tags.next(), u_tags.next()) else {
+		return HttpAuthTarget::Invalid;
+	};
+	let Some(raw) = u_tag.get(1) else {
+		return HttpAuthTarget::Invalid;
+	};
+	if raw.contains('\\') || raw.bytes().any(|b| b < 0x20 || b == 0x7f) {
+		return HttpAuthTarget::Invalid;
+	}
+	let Ok(url) = url::Url::parse(raw) else {
+		return HttpAuthTarget::Invalid;
+	};
+	if !matches!(url.scheme(), "https" | "http")
+		|| !url.username().is_empty()
+		|| url.password().is_some()
+	{
+		return HttpAuthTarget::Invalid;
+	}
+	let Some(host) = url.host_str() else {
+		return HttpAuthTarget::Invalid;
+	};
+	// A trailing dot names the same host; drop it so it cannot dodge a match.
+	let host = host.trim_end_matches('.').to_ascii_lowercase();
+	if host.is_empty() {
+		return HttpAuthTarget::Invalid;
+	}
+	let is_domain = matches!(url.host(), Some(url::Host::Domain(_)));
+	let within = |base: &str| {
+		let base = base.trim().trim_end_matches('.').to_ascii_lowercase();
+		!base.is_empty() && (host == base || (is_domain && host.ends_with(&format!(".{base}"))))
+	};
+	if authority_hosts.iter().any(|a| within(a)) {
+		return HttpAuthTarget::NameAuthority;
+	}
+	// The session domain is the trust URI's `d`; in development it carries a
+	// port (`localhost:3000`), which the host comparison leaves out.
+	let site_host = match site_domain.rsplit_once(':') {
+		Some((h, port)) if !port.is_empty() && port.bytes().all(|b| b.is_ascii_digit()) => h,
+		_ => site_domain,
+	};
+	if within(site_host) {
+		return HttpAuthTarget::OwnSite;
+	}
+	HttpAuthTarget::OtherHost
+}
+
+/// The name-authority hosts a session never gets HTTP auth for: the default
+/// home (goblin.st) and the configured authority, when it is another host.
+pub fn name_authority_hosts() -> Vec<String> {
+	let mut hosts = vec![HOME_NIP05_DOMAIN.to_string()];
+	let configured = crate::nostr::nip05::home_domain();
+	if !hosts.contains(&configured) {
+		hosts.push(configured);
+	}
+	hosts
 }
 
 // ---------------------------------------------------------------------------

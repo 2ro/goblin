@@ -54,7 +54,8 @@ pub struct SignRequest {
 /// kind-13 seal of an order DM (silent signing alone cannot construct a seal).
 /// Low tier and rate-limited like a silent sign, BUT because the plaintext is
 /// visible here, the content-escalation rule runs on it: a pay-committing order
-/// message escalates to the money-tier password prompt at the encrypt step.
+/// message escalates to the money-tier password prompt at the encrypt step. A
+/// wallet-protocol payload ([`is_wallet_protocol_payload`]) is refused outright.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EncryptRequest {
 	/// Always `"encrypt"`.
@@ -72,7 +73,9 @@ pub struct EncryptRequest {
 /// `peer_pubkey` with the SESSION IDENTITY key. THE RISKIEST OP: a compromised
 /// site could read that identity's DMs during a live session, so it is
 /// rate-limited like a silent sign and called out prominently for the security
-/// pass. Its ciphertext is opaque, so no content escalation is possible here.
+/// pass. Its ciphertext is opaque, so no content escalation is possible here,
+/// but the opened plaintext is checked before it is returned: a wallet-protocol
+/// payload ([`is_wallet_protocol_payload`]) never goes back to the site.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DecryptRequest {
 	/// Always `"decrypt"`.
@@ -240,9 +243,16 @@ impl SignError {
 /// pins `created_at` to the client's value so the signed event matches NDK's
 /// `id` and relays accept it. Defense in depth re-checks the invariants the
 /// enforcement layer also checks: the pubkey must equal the identity, the skew
-/// must hold, kind 22242 and any `delegation` tag are refused outright. Only the
-/// canonical NIP-01 serialization this computes is ever signed; no client hash.
-pub fn sign_session_event(keys: &Keys, ev: &RequestEvent, now: u64) -> Result<Event, SignError> {
+/// must hold, kind 22242 and any `delegation` tag are refused outright, and a
+/// NIP-98 HTTP auth event is signed only for `site_domain` (the session's own
+/// site). Only the canonical NIP-01 serialization this computes is ever signed;
+/// no client hash.
+pub fn sign_session_event(
+	keys: &Keys,
+	ev: &RequestEvent,
+	site_domain: &str,
+	now: u64,
+) -> Result<Event, SignError> {
 	// Identity binding: a session for identity A can never sign as identity B.
 	let want = keys.public_key();
 	let got = PublicKey::from_hex(&ev.pubkey).map_err(|_| SignError::Malformed)?;
@@ -255,6 +265,15 @@ pub fn sign_session_event(keys: &Keys, ev: &RequestEvent, now: u64) -> Result<Ev
 	}
 	// The wallet never yields a login-capable signature, in any build, ever.
 	if ev.kind == LOGIN_EVENT_KIND {
+		return Err(SignError::Refused);
+	}
+	// Nor HTTP auth for any host but the session's own site (never the name
+	// authority, whose token releases an @name), or with a missing or
+	// ambiguous `u`, on any path, the password-approved one included.
+	if ev.kind == HTTP_AUTH_KIND
+		&& http_auth_target(&ev.tags, site_domain, &name_authority_hosts())
+			!= HttpAuthTarget::OwnSite
+	{
 		return Err(SignError::Refused);
 	}
 	let mut tags = Vec::with_capacity(ev.tags.len());
@@ -343,7 +362,7 @@ pub fn serve(session: &mut Session, req: &SignRequest, sign_keys: &Keys, now: u6
 			..Served::default()
 		},
 		Decision::Silent { notify_high_volume } => {
-			let result = match sign_session_event(sign_keys, &req.event, now) {
+			let result = match sign_session_event(sign_keys, &req.event, &session.domain, now) {
 				Ok(ev) => SignResult::ok(&req.id, &ev),
 				Err(err) => SignResult::refused(&req.id, err),
 			};
@@ -376,7 +395,7 @@ pub fn complete_money(
 	let json = match op {
 		ChannelOp::Sign(req) => {
 			let result = if approved {
-				match sign_session_event(keys, &req.event, now) {
+				match sign_session_event(keys, &req.event, &session.domain, now) {
 					Ok(ev) => SignResult::ok(&req.id, &ev),
 					Err(err) => SignResult::refused(&req.id, err),
 				}
@@ -408,7 +427,13 @@ fn crypto_error(result_type: &str, id: &str, err: SignError) -> String {
 }
 
 /// Perform an identity-key NIP-44 encrypt, returning the `encrypt_result` JSON.
+/// A wallet-protocol payload is refused here, the one place every encrypt
+/// passes, so neither the silent nor the password-approved path can seal a
+/// Goblin payment message as the identity.
 fn perform_encrypt(e: &EncryptRequest, keys: &Keys) -> String {
+	if is_wallet_protocol_payload(&e.plaintext) {
+		return crypto_error("encrypt_result", &e.id, SignError::Refused);
+	}
 	let Ok(peer) = PublicKey::from_hex(&e.peer_pubkey) else {
 		return crypto_error("encrypt_result", &e.id, SignError::Malformed);
 	};
@@ -427,6 +452,12 @@ fn perform_decrypt(d: &DecryptRequest, keys: &Keys) -> String {
 		return crypto_error("decrypt_result", &d.id, SignError::Malformed);
 	};
 	match nip44::decrypt(keys.secret_key(), &peer, &d.ciphertext) {
+		// A wallet-protocol plaintext (an incoming payment's rumor, once the seal
+		// is opened) never leaves the wallet through a session. It answers like
+		// a ciphertext that does not open, so the site learns nothing more.
+		Ok(pt) if is_wallet_protocol_payload(&pt) => {
+			crypto_error("decrypt_result", &d.id, SignError::Malformed)
+		}
 		Ok(pt) => {
 			serde_json::json!({ "type": "decrypt_result", "id": d.id, "ok": true, "plaintext": pt })
 				.to_string()
@@ -439,9 +470,12 @@ fn perform_decrypt(d: &DecryptRequest, keys: &Keys) -> String {
 /// rate-limited like a silent sign; an encrypt whose plaintext commits to a
 /// payment escalates to the money prompt (`money_pending`, op carried for
 /// [`complete_money`]). Decrypt never escalates (its ciphertext is opaque).
+/// A wallet-protocol plaintext never escalates either: it is refused, not
+/// prompted, so the user is never asked to approve a forged payment message.
 /// `keys` are the session identity's unlocked keys.
 pub fn serve_encrypt(session: &mut Session, e: &EncryptRequest, keys: &Keys, now: u64) -> Served {
-	let escalate = content_commits_payment(&e.plaintext);
+	let escalate =
+		!is_wallet_protocol_payload(&e.plaintext) && content_commits_payment(&e.plaintext);
 	match session.decide_crypto(&e.id, e.ts, now, escalate) {
 		Decision::Duplicate(json) => served_response(json),
 		Decision::AlreadyPending => Served::default(),
