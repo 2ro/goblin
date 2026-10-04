@@ -1605,6 +1605,14 @@ mod tests {
 			svc.take_approve_failure("req-b").as_deref(),
 			Some("no longer payable")
 		);
+
+		// A new approval starts clean: A failed while no card took it (the
+		// wallet was switched away), then A is approved again. The approve
+		// path drops the old entry first, so the new payment's card never shows
+		// the old reason.
+		svc.approve_failed(turn_a, "req-a", "old reason".to_string());
+		let _ = svc.take_approve_failure("req-a");
+		assert_eq!(svc.take_approve_failure("req-a"), None);
 		let _ = std::fs::remove_dir_all(dir);
 	}
 

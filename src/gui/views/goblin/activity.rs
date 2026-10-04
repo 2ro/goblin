@@ -489,7 +489,11 @@ impl GoblinWalletView {
 									&& !over
 								{
 									// Guard double-pay + show the spinner back on the
-									// request card; dispatch the actual payment.
+									// request card; dispatch the actual payment. An old
+									// failure of this request is dropped first.
+									let _ = wallet
+										.nostr_service()
+										.map(|s| s.take_approve_failure(&req.rumor_id));
 									self.approving.insert(req.rumor_id.clone());
 									self.request_error = None;
 									// A new send turn, carried by the task: only this
