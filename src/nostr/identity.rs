@@ -28,9 +28,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Where the keys came from. The legacy NIP-06 `Derived` source is gone: a
-/// pre-Build-8 `"source":"Derived"` file no longer parses, so `load()` returns
-/// `None` and wallet init writes a fresh random identity (the wanted behavior;
-/// binding a messaging identity to the money seed was the dangerous design).
+/// pre-Build-8 `"source":"Derived"` file no longer parses, so wallet init moves
+/// it aside (see `NostrIdentity::load_or_set_aside`) and writes a fresh random
+/// identity (the wanted behavior; binding a messaging identity to the money
+/// seed was the dangerous design).
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug)]
 pub enum IdentitySource {
 	/// Imported nsec.
@@ -171,6 +172,38 @@ pub(crate) fn write_private(path: &Path, data: &[u8]) -> std::io::Result<()> {
 	commit_staged(&tmp, path)
 }
 
+/// Rename a damaged file to `<name>.unreadable-<unix time>` in the same
+/// directory and return the new path. A free name is picked first: a rename
+/// silently replaces an existing file, and an earlier set-aside file must never
+/// be lost. No loader opens such a name (every loader reads an exact name).
+fn set_aside(path: &Path) -> std::io::Result<PathBuf> {
+	let secs = SystemTime::now()
+		.duration_since(UNIX_EPOCH)
+		.map(|d| d.as_secs())
+		.unwrap_or(0);
+	let name = path
+		.file_name()
+		.map(|n| n.to_string_lossy().into_owned())
+		.unwrap_or_default();
+	for n in 0..100u32 {
+		let aside = if n == 0 {
+			path.with_file_name(format!("{name}.unreadable-{secs}"))
+		} else {
+			path.with_file_name(format!("{name}.unreadable-{secs}-{n}"))
+		};
+		if fs::symlink_metadata(&aside).is_ok() {
+			continue;
+		}
+		fs::rename(path, &aside)?;
+		sync_parent_dir(path);
+		return Ok(aside);
+	}
+	Err(std::io::Error::new(
+		std::io::ErrorKind::AlreadyExists,
+		"no free name to set the damaged file aside",
+	))
+}
+
 /// Restrict a directory to owner-only access on Unix.
 fn restrict_dir(dir: &PathBuf) {
 	#[cfg(unix)]
@@ -211,6 +244,36 @@ impl NostrIdentity {
 		let path = Self::path(nostr_dir);
 		let raw = fs::read_to_string(path).ok()?;
 		serde_json::from_str(&raw).ok()
+	}
+
+	/// Load identity #1 when the wallet opens, and never let a damaged file be
+	/// written over.
+	/// - `Ok(Some)`: the parsed identity.
+	/// - `Ok(None)`: no usable file, the caller may create one. Either there is
+	///   none, or its content is damaged (it does not parse, or is not even
+	///   text, as a torn write can leave it) and it has been renamed aside to
+	///   `identity.json.unreadable-<unix time>` with its bytes unchanged.
+	/// - `Err`: the file is there but could not be read (permissions, an I/O
+	///   error). Its content is unknown, so it is left in place and the caller
+	///   must not write a new identity over it.
+	pub fn load_or_set_aside(nostr_dir: &Path) -> std::io::Result<Option<NostrIdentity>> {
+		let path = nostr_dir.join(Self::FILE_NAME);
+		let parsed = match fs::read_to_string(&path) {
+			Ok(raw) => serde_json::from_str::<NostrIdentity>(&raw).ok(),
+			Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+			Err(e) if e.kind() == std::io::ErrorKind::InvalidData => None,
+			Err(e) => return Err(e),
+		};
+		if parsed.is_some() {
+			return Ok(parsed);
+		}
+		let aside = set_aside(&path)?;
+		log::error!(
+			"nostr: identity file {} could not be parsed; moved it to {} with its bytes unchanged",
+			path.display(),
+			aside.display()
+		);
+		Ok(None)
 	}
 
 	/// Persist the identity file with owner-only permissions (the ncryptsec
@@ -964,6 +1027,88 @@ mod tests {
 		commit_staged(&tmp, &target).unwrap();
 		assert_eq!(mode(&target), 0o600, "the committed file is owner-only");
 		assert!(!tmp.exists());
+		let _ = fs::remove_dir_all(&dir);
+	}
+
+	/// The `identity.json.unreadable-*` files in `dir`.
+	fn aside_files(dir: &Path) -> Vec<PathBuf> {
+		let mut v: Vec<PathBuf> = names_with(dir, ".unreadable-")
+			.into_iter()
+			.map(|n| dir.join(n))
+			.collect();
+		v.sort();
+		v
+	}
+
+	#[test]
+	fn an_unparseable_identity_is_set_aside_with_its_bytes() {
+		// A torn identity.json (here: the first half of a real one) must never
+		// be written over. It is renamed aside with every byte kept, the loader
+		// reports "no usable file", and nothing new is written by the loader.
+		let dir = test_dir("setaside");
+		let (identity, _) = NostrIdentity::create_random("pw").unwrap();
+		let full = serde_json::to_string_pretty(&identity).unwrap();
+		let torn = full.as_bytes()[..full.len() / 2].to_vec();
+		fs::write(NostrIdentity::path(&dir), &torn).unwrap();
+
+		assert!(NostrIdentity::load_or_set_aside(&dir).unwrap().is_none());
+		assert!(
+			!NostrIdentity::path(&dir).exists(),
+			"the damaged file is moved, and the loader writes no new one"
+		);
+		let aside = aside_files(&dir);
+		assert_eq!(aside.len(), 1);
+		assert!(
+			aside[0]
+				.file_name()
+				.unwrap()
+				.to_string_lossy()
+				.starts_with("identity.json.unreadable-")
+		);
+		assert_eq!(fs::read(&aside[0]).unwrap(), torn, "every byte is kept");
+		// No loader takes the set-aside file for an identity.
+		assert!(NostrIdentity::load(&dir).is_none());
+
+		// A second damaged file (bytes that are not even text) in the same second
+		// gets a name of its own: the first set-aside file is never replaced.
+		let garbage = vec![0xff, 0xfe, 0x00, 0x7b];
+		fs::write(NostrIdentity::path(&dir), &garbage).unwrap();
+		assert!(NostrIdentity::load_or_set_aside(&dir).unwrap().is_none());
+		let aside = aside_files(&dir);
+		assert_eq!(aside.len(), 2, "both damaged files are kept");
+		let kept: Vec<Vec<u8>> = aside.iter().map(|p| fs::read(p).unwrap()).collect();
+		assert!(kept.contains(&torn));
+		assert!(kept.contains(&garbage));
+		let _ = fs::remove_dir_all(&dir);
+	}
+
+	#[test]
+	fn load_or_set_aside_keeps_a_good_file_and_reports_a_missing_one() {
+		let dir = test_dir("goodmissing");
+		// Missing: nothing to load, nothing created.
+		assert!(NostrIdentity::load_or_set_aside(&dir).unwrap().is_none());
+		assert!(fs::read_dir(&dir).unwrap().next().is_none());
+		// Good: loaded, and the file is left exactly as it was.
+		let (identity, _) = NostrIdentity::create_random("pw").unwrap();
+		identity.save(&dir).unwrap();
+		let before = fs::read(NostrIdentity::path(&dir)).unwrap();
+		let loaded = NostrIdentity::load_or_set_aside(&dir).unwrap().unwrap();
+		assert_eq!(loaded.npub, identity.npub);
+		assert_eq!(fs::read(NostrIdentity::path(&dir)).unwrap(), before);
+		assert!(aside_files(&dir).is_empty());
+		let _ = fs::remove_dir_all(&dir);
+	}
+
+	#[test]
+	fn an_identity_path_that_cannot_be_read_is_left_in_place() {
+		// Not a damaged file but an unreadable path (here a directory where the
+		// file should be): the content is unknown, so the loader returns an error
+		// and moves nothing. The caller must not write over it.
+		let dir = test_dir("unreadable");
+		fs::create_dir_all(NostrIdentity::path(&dir).join("keep")).unwrap();
+		assert!(NostrIdentity::load_or_set_aside(&dir).is_err());
+		assert!(NostrIdentity::path(&dir).join("keep").is_dir());
+		assert!(aside_files(&dir).is_empty());
 		let _ = fs::remove_dir_all(&dir);
 	}
 
