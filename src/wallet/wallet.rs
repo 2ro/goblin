@@ -447,6 +447,14 @@ impl Wallet {
 					// service is guaranteed present when start_sync runs.
 					self.init_nostr(&nostr_password);
 
+					// Mark the wallet open BEFORE the sync thread starts or wakes. The
+					// sync loop exits at once when it sees the wallet closed, so a
+					// thread that ran ahead of this store would stop and leave the
+					// wallet on "Updating" with no payment processing until a reopen.
+					// Nothing between this store and the thread start can fail, so no
+					// error path leaves it open without a thread.
+					self.is_open.store(true, Ordering::Relaxed);
+
 					// Start new synchronization thread or wake up existing one.
 					let mut thread_w = self.sync_thread.write();
 					if thread_w.is_none() {
@@ -455,7 +463,6 @@ impl Wallet {
 					} else {
 						thread_w.clone().unwrap().unpark();
 					}
-					self.is_open.store(true, Ordering::Relaxed);
 				}
 				Err(e) => {
 					if !self.syncing() {
