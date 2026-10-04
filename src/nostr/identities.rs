@@ -130,6 +130,16 @@ impl HeldIdentities {
 		format!("{SUBDIR}/{hex}/{LEGACY_FILE}")
 	}
 
+	/// True if a JSON object is a held-identity index, whatever its format
+	/// version: it has an `identities` member (the entry list) or an `active`
+	/// member, of any type, so a future change of either type is still
+	/// recognised. Every index field has a default, so this build fails to parse
+	/// such an object only when a field's type changed. An identity file never
+	/// has either member.
+	pub(crate) fn looks_like_index(map: &serde_json::Map<String, serde_json::Value>) -> bool {
+		map.contains_key("identities") || map.contains_key("active")
+	}
+
 	/// Load the index if present and parseable.
 	pub fn load(nostr_dir: &PathBuf) -> Option<HeldIdentities> {
 		let raw = fs::read_to_string(Self::index_path(nostr_dir)).ok()?;
@@ -205,24 +215,26 @@ impl HeldIdentities {
 	/// never written over: it is renamed aside to
 	/// `identities.json.unreadable-<unix time>`, bytes unchanged, before the
 	/// index is rebuilt from identity #1. An index that cannot be read at all
-	/// (permissions, I/O error) is left in place and the rebuilt index is NOT
-	/// saved: it lives in the returned value only.
+	/// (permissions, I/O error), or that is an index in a format this build does
+	/// not know (see [`Self::looks_like_index`]), is left in place and the
+	/// rebuilt index is NOT saved: it lives in the returned value only.
 	pub fn load_or_migrate(
 		nostr_dir: &PathBuf,
 		legacy: &NostrIdentity,
 	) -> Option<(HeldIdentities, NostrIdentity)> {
 		let legacy_hex = legacy.pubkey_hex()?;
 		let index_path = Self::index_path(nostr_dir);
-		let (found, may_save) = match read_or_set_aside::<HeldIdentities>(&index_path) {
-			Ok(found) => (found, true),
-			Err(e) => {
-				log::error!(
-					"nostr: identity index {} could not be read, left in place and not saved this session: {e}",
-					index_path.display()
-				);
-				(None, false)
-			}
-		};
+		let (found, may_save) =
+			match read_or_set_aside::<HeldIdentities>(&index_path, Self::looks_like_index) {
+				Ok(found) => (found, true),
+				Err(e) => {
+					log::error!(
+						"nostr: identity index {} could not be read, left in place and not saved this session: {e}",
+						index_path.display()
+					);
+					(None, false)
+				}
+			};
 		match found {
 			Some(mut idx) => {
 				// Repair: ensure identity #1 is always represented (it is the
@@ -1198,6 +1210,26 @@ mod tests {
 				assert!(index_aside_files(&dir).is_empty());
 			}
 		}
+		let _ = std::fs::remove_dir_all(&dir);
+	}
+
+	#[test]
+	fn an_index_from_a_newer_build_is_left_in_place_and_not_saved() {
+		// Valid JSON in an index format this build does not know (a field changed
+		// type), as left by a newer build before a roll back. It is not damaged:
+		// it is neither set aside nor written over, and the rebuilt index exists
+		// only in the returned value.
+		let dir = tmpdir("newerindex");
+		let (legacy, _) = NostrIdentity::create_random("pw").unwrap();
+		legacy.save(&dir).unwrap();
+		let index_path = HeldIdentities::index_path(&dir);
+		let newer = br#"{"ver":2,"active":"ab","order":{},"identities":[]}"#;
+		std::fs::write(&index_path, newer).unwrap();
+		let (idx, active) = HeldIdentities::load_or_migrate(&dir, &legacy).unwrap();
+		assert_eq!(idx.len(), 1);
+		assert_eq!(active.npub, legacy.npub);
+		assert_eq!(std::fs::read(&index_path).unwrap(), newer, "left as it was");
+		assert!(index_aside_files(&dir).is_empty(), "not set aside");
 		let _ = std::fs::remove_dir_all(&dir);
 	}
 
