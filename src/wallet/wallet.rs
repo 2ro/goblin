@@ -17,6 +17,7 @@ use crate::nostr::{
 	HeldIdentities, HeldIdentityKeys, NostrConfig, NostrIdentity, NostrService, NostrStore,
 };
 use crate::wallet::seed::WalletSeed;
+use crate::wallet::slatepack_precheck::precheck;
 use crate::wallet::store::TxHeightStore;
 use crate::wallet::types::{
 	ConnectionMethod, ManualSlatepackOutcome, PhraseMode, WalletAccount, WalletData,
@@ -1852,7 +1853,25 @@ impl Wallet {
 	}
 
 	/// Parse Slatepack message into [`Slate`].
+	///
+	/// Every caller goes through the Goblin precheck first: the pinned parser
+	/// panics on some hostile input (H1, H2), and the Android build aborts on
+	/// panic. Refused input gets the same kind of error a parse failure does.
 	pub fn parse_slatepack(
+		&self,
+		text: &String,
+	) -> Result<(Slate, Option<SlatepackAddress>), grin_wallet_controller::Error> {
+		if let Err(reject) = precheck(text) {
+			return Err(grin_wallet_controller::Error::GenericError(format!(
+				"Invalid slatepack: {reject}"
+			)));
+		}
+		self.parse_slatepack_unchecked(text)
+	}
+
+	/// The pinned parser itself. Callers use [`Self::parse_slatepack`]; the
+	/// tests call this to show what it does on hostile input.
+	fn parse_slatepack_unchecked(
 		&self,
 		text: &String,
 	) -> Result<(Slate, Option<SlatepackAddress>), grin_wallet_controller::Error> {
@@ -5243,6 +5262,45 @@ mod open_tests {
 			wallet.parse_slatepack(&to_other).is_err(),
 			"nobody but the named recipient may decode the Slatepack"
 		);
+
+		// The precheck lets all three through: it cannot know the key, so the
+		// one for someone else fails in the parser, not before it.
+		for (text, mode) in [(&plain, 0), (&to_own, 1), (&to_other, 1)] {
+			assert_eq!(precheck(text).map(|s| s.mode), Ok(mode));
+		}
+
+		wallet.close();
+	}
+
+	/// H1, H2 on the production path: each hostile message panics the pinned
+	/// parser as this wallet calls it, and `parse_slatepack` refuses it with an
+	/// error instead. The wallet still reads a real slatepack of its own after.
+	#[test]
+	fn hostile_slatepacks_are_refused_without_a_panic() {
+		let _serialised = serialised();
+		let password = ZeroingString::from("hostile-slatepack-password");
+		let wallet = sandbox_wallet("hostile-slatepack-test", &password);
+		wallet.open(password.clone()).expect("wallet must open");
+
+		for (name, text, _, _) in crate::wallet::slatepack_precheck::fixtures::hostile() {
+			let unchecked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+				let _ = wallet.parse_slatepack_unchecked(&text);
+			}));
+			assert!(unchecked.is_err(), "pinned parser did not panic: {name}");
+			assert!(wallet.parse_slatepack(&text).is_err(), "{name}");
+		}
+
+		let mut slate = Slate::blank(1, true);
+		slate.state = SlateState::Invoice1;
+		slate.amount = 1_000_000_000;
+		let text = wallet
+			.create_slatepack_message(&slate, None)
+			.expect("the wallet packs a slate");
+		assert_eq!(precheck(&text).map(|s| s.mode), Ok(0));
+		let (parsed, _) = wallet
+			.parse_slatepack(&text)
+			.expect("the wallet's own slatepack parses");
+		assert_eq!(parsed.id, slate.id);
 
 		wallet.close();
 	}

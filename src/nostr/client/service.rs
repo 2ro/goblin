@@ -18,6 +18,7 @@
 
 use super::*;
 use crate::wallet::NostrCancelResult;
+use crate::wallet::slatepack_precheck::precheck;
 
 impl NostrService {
 	/// Auto-expire stale pending transactions after the configured window
@@ -1924,7 +1925,23 @@ async fn handle_wrap(svc: &Arc<NostrService>, wallet: &Wallet, event: Event) {
 		return;
 	};
 	let note = protocol::extract_subject(&rumor.tags);
-	// 9. Parse and validate the slate itself.
+	// 9. Refuse what the pinned slatepack parser would panic on, before it runs
+	// (H1, H2): on Android a panic aborts the app and the catch-up replays the
+	// wrap at every launch. Goblin only sends plain (mode 0) slatepacks over
+	// nostr, so an encrypted one is refused too: the parser decrypts it with our
+	// key, and its remaining panics come after decryption.
+	let refusal = match precheck(&armor) {
+		Ok(shape) if shape.mode == 0 => None,
+		Ok(_) => Some("encrypted slatepack".to_string()),
+		Err(reject) => Some(reject.to_string()),
+	};
+	if let Some(reason) = refusal {
+		warn!("nostr: refusing slatepack in wrap {wrap_id} from {sender_hex}: {reason}");
+		svc.store.mark_processed(&wrap_id);
+		svc.store.mark_processed(&rumor_id);
+		return;
+	}
+	// 9b. Parse and validate the slate itself.
 	let Ok((slate, _)) = wallet.parse_slatepack(&armor) else {
 		svc.store.mark_processed(&wrap_id);
 		svc.store.mark_processed(&rumor_id);
