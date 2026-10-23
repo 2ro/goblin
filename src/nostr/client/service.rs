@@ -1799,6 +1799,22 @@ pub(super) async fn open_with_held(
 	None
 }
 
+/// Processed-store key that brackets the slatepack parse of a wrap or rumor.
+fn parse_marker(id: &str) -> String {
+	format!("parse:{id}")
+}
+
+/// True when a parse marker for `id` is still set: a previous run died inside
+/// the slatepack parser on this event. Marks `id` processed so it stays
+/// skipped.
+fn parse_aborted(store: &NostrStore, id: &str) -> bool {
+	if !store.is_processed(&parse_marker(id)) {
+		return false;
+	}
+	store.mark_processed(id);
+	true
+}
+
 async fn handle_wrap(svc: &Arc<NostrService>, wallet: &Wallet, event: Event) {
 	// 0. Only gift wraps.
 	if event.kind != Kind::GiftWrap {
@@ -1812,6 +1828,13 @@ async fn handle_wrap(svc: &Arc<NostrService>, wallet: &Wallet, event: Event) {
 	}
 	// 2. Wrap-level dedupe.
 	if svc.store.is_processed(&wrap_id) {
+		return;
+	}
+	// 2b. A parse marker left by the previous run means it died inside the
+	// slatepack parser on this wrap (Android aborts on panic, and the catch-up
+	// replays the wrap at every launch). Skip it for good.
+	if parse_aborted(&svc.store, &wrap_id) {
+		warn!("nostr: skipping wrap {wrap_id} that crashed a previous run");
 		return;
 	}
 	// 2.5 Global decrypt ceiling: bound total NIP-44 unwrap work regardless of
@@ -1894,6 +1917,13 @@ async fn handle_wrap(svc: &Arc<NostrService>, wallet: &Wallet, event: Event) {
 		svc.store.mark_processed(&wrap_id);
 		return;
 	}
+	// The rumor of a wrap that crashed a previous run can come again in a new
+	// wrap (a resend): skip that one too.
+	if parse_aborted(&svc.store, &rumor_id) {
+		warn!("nostr: skipping rumor {rumor_id} that crashed a previous run");
+		svc.store.mark_processed(&wrap_id);
+		return;
+	}
 	// 8. Request-void control message (a decline by the payer or a cancel by the
 	// requester): it carries no slatepack, just an action tag naming a slate id.
 	// Handle it before slatepack extraction; the sender is bound to the stored
@@ -1925,24 +1955,36 @@ async fn handle_wrap(svc: &Arc<NostrService>, wallet: &Wallet, event: Event) {
 		return;
 	};
 	let note = protocol::extract_subject(&rumor.tags);
-	// 9. Refuse what the pinned slatepack parser would panic on, before it runs
-	// (H1, H2): on Android a panic aborts the app and the catch-up replays the
-	// wrap at every launch. Goblin only sends plain (mode 0) slatepacks over
-	// nostr, so an encrypted one is refused too: the parser decrypts it with our
-	// key, and its remaining panics come after decryption.
-	let refusal = match precheck(&armor) {
-		Ok(shape) if shape.mode == 0 => None,
-		Ok(_) => Some("encrypted slatepack".to_string()),
-		Err(reject) => Some(reject.to_string()),
-	};
-	if let Some(reason) = refusal {
-		warn!("nostr: refusing slatepack in wrap {wrap_id} from {sender_hex}: {reason}");
-		svc.store.mark_processed(&wrap_id);
-		svc.store.mark_processed(&rumor_id);
-		return;
+	// 9. Precheck and parse the slatepack. Markers bracket both and are on disk
+	// before they run: if either takes the process down, the next run finds
+	// them and skips this wrap and rumor (2b and 7).
+	let markers = [parse_marker(&wrap_id), parse_marker(&rumor_id)];
+	for marker in &markers {
+		svc.store.mark_processed(marker);
 	}
-	// 9b. Parse and validate the slate itself.
-	let Ok((slate, _)) = wallet.parse_slatepack(&armor) else {
+	// The precheck refuses what the pinned parser would panic on (H1, H2): on
+	// Android a panic aborts the app and the catch-up replays the wrap at every
+	// launch. Goblin only sends plain (mode 0) slatepacks over nostr, so an
+	// encrypted one is refused too: the parser decrypts it with our key, and
+	// its remaining panics come after decryption.
+	let parsed = match precheck(&armor) {
+		Ok(shape) if shape.mode == 0 => Ok(wallet.parse_slatepack(&armor)),
+		Ok(_) => Err("encrypted slatepack".to_string()),
+		Err(reject) => Err(reject.to_string()),
+	};
+	for marker in &markers {
+		svc.store.unmark_processed(marker);
+	}
+	let parsed = match parsed {
+		Ok(parsed) => parsed,
+		Err(reason) => {
+			warn!("nostr: refusing slatepack in wrap {wrap_id} from {sender_hex}: {reason}");
+			svc.store.mark_processed(&wrap_id);
+			svc.store.mark_processed(&rumor_id);
+			return;
+		}
+	};
+	let Ok((slate, _)) = parsed else {
 		svc.store.mark_processed(&wrap_id);
 		svc.store.mark_processed(&rumor_id);
 		return;
@@ -2241,6 +2283,39 @@ async fn handle_wrap(svc: &Arc<NostrService>, wallet: &Wallet, event: Event) {
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	/// Test D: a parse marker left by a run that died in the parser makes the
+	/// handler skip the event (2b and 7 return before the parse) and mark it
+	/// processed. A parse that returned leaves no marker, and the marker is on
+	/// disk as soon as it is set.
+	#[test]
+	fn parse_marker_skips_an_event_that_crashed_a_previous_run() {
+		let dir = std::env::temp_dir().join(format!(
+			"goblin-parse-marker-{}-{}",
+			std::process::id(),
+			std::time::SystemTime::now()
+				.duration_since(std::time::UNIX_EPOCH)
+				.unwrap()
+				.as_nanos()
+		));
+		let store = NostrStore::new(dir.clone());
+		assert!(!parse_aborted(&store, "wrap-a"));
+		assert!(!store.is_processed("wrap-a"));
+
+		// A parse that returned: marked, then cleared, nothing to skip.
+		store.mark_processed(&parse_marker("wrap-a"));
+		store.unmark_processed(&parse_marker("wrap-a"));
+		assert!(!parse_aborted(&store, "wrap-a"));
+		assert!(!store.is_processed("wrap-a"));
+
+		// A run that died inside the parse: the marker is already in the file.
+		store.mark_processed(&parse_marker("wrap-b"));
+		let file = std::fs::read(dir.join("data.safe.bin")).unwrap();
+		assert!(file.windows(12).any(|w| w == b"parse:wrap-b"));
+		assert!(parse_aborted(&store, "wrap-b"));
+		assert!(store.is_processed("wrap-b"));
+		let _ = std::fs::remove_dir_all(dir);
+	}
 
 	#[test]
 	fn terminal_states_do_not_expire() {

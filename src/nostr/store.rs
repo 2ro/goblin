@@ -297,6 +297,12 @@ impl NostrStore {
 		let _ = writer.commit();
 	}
 
+	/// Remove one processed marker. Like `mark_processed`, the change is on
+	/// disk when this returns (the rkv commit rewrites the file).
+	pub fn unmark_processed(&self, key: &str) {
+		self.delete(&self.processed, key);
+	}
+
 	/// Remove processed markers older than the TTL.
 	pub fn prune_processed(&self) {
 		let cutoff = unix_time() - PROCESSED_TTL_SECS;
