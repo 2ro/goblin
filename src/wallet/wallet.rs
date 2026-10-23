@@ -1870,8 +1870,9 @@ impl Wallet {
 	}
 
 	/// The pinned parser itself. Callers use [`Self::parse_slatepack`]; the
-	/// tests call this to show what it does on hostile input.
-	fn parse_slatepack_unchecked(
+	/// nostr ingest calls this right after running the precheck itself, and the
+	/// tests call it to show what it does on hostile input.
+	pub(crate) fn parse_slatepack_unchecked(
 		&self,
 		text: &String,
 	) -> Result<(Slate, Option<SlatepackAddress>), grin_wallet_controller::Error> {

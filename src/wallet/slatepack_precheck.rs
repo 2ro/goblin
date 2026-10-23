@@ -47,6 +47,11 @@ const HEADER: &[u8] = b"BEGINSLATEPACK.";
 const WHITESPACE: [u8; 5] = [b'>', b'\n', b'\r', b'\t', b' '];
 /// The Bitcoin base58 alphabet, the one bs58 decodes armor with.
 const BASE58: &[u8; 58] = b"123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+/// Longest base58 payload worth decoding (decoding cost grows with the square
+/// of the length). The pinned reader refuses a binary payload over 100 000
+/// bytes (node/core ser.rs:503-506); with the Slatepack header and the check
+/// code that is about 137 000 base58 characters.
+const MAX_BASE58_CHARS: usize = 140_000;
 /// First line of an age v1 file.
 const AGE_V1: &[u8] = b"age-encryption.org/v1\n";
 
@@ -142,6 +147,9 @@ fn dearmor(data: &[u8]) -> Result<Vec<u8>, Reject> {
 		.filter(|b| !WHITESPACE.contains(b))
 		.cloned()
 		.collect();
+	if clean.len() > MAX_BASE58_CHARS {
+		return Err(Reject::Size);
+	}
 	let decoded = base58_decode(&clean).ok_or(Reject::Payload)?;
 	// armor.rs:103 takes [0..4] without a check.
 	if decoded.len() < 4 {
@@ -168,26 +176,39 @@ fn framing_is(bytes: &[u8], word: &[u8]) -> bool {
 	start <= end && &bytes[start..end] == word
 }
 
-/// Base58 decode as bs58 0.3.1 does it: leading '1's become zero bytes, any
-/// byte outside the alphabet is an error.
+/// Base58 decode with the result bs58 0.3.1 gives: leading '1's become zero
+/// bytes, any byte outside the alphabet is an error. It works five digits at a
+/// time on 32-bit limbs (58^5 < 2^32), several times faster than a byte-wise
+/// loop on a long payload.
 fn base58_decode(input: &[u8]) -> Option<Vec<u8>> {
-	// Little-endian accumulator, reversed at the end.
-	let mut out: Vec<u8> = Vec::with_capacity(input.len());
-	for c in input {
-		let mut val = BASE58.iter().position(|a| a == c)? as u32;
-		for byte in out.iter_mut() {
-			val += (*byte as u32) * 58;
-			*byte = (val & 0xFF) as u8;
-			val >>= 8;
+	// Little-endian 32-bit limbs of the number.
+	let mut limbs: Vec<u32> = Vec::with_capacity(input.len() / 5 + 1);
+	for chunk in input.chunks(5) {
+		let (mut scale, mut value) = (1u64, 0u64);
+		for c in chunk {
+			scale *= 58;
+			value = value * 58 + BASE58.iter().position(|a| a == c)? as u64;
 		}
-		while val > 0 {
-			out.push((val & 0xFF) as u8);
-			val >>= 8;
+		let mut carry = value;
+		for limb in limbs.iter_mut() {
+			let v = *limb as u64 * scale + carry;
+			*limb = v as u32;
+			carry = v >> 32;
+		}
+		while carry > 0 {
+			limbs.push(carry as u32);
+			carry >>= 32;
 		}
 	}
 	let zeros = input.iter().take_while(|c| **c == b'1').count();
-	out.extend(std::iter::repeat_n(0, zeros));
-	out.reverse();
+	let mut out = vec![0u8; zeros];
+	out.extend(
+		limbs
+			.iter()
+			.rev()
+			.flat_map(|l| l.to_be_bytes())
+			.skip_while(|b| *b == 0),
+	);
 	Some(out)
 }
 
@@ -780,7 +801,40 @@ mod tests {
 		] {
 			assert_eq!(base58_decode(base58(&bytes).as_bytes()), Some(bytes));
 		}
+		// Every input length across the five-digit chunks, with and without
+		// leading zero bytes.
+		for n in 0..80usize {
+			let bytes: Vec<u8> = (0..n).map(|i| (i * 151 + n * 7) as u8).collect();
+			assert_eq!(
+				base58_decode(base58(&bytes).as_bytes()),
+				Some(bytes.clone())
+			);
+			let mut zeroed = vec![0u8; n % 4];
+			zeroed.extend_from_slice(&bytes);
+			assert_eq!(base58_decode(base58(&zeroed).as_bytes()), Some(zeroed));
+		}
 		assert_eq!(base58_decode(b"0OIl"), None);
+	}
+
+	/// Base58 text over the cap is refused before decoding; up to the cap it is
+	/// decoded (here to zero bytes, so it then fails the check code). The cap
+	/// leaves room for the largest binary payload the pinned reader accepts.
+	#[test]
+	fn base58_length_cap() {
+		chain();
+		let at_cap = format!(
+			"BEGINSLATEPACK. {}. ENDSLATEPACK.",
+			"1".repeat(MAX_BASE58_CHARS)
+		);
+		assert_eq!(precheck(&at_cap), Err(Reject::Checksum));
+		let over = format!(
+			"BEGINSLATEPACK. {}. ENDSLATEPACK.",
+			"1".repeat(MAX_BASE58_CHARS + 1)
+		);
+		assert_eq!(precheck(&over), Err(Reject::Size));
+		// 100 000 payload bytes plus a generous 300 for header, sender and check.
+		let largest = (100_000.0 + 300.0) * 256f64.ln() / 58f64.ln();
+		assert!(largest < MAX_BASE58_CHARS as f64);
 	}
 
 	/// An age header passes with an X25519 stanza and no scrypt one; grease

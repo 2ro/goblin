@@ -1996,7 +1996,8 @@ async fn handle_wrap(svc: &Arc<NostrService>, wallet: &Wallet, event: Event) {
 		info!("nostr: retrying wrap {wrap_id} after an interrupted parse");
 	}
 	svc.store.set_parse_attempts(&markers, attempt);
-	let parsed = wallet.parse_slatepack(&armor);
+	// The precheck already ran above: parse without running it again.
+	let parsed = wallet.parse_slatepack_unchecked(&armor);
 	svc.store.unmark_processed_all(&markers);
 	let Ok((slate, _)) = parsed else {
 		svc.store.mark_processed(&wrap_id);
