@@ -17,7 +17,7 @@ use crate::nostr::{
 	HeldIdentities, HeldIdentityKeys, NostrConfig, NostrIdentity, NostrService, NostrStore,
 };
 use crate::wallet::seed::WalletSeed;
-use crate::wallet::slatepack_precheck::precheck;
+use crate::wallet::slatepack_precheck::{Reject, precheck};
 use crate::wallet::store::TxHeightStore;
 use crate::wallet::types::{
 	ConnectionMethod, ManualSlatepackOutcome, PhraseMode, WalletAccount, WalletData,
@@ -1862,8 +1862,8 @@ impl Wallet {
 		text: &String,
 	) -> Result<(Slate, Option<SlatepackAddress>), grin_wallet_controller::Error> {
 		if let Err(reject) = precheck(text) {
-			return Err(grin_wallet_controller::Error::GenericError(format!(
-				"Invalid slatepack: {reject}"
+			return Err(grin_wallet_controller::Error::GenericError(refusal_text(
+				reject,
 			)));
 		}
 		self.parse_slatepack_unchecked(text)
@@ -1965,8 +1965,12 @@ impl Wallet {
 	/// and returns the reply slatepack to send back; finalizing a returned slate
 	/// (Standard2/Invoice2) posts to the node, so it's handed to the worker.
 	pub fn manual_process_slatepack(&self, text: &String) -> Result<ManualSlatepackOutcome, Error> {
+		// A refusal carries a finished, translated message; a failed parse
+		// keeps the parser's own text. Either is shown once, without a prefix
+		// (see `manual_error_text`).
+		precheck(text).map_err(|r| Error::GenericError(refusal_text(r)))?;
 		let (slate, dest) = self
-			.parse_slatepack(text)
+			.parse_slatepack_unchecked(text)
 			.map_err(|e| Error::GenericError(e.to_string()))?;
 		refuse_zero_amount(&slate)?;
 		match slate.state {
@@ -3042,10 +3046,25 @@ fn friendly_send_error(e: &Error) -> String {
 fn refuse_zero_amount(slate: &Slate) -> Result<(), Error> {
 	if slate.amount == 0 && matches!(slate.state, SlateState::Standard1 | SlateState::Invoice1) {
 		return Err(Error::GenericError(
-			"This slatepack is for 0 grin, so Goblin won't continue it.".to_string(),
+			t!("goblin.settings.sp_zero_amount").to_string(),
 		));
 	}
 	Ok(())
+}
+
+/// The user-facing text for a slatepack the precheck refused.
+fn refusal_text(reject: Reject) -> String {
+	t!("goblin.settings.sp_refused", reason = reject.to_string()).to_string()
+}
+
+/// The text the manual slatepack screen shows for an error. A GenericError
+/// already holds a finished message, so it is shown without the "Generic
+/// error: " prefix its Display adds.
+pub fn manual_error_text(e: &Error) -> String {
+	match e {
+		Error::GenericError(m) => m.clone(),
+		e => e.to_string(),
+	}
 }
 
 /// Handle wallet task.
@@ -5299,12 +5318,21 @@ mod open_tests {
 		let wallet = sandbox_wallet("hostile-slatepack-test", &password);
 		wallet.open(password.clone()).expect("wallet must open");
 
-		for (name, text, _, _) in crate::wallet::slatepack_precheck::fixtures::hostile() {
+		for (name, text, reject, _) in crate::wallet::slatepack_precheck::fixtures::hostile() {
 			let unchecked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
 				let _ = wallet.parse_slatepack_unchecked(&text);
 			}));
 			assert!(unchecked.is_err(), "pinned parser did not panic: {name}");
 			assert!(wallet.parse_slatepack(&text).is_err(), "{name}");
+			// The manual paste shows one translated refusal, without a prefix.
+			let err = wallet
+				.manual_process_slatepack(&text)
+				.err()
+				.expect("a hostile slatepack is refused");
+			let shown = manual_error_text(&err);
+			assert!(!shown.contains("Generic error"), "{name}: {shown}");
+			assert!(!shown.contains("goblin.settings"), "{name}: key not found");
+			assert!(shown.contains(&reject.to_string()), "{name}: {shown}");
 		}
 
 		let mut slate = Slate::blank(1, true);
@@ -5350,12 +5378,15 @@ mod open_tests {
 			let text = wallet
 				.create_slatepack_message(&slate, None)
 				.expect("the wallet packs a slate");
-			// Manual paste: the user sees the refusal.
+			// Manual paste: the user sees the translated refusal, once.
 			let err = wallet
 				.manual_process_slatepack(&text)
 				.err()
 				.expect("a zero-amount slatepack is refused");
-			assert!(err.to_string().contains("0 grin"), "{state}: {err}");
+			let shown = manual_error_text(&err);
+			assert!(matches!(err, Error::GenericError(_)), "{state}: {err}");
+			assert!(!shown.contains("Generic error"), "{state}: {shown}");
+			assert!(!shown.contains("goblin.settings"), "{state}: key not found");
 			// OpenMessage: refused the same way, no transaction either.
 			futures::executor::block_on(handle_task(&wallet, WalletTask::OpenMessage(text)));
 			assert!(!wallet.message_opening(), "{state}");

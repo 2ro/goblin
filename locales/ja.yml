@@ -525,6 +525,8 @@ goblin:
     sp_paste_first: "まずslatepackを貼り付けてください。"
     sp_reply_ready: "返信の準備ができました — 送信者に送り返してください。"
     sp_finalizing: "確定してチェーンに送信中…"
+    sp_refused: "このslatepackは安全に開けません（%{reason}）。"
+    sp_zero_amount: "このslatepackは0 grinのため、続行できません。"
     sp_create_group: "支払いを作成"
     sp_create_blurb: "誰かに渡すためのslatepackを作成します。相手がそれを受け取って返信を送り返したら、上で確定してください。"
     sp_amount_hint: "金額(grin)"

@@ -525,6 +525,8 @@ goblin:
     sp_paste_first: "請先貼上 slatepack。"
     sp_reply_ready: "回覆已就緒 — 發回給傳送方。"
     sp_finalizing: "正在確認並廣播到鏈上…"
+    sp_refused: "無法安全開啟此 slatepack（%{reason}）。"
+    sp_zero_amount: "此 slatepack 的金額為 0 grin，無法繼續。"
     sp_create_group: "建立付款"
     sp_create_blurb: "生成一個 slatepack 交給他人。對方接收後將回復發回，你在上方確認即可。"
     sp_amount_hint: "金額（grin）"
