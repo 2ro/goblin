@@ -1799,20 +1799,33 @@ pub(super) async fn open_with_held(
 	None
 }
 
-/// Processed-store key that brackets the slatepack parse of a wrap or rumor.
+/// Processed-store key of the parse-attempt marker of a wrap or rumor.
 fn parse_marker(id: &str) -> String {
 	format!("parse:{id}")
 }
 
-/// True when a parse marker for `id` is still set: a previous run died inside
-/// the slatepack parser on this event. Marks `id` processed so it stays
-/// skipped.
+/// True when the pinned parser was started on this event twice by earlier runs
+/// and never returned: skip it for good, and mark `id` processed. One leftover
+/// attempt is not enough: the process may have been killed for another reason
+/// while the parse ran, so the event gets one more try.
 fn parse_aborted(store: &NostrStore, id: &str) -> bool {
-	if !store.is_processed(&parse_marker(id)) {
+	let marker = parse_marker(id);
+	if store.parse_attempts(&marker) < 2 {
 		return false;
 	}
 	store.mark_processed(id);
+	store.unmark_processed(&marker);
 	true
+}
+
+/// The attempt number to record before parsing an event: one more than any
+/// attempt left over on its wrap or rumor.
+fn next_parse_attempt(store: &NostrStore, markers: &[&str]) -> u32 {
+	1 + markers
+		.iter()
+		.map(|m| store.parse_attempts(m))
+		.max()
+		.unwrap_or(0)
 }
 
 async fn handle_wrap(svc: &Arc<NostrService>, wallet: &Wallet, event: Event) {
@@ -1830,9 +1843,9 @@ async fn handle_wrap(svc: &Arc<NostrService>, wallet: &Wallet, event: Event) {
 	if svc.store.is_processed(&wrap_id) {
 		return;
 	}
-	// 2b. A parse marker left by the previous run means it died inside the
+	// 2b. Parse-attempt markers left by earlier runs mean they died inside the
 	// slatepack parser on this wrap (Android aborts on panic, and the catch-up
-	// replays the wrap at every launch). Skip it for good.
+	// replays the wrap at every launch). After two such runs, skip it for good.
 	if parse_aborted(&svc.store, &wrap_id) {
 		warn!("nostr: skipping wrap {wrap_id} that crashed a previous run");
 		return;
@@ -1917,7 +1930,7 @@ async fn handle_wrap(svc: &Arc<NostrService>, wallet: &Wallet, event: Event) {
 		svc.store.mark_processed(&wrap_id);
 		return;
 	}
-	// The rumor of a wrap that crashed a previous run can come again in a new
+	// The rumor of a wrap that crashed earlier runs can come again in a new
 	// wrap (a resend): skip that one too.
 	if parse_aborted(&svc.store, &rumor_id) {
 		warn!("nostr: skipping rumor {rumor_id} that crashed a previous run");
@@ -1955,35 +1968,36 @@ async fn handle_wrap(svc: &Arc<NostrService>, wallet: &Wallet, event: Event) {
 		return;
 	};
 	let note = protocol::extract_subject(&rumor.tags);
-	// 9. Precheck and parse the slatepack. Markers bracket both and are on disk
-	// before they run: if either takes the process down, the next run finds
-	// them and skips this wrap and rumor (2b and 7).
-	let markers = [parse_marker(&wrap_id), parse_marker(&rumor_id)];
-	for marker in &markers {
-		svc.store.mark_processed(marker);
-	}
-	// The precheck refuses what the pinned parser would panic on (H1, H2): on
-	// Android a panic aborts the app and the catch-up replays the wrap at every
-	// launch. Goblin only sends plain (mode 0) slatepacks over nostr, so an
-	// encrypted one is refused too: the parser decrypts it with our key, and
-	// its remaining panics come after decryption.
-	let parsed = match precheck(&armor) {
-		Ok(shape) if shape.mode == 0 => Ok(wallet.parse_slatepack(&armor)),
-		Ok(_) => Err("encrypted slatepack".to_string()),
-		Err(reject) => Err(reject.to_string()),
+	// 9. Refuse what the pinned slatepack parser would panic on, before it runs
+	// (H1, H2): on Android a panic aborts the app and the catch-up replays the
+	// wrap at every launch. Goblin only sends plain (mode 0) slatepacks over
+	// nostr, so an encrypted one is refused too: the parser decrypts it with our
+	// key, and its remaining panics come after decryption. The precheck itself
+	// cannot panic, so it runs outside the markers.
+	let refusal = match precheck(&armor) {
+		Ok(shape) if shape.mode == 0 => None,
+		Ok(_) => Some("encrypted slatepack".to_string()),
+		Err(reject) => Some(reject.to_string()),
 	};
-	for marker in &markers {
-		svc.store.unmark_processed(marker);
+	if let Some(reason) = refusal {
+		warn!("nostr: refusing slatepack in wrap {wrap_id} from {sender_hex}: {reason}");
+		svc.store.mark_processed(&wrap_id);
+		svc.store.mark_processed(&rumor_id);
+		return;
 	}
-	let parsed = match parsed {
-		Ok(parsed) => parsed,
-		Err(reason) => {
-			warn!("nostr: refusing slatepack in wrap {wrap_id} from {sender_hex}: {reason}");
-			svc.store.mark_processed(&wrap_id);
-			svc.store.mark_processed(&rumor_id);
-			return;
-		}
-	};
+	// 9b. Parse the slate. One commit sets the parse-attempt markers of the wrap
+	// and the rumor right before the pinned parser runs, and one clears both as
+	// soon as it returns. If the process dies in between, the next run tries
+	// once more, and the one after skips the event (2b and 7).
+	let keys = [parse_marker(&wrap_id), parse_marker(&rumor_id)];
+	let markers = [keys[0].as_str(), keys[1].as_str()];
+	let attempt = next_parse_attempt(&svc.store, &markers);
+	if attempt > 1 {
+		info!("nostr: retrying wrap {wrap_id} after an interrupted parse");
+	}
+	svc.store.set_parse_attempts(&markers, attempt);
+	let parsed = wallet.parse_slatepack(&armor);
+	svc.store.unmark_processed_all(&markers);
 	let Ok((slate, _)) = parsed else {
 		svc.store.mark_processed(&wrap_id);
 		svc.store.mark_processed(&rumor_id);
@@ -2284,12 +2298,7 @@ async fn handle_wrap(svc: &Arc<NostrService>, wallet: &Wallet, event: Event) {
 mod tests {
 	use super::*;
 
-	/// Test D: a parse marker left by a run that died in the parser makes the
-	/// handler skip the event (2b and 7 return before the parse) and mark it
-	/// processed. A parse that returned leaves no marker, and the marker is on
-	/// disk as soon as it is set.
-	#[test]
-	fn parse_marker_skips_an_event_that_crashed_a_previous_run() {
+	fn marker_store() -> (NostrStore, std::path::PathBuf) {
 		let dir = std::env::temp_dir().join(format!(
 			"goblin-parse-marker-{}-{}",
 			std::process::id(),
@@ -2298,22 +2307,61 @@ mod tests {
 				.unwrap()
 				.as_nanos()
 		));
-		let store = NostrStore::new(dir.clone());
-		assert!(!parse_aborted(&store, "wrap-a"));
-		assert!(!store.is_processed("wrap-a"));
+		(NostrStore::new(dir.clone()), dir)
+	}
 
-		// A parse that returned: marked, then cleared, nothing to skip.
-		store.mark_processed(&parse_marker("wrap-a"));
-		store.unmark_processed(&parse_marker("wrap-a"));
+	/// Test D: one parse that never returned gets one more try, two get the
+	/// event skipped for good (2b and 7 return before the parse) and marked
+	/// processed. The markers are on disk as soon as they are set.
+	#[test]
+	fn parse_markers_retry_once_then_skip() {
+		let (store, dir) = marker_store();
+		let (wrap, rumor) = (parse_marker("wrap-a"), parse_marker("rumor-a"));
+		let markers = [wrap.as_str(), rumor.as_str()];
+		assert_eq!(next_parse_attempt(&store, &markers), 1);
 		assert!(!parse_aborted(&store, "wrap-a"));
-		assert!(!store.is_processed("wrap-a"));
 
-		// A run that died inside the parse: the marker is already in the file.
-		store.mark_processed(&parse_marker("wrap-b"));
+		// A run dies inside its first parse: both markers are already in the file.
+		store.set_parse_attempts(&markers, 1);
 		let file = std::fs::read(dir.join("data.safe.bin")).unwrap();
-		assert!(file.windows(12).any(|w| w == b"parse:wrap-b"));
-		assert!(parse_aborted(&store, "wrap-b"));
-		assert!(store.is_processed("wrap-b"));
+		assert!(file.windows(12).any(|w| w == b"parse:wrap-a"));
+		assert!(file.windows(13).any(|w| w == b"parse:rumor-a"));
+
+		// The next run: no skip, nothing marked, and the parse is attempt 2.
+		assert!(!parse_aborted(&store, "wrap-a"));
+		assert!(!parse_aborted(&store, "rumor-a"));
+		assert!(!store.is_processed("wrap-a"));
+		assert_eq!(next_parse_attempt(&store, &markers), 2);
+
+		// It dies again: the run after that skips the wrap and, for a resend in
+		// a new wrap, the rumor.
+		store.set_parse_attempts(&markers, 2);
+		assert!(parse_aborted(&store, "wrap-a"));
+		assert!(store.is_processed("wrap-a"));
+		assert!(parse_aborted(&store, "rumor-a"));
+		assert!(store.is_processed("rumor-a"));
+		// Their markers are gone; the processed marks do the skipping now.
+		assert_eq!(store.parse_attempts(&wrap), 0);
+		assert_eq!(store.parse_attempts(&rumor), 0);
+		let _ = std::fs::remove_dir_all(dir);
+	}
+
+	/// The normal path: one commit sets the pair, one clears it, and no half
+	/// state is left (a later run sees neither marker).
+	#[test]
+	fn parse_markers_are_set_and_cleared_as_a_pair() {
+		let (store, dir) = marker_store();
+		let (wrap, rumor) = (parse_marker("wrap-b"), parse_marker("rumor-b"));
+		let markers = [wrap.as_str(), rumor.as_str()];
+		store.set_parse_attempts(&markers, 1);
+		assert_eq!(store.parse_attempts(&wrap), 1);
+		assert_eq!(store.parse_attempts(&rumor), 1);
+		store.unmark_processed_all(&markers);
+		assert_eq!(store.parse_attempts(&wrap), 0);
+		assert_eq!(store.parse_attempts(&rumor), 0);
+		assert!(!store.is_processed(&wrap) && !store.is_processed(&rumor));
+		// Nothing to retry or skip: the next parse is a first attempt again.
+		assert_eq!(next_parse_attempt(&store, &markers), 1);
 		let _ = std::fs::remove_dir_all(dir);
 	}
 

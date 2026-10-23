@@ -26,6 +26,14 @@ use std::sync::{Arc, RwLock};
 
 use crate::nostr::types::*;
 
+/// Value of a parse-attempt marker: how many parses of an event started
+/// without returning, and when the last one started (for pruning).
+#[derive(serde_derive::Serialize, serde_derive::Deserialize)]
+struct ParseAttempt {
+	attempts: u32,
+	at: i64,
+}
+
 /// Keys are processed-event markers older than this get pruned (30 days).
 const PROCESSED_TTL_SECS: i64 = 30 * 86_400;
 
@@ -303,6 +311,49 @@ impl NostrStore {
 		self.delete(&self.processed, key);
 	}
 
+	/// Remove several processed markers in one commit, so no reader or later
+	/// run ever sees some of them gone and the others still set.
+	pub fn unmark_processed_all(&self, keys: &[&str]) {
+		let env = self.env.read().unwrap_or_else(|e| e.into_inner());
+		let mut writer = env.write().unwrap();
+		for key in keys {
+			let _ = self.processed.delete(&mut writer, key);
+		}
+		let _ = writer.commit();
+	}
+
+	/// Set the parse-attempt markers `keys` (the nostr ingest's) to `attempts`
+	/// in one commit. On disk when this returns.
+	pub fn set_parse_attempts(&self, keys: &[&str], attempts: u32) {
+		let attempt = ParseAttempt {
+			attempts,
+			at: unix_time(),
+		};
+		let Ok(raw) = serde_json::to_string(&attempt) else {
+			return;
+		};
+		let env = self.env.read().unwrap_or_else(|e| e.into_inner());
+		let mut writer = env.write().unwrap();
+		for key in keys {
+			let _ = self.processed.put(&mut writer, key, &Value::Json(&raw));
+		}
+		let _ = writer.commit();
+	}
+
+	/// Parse attempts recorded under `key`: 0 without a marker. Any other value
+	/// under the key counts as one attempt.
+	pub fn parse_attempts(&self, key: &str) -> u32 {
+		let env = self.env.read().unwrap_or_else(|e| e.into_inner());
+		let reader = env.read().unwrap();
+		match self.processed.get(&reader, key) {
+			Ok(Some(Value::Json(raw))) => serde_json::from_str::<ParseAttempt>(raw)
+				.map(|a| a.attempts)
+				.unwrap_or(1),
+			Ok(Some(_)) => 1,
+			_ => 0,
+		}
+	}
+
 	/// Remove processed markers older than the TTL.
 	pub fn prune_processed(&self) {
 		let cutoff = unix_time() - PROCESSED_TTL_SECS;
@@ -311,13 +362,19 @@ impl NostrStore {
 			let reader = env.read().unwrap();
 			let mut stale = vec![];
 			if let Ok(iter) = self.processed.iter_start(&reader) {
-				for item in iter.flatten() {
-					if let (key, Value::I64(ts)) = item {
-						if ts < cutoff {
-							if let Ok(k) = std::str::from_utf8(key) {
-								stale.push(k.to_string());
-							}
+				for (key, value) in iter.flatten() {
+					// Parse-attempt markers keep their time inside the JSON value.
+					let ts = match value {
+						Value::I64(ts) => Some(ts),
+						Value::Json(raw) => {
+							serde_json::from_str::<ParseAttempt>(raw).ok().map(|a| a.at)
 						}
+						_ => None,
+					};
+					if ts.is_some_and(|ts| ts < cutoff)
+						&& let Ok(k) = std::str::from_utf8(key)
+					{
+						stale.push(k.to_string());
 					}
 				}
 			}
@@ -1038,5 +1095,25 @@ mod tests {
 				"pending p{i} survives"
 			);
 		}
+	}
+
+	/// Parse-attempt markers keep their time in a JSON value; pruning reads it
+	/// there, so a marker left by a crash does not stay for ever.
+	#[test]
+	fn prune_removes_old_parse_attempt_markers() {
+		let (store, dir) = temp_store();
+		store.put_json(
+			&store.processed,
+			"parse:old",
+			&ParseAttempt {
+				attempts: 2,
+				at: unix_time() - PROCESSED_TTL_SECS - 1,
+			},
+		);
+		store.set_parse_attempts(&["parse:new"], 1);
+		store.prune_processed();
+		assert_eq!(store.parse_attempts("parse:old"), 0);
+		assert_eq!(store.parse_attempts("parse:new"), 1);
+		let _ = fs::remove_dir_all(dir);
 	}
 }
