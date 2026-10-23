@@ -37,5 +37,7 @@ pub mod store;
 
 pub mod proof_addrs;
 
+pub mod slatepack_precheck;
+
 #[cfg(all(test, feature = "e2e-internal"))]
 mod e2e;
