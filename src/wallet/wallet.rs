@@ -17,6 +17,7 @@ use crate::nostr::{
 	HeldIdentities, HeldIdentityKeys, NostrConfig, NostrIdentity, NostrService, NostrStore,
 };
 use crate::wallet::seed::WalletSeed;
+use crate::wallet::slatepack_precheck::precheck;
 use crate::wallet::store::TxHeightStore;
 use crate::wallet::types::{
 	ConnectionMethod, ManualSlatepackOutcome, PhraseMode, WalletAccount, WalletData,
@@ -1852,7 +1853,25 @@ impl Wallet {
 	}
 
 	/// Parse Slatepack message into [`Slate`].
+	///
+	/// Every caller goes through the Goblin precheck first: the pinned parser
+	/// panics on some hostile input (H1, H2), and the Android build aborts on
+	/// panic. Refused input gets the same kind of error a parse failure does.
 	pub fn parse_slatepack(
+		&self,
+		text: &String,
+	) -> Result<(Slate, Option<SlatepackAddress>), grin_wallet_controller::Error> {
+		if let Err(reject) = precheck(text) {
+			return Err(grin_wallet_controller::Error::GenericError(format!(
+				"Invalid slatepack: {reject}"
+			)));
+		}
+		self.parse_slatepack_unchecked(text)
+	}
+
+	/// The pinned parser itself. Callers use [`Self::parse_slatepack`]; the
+	/// tests call this to show what it does on hostile input.
+	fn parse_slatepack_unchecked(
 		&self,
 		text: &String,
 	) -> Result<(Slate, Option<SlatepackAddress>), grin_wallet_controller::Error> {
@@ -1948,6 +1967,7 @@ impl Wallet {
 		let (slate, dest) = self
 			.parse_slatepack(text)
 			.map_err(|e| Error::GenericError(e.to_string()))?;
+		refuse_zero_amount(&slate)?;
 		match slate.state {
 			SlateState::Standard1 => {
 				let reply = self.receive(&slate, dest)?;
@@ -3015,6 +3035,18 @@ fn friendly_send_error(e: &Error) -> String {
 	}
 }
 
+/// #799: an incoming payment (Standard1) or request (Invoice1) for 0 grin is
+/// refused before any transaction is created, as the nostr ingest already
+/// does in `decide` (ingest.rs:67-69, 117-119).
+fn refuse_zero_amount(slate: &Slate) -> Result<(), Error> {
+	if slate.amount == 0 && matches!(slate.state, SlateState::Standard1 | SlateState::Invoice1) {
+		return Err(Error::GenericError(
+			"This slatepack is for 0 grin, so Goblin won't continue it.".to_string(),
+		));
+	}
+	Ok(())
+}
+
 /// Handle wallet task.
 async fn handle_task(w: &Wallet, t: WalletTask) {
 	match &t {
@@ -3050,6 +3082,9 @@ async fn handle_task(w: &Wallet, t: WalletTask) {
 				}
 				// Create response or finalize.
 				match s.state {
+					_ if refuse_zero_amount(&s).is_err() => {
+						error!("message tx refused: zero amount");
+					}
 					SlateState::Standard1 | SlateState::Invoice1 => {
 						if s.state != SlateState::Standard1 {
 							match w.pay(&s, None) {
@@ -5244,6 +5279,90 @@ mod open_tests {
 			"nobody but the named recipient may decode the Slatepack"
 		);
 
+		// The precheck lets all three through: it cannot know the key, so the
+		// one for someone else fails in the parser, not before it.
+		for (text, mode) in [(&plain, 0), (&to_own, 1), (&to_other, 1)] {
+			assert_eq!(precheck(text).map(|s| s.mode), Ok(mode));
+		}
+
+		wallet.close();
+	}
+
+	/// H1, H2 on the production path: each hostile message panics the pinned
+	/// parser as this wallet calls it, and `parse_slatepack` refuses it with an
+	/// error instead. The wallet still reads a real slatepack of its own after.
+	#[test]
+	fn hostile_slatepacks_are_refused_without_a_panic() {
+		let _serialised = serialised();
+		let password = ZeroingString::from("hostile-slatepack-password");
+		let wallet = sandbox_wallet("hostile-slatepack-test", &password);
+		wallet.open(password.clone()).expect("wallet must open");
+
+		for (name, text, _, _) in crate::wallet::slatepack_precheck::fixtures::hostile() {
+			let unchecked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+				let _ = wallet.parse_slatepack_unchecked(&text);
+			}));
+			assert!(unchecked.is_err(), "pinned parser did not panic: {name}");
+			assert!(wallet.parse_slatepack(&text).is_err(), "{name}");
+		}
+
+		let mut slate = Slate::blank(1, true);
+		slate.state = SlateState::Invoice1;
+		slate.amount = 1_000_000_000;
+		let text = wallet
+			.create_slatepack_message(&slate, None)
+			.expect("the wallet packs a slate");
+		assert_eq!(precheck(&text).map(|s| s.mode), Ok(0));
+		let (parsed, _) = wallet
+			.parse_slatepack(&text)
+			.expect("the wallet's own slatepack parses");
+		assert_eq!(parsed.id, slate.id);
+
+		wallet.close();
+	}
+
+	/// Test E (#799): a pasted or opened payment or request for 0 grin is
+	/// refused before any transaction is created.
+	#[test]
+	fn zero_amount_slatepacks_are_refused() {
+		for state in [SlateState::Standard1, SlateState::Invoice1] {
+			let mut slate = Slate::blank(1, state == SlateState::Invoice1);
+			slate.state = state.clone();
+			assert!(refuse_zero_amount(&slate).is_err(), "{state}");
+			slate.amount = 1;
+			assert!(refuse_zero_amount(&slate).is_ok(), "{state}");
+		}
+		// Replies to our own sends and requests are not incoming amounts.
+		for state in [SlateState::Standard2, SlateState::Invoice2] {
+			let mut slate = Slate::blank(1, false);
+			slate.state = state.clone();
+			assert!(refuse_zero_amount(&slate).is_ok(), "{state}");
+		}
+
+		let _serialised = serialised();
+		let password = ZeroingString::from("zero-amount-password");
+		let wallet = sandbox_wallet("zero-amount-test", &password);
+		wallet.open(password.clone()).expect("wallet must open");
+		for state in [SlateState::Standard1, SlateState::Invoice1] {
+			let mut slate = Slate::blank(1, state == SlateState::Invoice1);
+			slate.state = state.clone();
+			let text = wallet
+				.create_slatepack_message(&slate, None)
+				.expect("the wallet packs a slate");
+			// Manual paste: the user sees the refusal.
+			let err = wallet
+				.manual_process_slatepack(&text)
+				.err()
+				.expect("a zero-amount slatepack is refused");
+			assert!(err.to_string().contains("0 grin"), "{state}: {err}");
+			// OpenMessage: refused the same way, no transaction either.
+			futures::executor::block_on(handle_task(&wallet, WalletTask::OpenMessage(text)));
+			assert!(!wallet.message_opening(), "{state}");
+			assert!(
+				wallet.retrieve_tx_by_id(None, Some(slate.id)).is_none(),
+				"{state}"
+			);
+		}
 		wallet.close();
 	}
 
