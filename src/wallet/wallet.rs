@@ -1967,6 +1967,7 @@ impl Wallet {
 		let (slate, dest) = self
 			.parse_slatepack(text)
 			.map_err(|e| Error::GenericError(e.to_string()))?;
+		refuse_zero_amount(&slate)?;
 		match slate.state {
 			SlateState::Standard1 => {
 				let reply = self.receive(&slate, dest)?;
@@ -3034,6 +3035,18 @@ fn friendly_send_error(e: &Error) -> String {
 	}
 }
 
+/// #799: an incoming payment (Standard1) or request (Invoice1) for 0 grin is
+/// refused before any transaction is created, as the nostr ingest already
+/// does in `decide` (ingest.rs:67-69, 117-119).
+fn refuse_zero_amount(slate: &Slate) -> Result<(), Error> {
+	if slate.amount == 0 && matches!(slate.state, SlateState::Standard1 | SlateState::Invoice1) {
+		return Err(Error::GenericError(
+			"This slatepack is for 0 grin, so Goblin won't continue it.".to_string(),
+		));
+	}
+	Ok(())
+}
+
 /// Handle wallet task.
 async fn handle_task(w: &Wallet, t: WalletTask) {
 	match &t {
@@ -3069,6 +3082,9 @@ async fn handle_task(w: &Wallet, t: WalletTask) {
 				}
 				// Create response or finalize.
 				match s.state {
+					_ if refuse_zero_amount(&s).is_err() => {
+						error!("message tx refused: zero amount");
+					}
 					SlateState::Standard1 | SlateState::Invoice1 => {
 						if s.state != SlateState::Standard1 {
 							match w.pay(&s, None) {
@@ -5302,6 +5318,51 @@ mod open_tests {
 			.expect("the wallet's own slatepack parses");
 		assert_eq!(parsed.id, slate.id);
 
+		wallet.close();
+	}
+
+	/// Test E (#799): a pasted or opened payment or request for 0 grin is
+	/// refused before any transaction is created.
+	#[test]
+	fn zero_amount_slatepacks_are_refused() {
+		for state in [SlateState::Standard1, SlateState::Invoice1] {
+			let mut slate = Slate::blank(1, state == SlateState::Invoice1);
+			slate.state = state.clone();
+			assert!(refuse_zero_amount(&slate).is_err(), "{state}");
+			slate.amount = 1;
+			assert!(refuse_zero_amount(&slate).is_ok(), "{state}");
+		}
+		// Replies to our own sends and requests are not incoming amounts.
+		for state in [SlateState::Standard2, SlateState::Invoice2] {
+			let mut slate = Slate::blank(1, false);
+			slate.state = state.clone();
+			assert!(refuse_zero_amount(&slate).is_ok(), "{state}");
+		}
+
+		let _serialised = serialised();
+		let password = ZeroingString::from("zero-amount-password");
+		let wallet = sandbox_wallet("zero-amount-test", &password);
+		wallet.open(password.clone()).expect("wallet must open");
+		for state in [SlateState::Standard1, SlateState::Invoice1] {
+			let mut slate = Slate::blank(1, state == SlateState::Invoice1);
+			slate.state = state.clone();
+			let text = wallet
+				.create_slatepack_message(&slate, None)
+				.expect("the wallet packs a slate");
+			// Manual paste: the user sees the refusal.
+			let err = wallet
+				.manual_process_slatepack(&text)
+				.err()
+				.expect("a zero-amount slatepack is refused");
+			assert!(err.to_string().contains("0 grin"), "{state}: {err}");
+			// OpenMessage: refused the same way, no transaction either.
+			futures::executor::block_on(handle_task(&wallet, WalletTask::OpenMessage(text)));
+			assert!(!wallet.message_opening(), "{state}");
+			assert!(
+				wallet.retrieve_tx_by_id(None, Some(slate.id)).is_none(),
+				"{state}"
+			);
+		}
 		wallet.close();
 	}
 
