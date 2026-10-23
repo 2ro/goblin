@@ -525,6 +525,8 @@ goblin:
     sp_paste_first: "Сначала вставьте slatepack."
     sp_reply_ready: "Ответ готов — отправьте его обратно отправителю."
     sp_finalizing: "Завершение и публикация в цепочку…"
+    sp_refused: "Этот slatepack нельзя безопасно открыть (%{reason})."
+    sp_zero_amount: "Этот slatepack на 0 grin, поэтому его нельзя продолжить."
     sp_create_group: "Создать платёж"
     sp_create_blurb: "Создайте slatepack для передачи кому-то. Они получат его, отправят ответ, а вы завершите его выше."
     sp_amount_hint: "Сумма в grin"

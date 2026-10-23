@@ -525,6 +525,8 @@ goblin:
     sp_paste_first: "Pega primero un slatepack."
     sp_reply_ready: "Respuesta lista — envíasela de vuelta al remitente."
     sp_finalizing: "Finalizando y publicando en la cadena…"
+    sp_refused: "Este slatepack no se puede abrir de forma segura (%{reason})."
+    sp_zero_amount: "Este slatepack es por 0 grin, así que no se puede continuar."
     sp_create_group: "Crear un pago"
     sp_create_blurb: "Crea un slatepack para entregárselo a alguien. Lo recibe, te envía la respuesta de vuelta, y tú lo finalizas arriba."
     sp_amount_hint: "Monto en grin"

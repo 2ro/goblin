@@ -375,7 +375,7 @@ impl GoblinWalletView {
 								self.slatepack.paste.clear();
 							}
 							Err(e) => {
-								self.slatepack.error = Some(e.to_string());
+								self.slatepack.error = Some(crate::wallet::manual_error_text(&e));
 								self.slatepack.status = None;
 							}
 						}

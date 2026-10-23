@@ -525,6 +525,8 @@ goblin:
     sp_paste_first: "Önce bir slatepack yapıştır."
     sp_reply_ready: "Yanıt hazır — gönderene geri yolla."
     sp_finalizing: "Tamamlanıp zincire gönderiliyor…"
+    sp_refused: "Bu slatepack güvenli şekilde açılamıyor (%{reason})."
+    sp_zero_amount: "Bu slatepack 0 grin için, bu yüzden devam edilemez."
     sp_create_group: "Ödeme oluştur"
     sp_create_blurb: "Birine vermek için bir slatepack oluştur. Onlar alır, yanıtı geri gönderir, sen de yukarıda tamamlarsın."
     sp_amount_hint: "Grin cinsinden tutar"
