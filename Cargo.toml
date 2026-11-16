@@ -162,6 +162,7 @@ tor-rtcompat = { version = "0.44.0", features = ["static"] }
 sha2 = "0.10.8"
 
 ## stratum server
+tokio-util = { version = "0.7", features = ["codec"] }
 tokio-old = { version = "0.2", features = ["full"], package = "tokio" }
 tokio-util-old = { version = "0.2", features = ["codec"], package = "tokio-util" }
 

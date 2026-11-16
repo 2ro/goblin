@@ -17,9 +17,9 @@
 use futures::channel::mpsc;
 use futures::pin_mut;
 use futures::{SinkExt, StreamExt, TryStreamExt};
-use tokio_old::net::TcpListener;
-use tokio_old::runtime::Runtime;
-use tokio_util_old::codec::{Framed, LinesCodec};
+use tokio::net::TcpListener;
+use tokio::runtime::Runtime;
+use tokio_util::codec::{Framed, LinesCodec};
 
 use chrono::prelude::Utc;
 use futures::future::{AbortHandle, abortable};
@@ -670,6 +670,10 @@ impl Handler {
 	}
 }
 
+/// Longest JSON-RPC line accepted from a stratum client, in bytes. Without a
+/// cap, a peer that never sends a newline grows the read buffer without bound.
+const MAX_STRATUM_LINE_LEN: usize = 64 * 1024;
+
 // ----------------------------------------
 // Worker Factory Thread Function
 fn accept_connections(
@@ -679,7 +683,7 @@ fn accept_connections(
 ) {
 	debug!("Start tokio stratum server");
 	let task = async move {
-		let mut listener = match TcpListener::bind(&listen_addr).await {
+		let listener = match TcpListener::bind(&listen_addr).await {
 			Ok(l) => l,
 			Err(e) => {
 				error!(
@@ -689,64 +693,84 @@ fn accept_connections(
 				return;
 			}
 		};
-		let server = listener
-			.incoming()
-			.filter_map(|s| async { s.map_err(|e| error!("accept error = {:?}", e)).ok() })
-			.for_each(move |socket| {
-				let handler = handler.clone();
-				async move {
-					// Spawn a task to process the connection
-					let (tx, mut rx) = mpsc::unbounded();
-
-					let worker_id = handler.workers.add_worker(tx);
-					debug!("Worker {} connected", worker_id);
-
-					let framed = Framed::new(socket, LinesCodec::new());
-					let (mut writer, mut reader) = framed.split();
-
-					let h = handler.clone();
-					let read = async move {
-						while let Some(line) = reader
-							.try_next()
-							.await
-							.map_err(|e| debug!("error reading line: {}", e))?
-						{
-							let request = serde_json::from_str(&line)
-								.map_err(|e| debug!("error serializing line: {}", e))?;
-							let resp = h.handle_rpc_requests(request, worker_id);
-							h.workers.send_to(worker_id, resp);
-						}
-
-						Result::<_, ()>::Ok(())
-					};
-
-					let write = async move {
-						while let Some(line) = rx.next().await {
-							writer
-								.send(line)
-								.await
-								.map_err(|e| debug!("error writing line: {}", e))?;
-						}
-
-						Result::<_, ()>::Ok(())
-					};
-
-					let task = async move {
-						pin_mut!(read, write);
-						futures::future::select(read, write).await;
-						handler.workers.remove_worker(worker_id);
-						debug!("Worker {} disconnected", worker_id);
-					};
-					tokio_old::spawn(task);
-				}
-			});
-		server.await
+		serve(listener, handler).await
 	};
 
-	let mut rt = Runtime::new().unwrap();
+	let rt = match Runtime::new() {
+		Ok(rt) => rt,
+		Err(e) => {
+			error!("Stratum: failed to start runtime: {}", e);
+			return;
+		}
+	};
 	let (task, handle) = abortable(task);
 	rt.spawn(check_stop_state(stop_state, handle));
 	rt.block_on(task).unwrap_or_default();
+}
+
+/// Accept stratum clients on a bound listener, one task per connection.
+async fn serve(listener: TcpListener, handler: Arc<Handler>) {
+	loop {
+		let socket = match listener.accept().await {
+			Ok((socket, _)) => socket,
+			Err(e) => {
+				error!("accept error = {:?}", e);
+				// Back off so a lasting error, such as running out of file
+				// descriptors, does not spin the accept loop.
+				tokio::time::sleep(Duration::from_millis(100)).await;
+				continue;
+			}
+		};
+		let handler = handler.clone();
+		// Spawn a task to process the connection
+		let (tx, mut rx) = mpsc::unbounded();
+
+		let worker_id = handler.workers.add_worker(tx);
+		debug!("Worker {} connected", worker_id);
+
+		// Cap a single JSON-RPC line: a line over the cap is a read error,
+		// which ends this connection.
+		let framed = Framed::new(
+			socket,
+			LinesCodec::new_with_max_length(MAX_STRATUM_LINE_LEN),
+		);
+		let (mut writer, mut reader) = framed.split();
+
+		let h = handler.clone();
+		let read = async move {
+			while let Some(line) = reader
+				.try_next()
+				.await
+				.map_err(|e| debug!("error reading line: {}", e))?
+			{
+				let request = serde_json::from_str(&line)
+					.map_err(|e| debug!("error serializing line: {}", e))?;
+				let resp = h.handle_rpc_requests(request, worker_id);
+				h.workers.send_to(worker_id, resp);
+			}
+
+			Result::<_, ()>::Ok(())
+		};
+
+		let write = async move {
+			while let Some(line) = rx.next().await {
+				writer
+					.send(line)
+					.await
+					.map_err(|e| debug!("error writing line: {}", e))?;
+			}
+
+			Result::<_, ()>::Ok(())
+		};
+
+		let task = async move {
+			pin_mut!(read, write);
+			futures::future::select(read, write).await;
+			handler.workers.remove_worker(worker_id);
+			debug!("Worker {} disconnected", worker_id);
+		};
+		tokio::spawn(task);
+	}
 }
 
 async fn check_stop_state(stop_state: Arc<StratumStopState>, handle: AbortHandle) {
@@ -756,7 +780,8 @@ async fn check_stop_state(stop_state: Arc<StratumStopState>, handle: AbortHandle
 			handle.abort();
 			break;
 		}
-		thread::sleep(Duration::from_millis(1000));
+		// An async sleep: a blocking one would hold a runtime worker thread.
+		tokio::time::sleep(Duration::from_millis(1000)).await;
 	}
 }
 
@@ -1004,4 +1029,87 @@ where
 	params
 		.and_then(|v| serde_json::from_value(v).ok())
 		.ok_or_else(RpcError::invalid_request)
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+	use grin_chain::types::NoopAdapter;
+	use grin_core::global::{self, ChainTypes};
+	use std::io::{BufRead, BufReader, ErrorKind, Read, Write};
+	use std::net::TcpStream;
+
+	/// A handler over a fresh test chain kept in `dir`.
+	fn test_handler(dir: &std::path::Path) -> Arc<Handler> {
+		global::set_local_chain_type(ChainTypes::AutomatedTesting);
+		let chain = grin_chain::Chain::init(
+			dir.to_str().unwrap().to_string(),
+			Arc::new(NoopAdapter {}),
+			pow::mine_genesis_block().unwrap(),
+			pow::verify_size,
+			false,
+			None,
+		)
+		.unwrap();
+		Arc::new(Handler::new(
+			"0".to_string(),
+			Arc::new(RwLock::new(StratumStats::default())),
+			Arc::new(SyncState::new()),
+			1,
+			Arc::new(chain),
+		))
+	}
+
+	/// A line one byte over the cap closes that client's connection and drops
+	/// its worker; a normal request on another connection still gets a reply.
+	#[test]
+	fn over_long_line_closes_only_that_connection() {
+		let dir = std::env::temp_dir().join(format!("goblin-stratum-{}", std::process::id()));
+		let _ = std::fs::remove_dir_all(&dir);
+		let handler = test_handler(&dir);
+		let rt = Runtime::new().unwrap();
+		let listener = rt.block_on(TcpListener::bind("127.0.0.1:0")).unwrap();
+		let addr = listener.local_addr().unwrap();
+		rt.spawn(serve(listener, handler.clone()));
+
+		let mut long = TcpStream::connect(addr).unwrap();
+		long.set_read_timeout(Some(Duration::from_secs(10)))
+			.unwrap();
+		// The server may close before it has read it all; a failed write is
+		// fine, the read below is the check.
+		let _ = long.write_all(&vec![b'a'; MAX_STRATUM_LINE_LEN + 1]);
+		let mut buf = [0u8; 64];
+		match long.read(&mut buf) {
+			Ok(0) => {}
+			Ok(n) => panic!("the server answered an over-long line with {n} bytes"),
+			// A close with unread bytes in the server's buffer is a reset.
+			Err(e) => assert!(
+				matches!(
+					e.kind(),
+					ErrorKind::ConnectionReset
+						| ErrorKind::ConnectionAborted
+						| ErrorKind::BrokenPipe
+				),
+				"the connection stayed open: {e}"
+			),
+		}
+
+		let mut ok = TcpStream::connect(addr).unwrap();
+		ok.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+		ok.write_all(
+			b"{\"id\":\"1\",\"jsonrpc\":\"2.0\",\"method\":\"keepalive\",\"params\":null}\n",
+		)
+		.unwrap();
+		let mut line = String::new();
+		BufReader::new(&ok).read_line(&mut line).unwrap();
+		let resp: RpcResponse = serde_json::from_str(&line).unwrap();
+		assert_eq!(resp.id, JsonId::StrId("1".to_string()));
+		assert_eq!(resp.result, Some(Value::from("ok")));
+		assert_eq!(resp.error, None);
+		// The worker of the closed connection is gone; this one remains.
+		assert_eq!(handler.workers.count(), 1);
+
+		drop(rt);
+		let _ = std::fs::remove_dir_all(&dir);
+	}
 }
