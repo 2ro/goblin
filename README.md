@@ -56,7 +56,7 @@ cargo build --release
 ./target/release/goblin
 ```
 
-Tor is a per-wallet choice: the onboarding privacy step asks, and **Settings → Privacy → Tor routing** changes it later (a wallet with no recorded choice, such as one made before the choice existed or one added later from the wallet list, has Tor on). With Tor on, Goblin's identity and payment traffic (nostr relays, NIP-05 lookups and price fetches) rides Tor: every relay, the money-path relay included, is reached over a Tor exit to its ordinary clearnet host. With Tor off, the same traffic connects directly. The GRIN node connection (block sync and transaction broadcast) is **not** routed through Tor either way: it connects directly, as it carries only public chain data that isn't linked to your wallet.
+Tor is a per-wallet choice: the onboarding privacy step asks, and **Settings → Privacy → Tor routing** changes it later (a wallet made before the choice existed keeps Tor on). With Tor on, Goblin's identity and payment traffic (nostr relays, NIP-05 lookups and price fetches) rides Tor: every relay, the money-path relay included, is reached over a Tor exit to its ordinary clearnet host. With Tor off, the same traffic connects directly. The GRIN node connection (block sync and transaction broadcast) is **not** routed through Tor either way: it connects directly, as it carries only public chain data that isn't linked to your wallet.
 
 ### Android
 
