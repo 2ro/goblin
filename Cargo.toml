@@ -161,10 +161,8 @@ tor-rtcompat = { version = "0.44.0", features = ["static"] }
 ## NIP-98 payload hashing
 sha2 = "0.10.8"
 
-## stratum server
+## stratum server (line framing)
 tokio-util = { version = "0.7", features = ["codec"] }
-tokio-old = { version = "0.2", features = ["full"], package = "tokio" }
-tokio-util-old = { version = "0.2", features = ["codec"], package = "tokio-util" }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 nokhwa = { version = "0.10.10", default-features = false, features = ["input-v4l"] }
