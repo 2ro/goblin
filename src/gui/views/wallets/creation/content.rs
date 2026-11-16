@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::path::PathBuf;
+
 use egui::scroll_area::ScrollBarVisibility;
 use egui::{Id, Margin, RichText, ScrollArea};
 use grin_util::ZeroingString;
@@ -25,6 +27,7 @@ use crate::gui::views::wallets::creation::MnemonicSetup;
 use crate::gui::views::wallets::creation::types::Step;
 use crate::gui::views::{CameraScanContent, Content, Modal, View};
 use crate::node::Node;
+use crate::nostr::NostrConfig;
 use crate::wallet::types::PhraseMode;
 use crate::wallet::{ExternalConnection, Wallet};
 
@@ -327,6 +330,10 @@ impl WalletCreationContent {
 					) {
 						Ok(w) => {
 							self.mnemonic_setup.reset();
+							// This flow asks no Tor question, so the wallet records
+							// Tor OFF before the callback opens it (see
+							// `record_tor_off`).
+							record_tor_off(PathBuf::from(w.get_config().get_data_path()));
 							// Pass created wallet to callback.
 							(on_create)(w);
 							Step::EnterMnemonic
@@ -390,6 +397,16 @@ fn step_shows_mnemonic(step: &Step) -> bool {
 	*step != Step::SetupConnection
 }
 
+/// Write an explicit Tor OFF into a new wallet's `nostr.toml` in `data_path`.
+/// Tor is off unless the user turns it on (owner rule). Onboarding writes the
+/// user's choice from its privacy step; a wallet added from the wallet list
+/// gets no such step, and with no recorded value it would resolve to Tor ON
+/// like an upgraded wallet. It must be written before the wallet opens: the
+/// nostr service reads the setting once when it starts.
+fn record_tor_off(data_path: PathBuf) {
+	NostrConfig::load(data_path).set_tor_enabled(false);
+}
+
 #[cfg(test)]
 mod tests {
 	use super::*;
@@ -399,5 +416,31 @@ mod tests {
 		assert!(step_shows_mnemonic(&Step::EnterMnemonic));
 		assert!(step_shows_mnemonic(&Step::ConfirmMnemonic));
 		assert!(!step_shows_mnemonic(&Step::SetupConnection));
+	}
+
+	/// A wallet added from the wallet list records Tor OFF, while a wallet dir
+	/// with no recorded value (an upgraded wallet) still resolves to Tor ON.
+	#[test]
+	fn a_wallet_added_from_the_list_records_tor_off() {
+		let dir = std::env::temp_dir().join(format!(
+			"goblin-creation-tor-{}-{}",
+			std::process::id(),
+			std::time::SystemTime::now()
+				.duration_since(std::time::UNIX_EPOCH)
+				.unwrap()
+				.as_nanos()
+		));
+		std::fs::create_dir_all(&dir).unwrap();
+		let before = NostrConfig::load(dir.clone());
+		assert!(!before.tor_enabled_is_set());
+		assert!(before.tor_enabled());
+
+		record_tor_off(dir.clone());
+
+		// Read back from disk, as wallet open does.
+		let after = NostrConfig::load(dir.clone());
+		assert!(after.tor_enabled_is_set());
+		assert!(!after.tor_enabled());
+		let _ = std::fs::remove_dir_all(dir);
 	}
 }
