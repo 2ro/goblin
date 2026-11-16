@@ -221,6 +221,18 @@ fn bootstrap_once() {
 	// the parent must be present first).
 	let _ = fs::create_dir_all(super::state_path());
 	let _ = fs::create_dir_all(super::cache_path());
+	// arti 0.44 checks the state directory with fs-mistrust and refuses to build
+	// the client when other users can read it. create_dir_all above follows the
+	// process umask (0755 on a desktop), and every install made before this
+	// build already has the directory that way, so make it owner-only here.
+	#[cfg(unix)]
+	{
+		use std::os::unix::fs::PermissionsExt;
+		if let Err(e) = fs::set_permissions(super::state_path(), fs::Permissions::from_mode(0o700))
+		{
+			warn!("tor: could not make the state directory owner-only: {e}");
+		}
+	}
 
 	let config = build_config();
 	let client = match TorClient::with_runtime(TOR.runtime.clone())

@@ -27,20 +27,19 @@ use crate::wallet::{ConnectionsConfig, Mnemonic, WalletConfig};
 use crate::{AppConfig, Settings};
 
 use chrono::Utc;
-use futures::channel::oneshot;
 use grin_api::{ApiServer, Router};
 use grin_chain::SyncStatus;
 use grin_keychain::{ExtKeychain, Keychain};
 use grin_util::secp::SecretKey;
 use grin_util::types::ZeroingString;
 use grin_util::{Mutex, ToHex};
-use grin_wallet_api::Owner;
+use grin_wallet_api::{ConfigPath, Owner};
 use grin_wallet_controller::command::parse_slatepack;
 use grin_wallet_controller::controller;
 use grin_wallet_controller::controller::ForeignAPIHandlerV2;
 use grin_wallet_impls::{DefaultLCProvider, DefaultWalletImpl, HTTPNodeClient};
 use grin_wallet_libwallet::api_impl::owner::{
-	cancel_tx, init_send_tx, retrieve_summary_info, retrieve_txs, verify_payment_proof,
+	cancel_tx, retrieve_summary_info, retrieve_txs, verify_payment_proof,
 };
 use grin_wallet_libwallet::{
 	Error, InitTxArgs, IssueInvoiceTxArgs, NodeClient, PaymentProof, Slate, SlateState,
@@ -176,6 +175,11 @@ pub struct Wallet {
 	/// Last calculated network fee as `(amount, fee)` so a screen can read the
 	/// fee for the amount it is showing without owning the task-result slot.
 	last_fee: Arc<RwLock<Option<(u64, u64)>>>,
+	/// Calculating max amount to send.
+	max_amount_calculating: Arc<AtomicBool>,
+	/// Last calculated max amount to send, zero when the last pricing pass
+	/// built a transaction and no maximum applies.
+	calculated_max_amount: Arc<AtomicU64>,
 
 	/// Flag to check if sending request is creating.
 	send_creating: Arc<AtomicBool>,
@@ -230,6 +234,8 @@ impl Wallet {
 			amount_to_calculate_fee: Arc::new(AtomicU64::new(0)),
 			amount_fee_calculating: Arc::new(AtomicU64::new(0)),
 			last_fee: Arc::new(RwLock::new(None)),
+			max_amount_calculating: Arc::new(AtomicBool::new(false)),
+			calculated_max_amount: Arc::new(AtomicU64::new(0)),
 			invoice_creating: Arc::new(AtomicBool::new(false)),
 			proof_verifying: Arc::new(AtomicBool::new(false)),
 			tasks_sender: Arc::new(RwLock::new(None)),
@@ -249,13 +255,13 @@ impl Wallet {
 		let w = Wallet::new(config.clone());
 		{
 			// Wallet directory setup.
-			let mut path = PathBuf::from(config.get_data_path());
+			let mut path = config.get_data_path();
 			path.push(WalletConfig::DATA_DIR_NAME);
 			fs::create_dir_all(&path)
 				.map_err(|_| Error::IO("Directory creation error".to_string()))?;
 			// Create seed file.
 			let _ = WalletSeed::init_file(
-				config.seed_path().as_str(),
+				config.seed_path().to_str().unwrap(),
 				ZeroingString::from(mnemonic.get_phrase()),
 				password.clone(),
 			)
@@ -314,6 +320,7 @@ impl Wallet {
 	/// Create [`HTTPNodeClient`] from provided config.
 	fn create_node_client(config: &WalletConfig) -> Result<HTTPNodeClient, Error> {
 		let (node_api_url, node_secret) = Self::node_url_secret(config);
+		let timeout = Duration::from_secs(60);
 		let client = if AppConfig::use_proxy() {
 			let socks = AppConfig::use_socks_proxy();
 			let url = if socks {
@@ -342,14 +349,19 @@ impl Wallet {
 			};
 
 			match addr_res {
-				None => HTTPNodeClient::new(&node_api_url, node_secret)?,
+				None => HTTPNodeClient::new(&node_api_url, node_secret, timeout)?,
 				Some(addr) => {
 					let scheme = if socks { "socks5://" } else { "http://" };
-					HTTPNodeClient::new_proxy(&node_api_url, node_secret, Some((addr, scheme)))?
+					HTTPNodeClient::new_proxy(
+						&node_api_url,
+						node_secret,
+						Some((addr, scheme)),
+						timeout,
+					)?
 				}
 			}
 		} else {
-			HTTPNodeClient::new(&node_api_url, node_secret)?
+			HTTPNodeClient::new(&node_api_url, node_secret, timeout)?
 		};
 		Ok(client)
 	}
@@ -382,7 +394,7 @@ impl Wallet {
 		let mut wallet = Box::new(DefaultWalletImpl::<C>::new(node_client).unwrap())
 			as Box<dyn WalletInst<'static, L, C, K>>;
 		let lc = wallet.lc_provider()?;
-		lc.set_top_level_directory(config.get_data_path().as_str())?;
+		lc.set_top_level_directory(config.get_data_path().to_str().unwrap())?;
 		Ok(Arc::new(Mutex::new(wallet)))
 	}
 
@@ -492,7 +504,7 @@ impl Wallet {
 			}
 		}
 		let config = self.get_config();
-		let wallet_dir = PathBuf::from(config.get_data_path());
+		let wallet_dir = config.get_data_path();
 		let nostr_config = NostrConfig::load(wallet_dir);
 		if !nostr_config.enabled() {
 			return;
@@ -734,7 +746,7 @@ impl Wallet {
 			}
 			thread::sleep(Duration::from_millis(100));
 		}
-		let wallet_dir = PathBuf::from(config.get_data_path());
+		let wallet_dir = config.get_data_path();
 		let nostr_config = NostrConfig::load(wallet_dir);
 		let store = NostrStore::new(config.get_nostr_db_path());
 		let new_npub = new_identity.npub.clone();
@@ -882,7 +894,7 @@ impl Wallet {
 			}
 			thread::sleep(Duration::from_millis(100));
 		}
-		let nostr_config = NostrConfig::load(PathBuf::from(config.get_data_path()));
+		let nostr_config = NostrConfig::load(config.get_data_path());
 		let store = NostrStore::new(config.get_nostr_db_path());
 		// Reinstate the sealed activity history into the store, non-destructively:
 		// a fresh restore has an empty store so everything lands; a restore over an
@@ -1042,7 +1054,7 @@ impl Wallet {
 		// (including the one just added) so it starts listening immediately. The
 		// active identity is unchanged — adding never switches.
 		let active_hex = svc.public_key().to_hex();
-		let nostr_config = NostrConfig::load(PathBuf::from(config.get_data_path()));
+		let nostr_config = NostrConfig::load(config.get_data_path());
 		let store = NostrStore::new(config.get_nostr_db_path());
 		let (recv, _) = self
 			.unlock_all_identities(&nostr_dir, &password)
@@ -1214,7 +1226,7 @@ impl Wallet {
 
 		// Rebuild the service WITHOUT the deleted identity: unlock_all_identities now
 		// excludes it, so it leaves both the subscription and the in-memory key set.
-		let nostr_config = NostrConfig::load(PathBuf::from(config.get_data_path()));
+		let nostr_config = NostrConfig::load(config.get_data_path());
 		let store = NostrStore::new(config.get_nostr_db_path());
 		let (recv, _) = self
 			.unlock_all_identities(&nostr_dir, &password)
@@ -1673,11 +1685,10 @@ impl Wallet {
 	pub fn create_account(&self, label: &String) -> Result<(), Error> {
 		let r_inst = self.instance.as_ref().read();
 		let instance = r_inst.clone().unwrap();
-		let mut api = Owner::new(instance, None);
 		controller::owner_single_use(
-			None,
+			instance,
 			self.keychain_mask().as_ref(),
-			Some(&mut api),
+			self.get_config().get_wallet_path(),
 			|api, m| {
 				let id = api.create_account_path(m, label)?;
 				if self.get_data().is_none() {
@@ -1709,11 +1720,10 @@ impl Wallet {
 		// Set new active account.
 		let r_inst = self.instance.as_ref().read();
 		let instance = r_inst.clone().unwrap();
-		let mut api = Owner::new(instance.clone(), None);
 		controller::owner_single_use(
-			None,
+			instance.clone(),
 			self.keychain_mask().as_ref(),
-			Some(&mut api),
+			self.get_config().get_wallet_path(),
 			|api, m| {
 				api.set_active_account(m, label)?;
 				self.account_time
@@ -1878,7 +1888,7 @@ impl Wallet {
 	) -> Result<(Slate, Option<SlatepackAddress>), grin_wallet_controller::Error> {
 		let r_inst = self.instance.as_ref().read();
 		let instance = r_inst.clone().unwrap();
-		let mut api = Owner::new(instance, None);
+		let mut api = Owner::new(instance, None, self.get_config().get_wallet_path());
 		match parse_slatepack(
 			&mut api,
 			self.keychain_mask().as_ref(),
@@ -1899,15 +1909,14 @@ impl Wallet {
 		let mut message = "".to_string();
 		let r_inst = self.instance.as_ref().read();
 		let instance = r_inst.clone().unwrap();
-		let mut api = Owner::new(instance, None);
 		let addrs = match address {
 			Some(a) => vec![a],
 			None => vec![],
 		};
 		controller::owner_single_use(
-			None,
+			instance,
 			self.keychain_mask().as_ref(),
-			Some(&mut api),
+			self.get_config().get_wallet_path(),
 			|api, m| {
 				message = api.create_slatepack_message(m, &slate, Some(0), addrs.clone())?;
 				Ok(())
@@ -2097,9 +2106,14 @@ impl Wallet {
 	/// `tx_lock_outputs`, invoice issuance through the recipient output, receive
 	/// and finalize through the foreign API. The probe is therefore a fallback,
 	/// not a correction: it covers a row whose recorded state has no Slatepack
-	/// file on disk, such as one written by an older build. GRIM reads the field
-	/// directly, and its release pin additionally refreshes it from the Owner
-	/// API, which is private at this pin.
+	/// file on disk, such as one written by an older build.
+	///
+	/// GRIM reads the field directly and keeps no fallback. Its Owner API can
+	/// refresh the field at this wallet pin, but only inside the branch that
+	/// `InitTxArgs.send_args` selects, which posts the slate to a peer over Tor
+	/// (`wallet/api/src/owner.rs`, `process_invoice_tx`). Goblin never sets
+	/// `send_args`, because its payments travel over nostr, so the only refresh
+	/// Goblin reaches is still the foreign API's. The fallback stays.
 	pub fn effective_slate_state(&self, tx: &TxLogEntry) -> Option<SlateState> {
 		let slate_id = tx.tx_slate_id?;
 		if let Some(state) = tx.tx_slate_state.as_ref() {
@@ -2150,12 +2164,12 @@ impl Wallet {
 		}
 	}
 
-	/// Calculate transaction fee for provided amount.
-	fn calculate_fee(&self, a: u64) -> Result<u64, Error> {
+	/// Calculate transaction fee for provided amount. Returns the fee, and the
+	/// largest amount this wallet can actually send when the requested amount
+	/// cannot be built.
+	fn calculate_fee(&self, a: u64) -> Result<(u64, Option<u64>), Error> {
 		let r_inst = self.instance.as_ref().read();
 		let instance = r_inst.clone().unwrap();
-		let mut w_lock = instance.lock();
-		let w = w_lock.lc_provider()?.wallet_inst()?;
 		let config = self.get_config();
 		let args = InitTxArgs {
 			src_acct_name: Some(config.account.clone()),
@@ -2166,16 +2180,45 @@ impl Wallet {
 			estimate_only: Some(true),
 			..Default::default()
 		};
-		let res = init_send_tx(w, self.keychain_mask().as_ref(), args, false);
+		let api = Owner::new(instance, None, config.get_wallet_path());
+		let res = api.init_send_tx(self.keychain_mask().as_ref(), args.clone());
 		match res {
-			Ok(slate) => Ok(slate.fee_fields.fee()),
+			Ok(slate) => Ok((slate.fee_fields.fee(), None)),
 			Err(e) => match e {
-				Error::NotEnoughFunds {
-					available, needed, ..
-				} => Ok(needed - available),
+				Error::BigAmountError(amount, fee, ..) => Ok((fee, Some(amount - fee))),
+				Error::NotEnoughFunds { .. } => {
+					let (amount, fee) = self.calculate_max_amount()?;
+					Ok((fee, Some(amount - fee)))
+				}
 				e => Err(e),
 			},
 		}
+	}
+
+	/// Calculate max amount and fee.
+	fn calculate_max_amount(&self) -> Result<(u64, u64), Error> {
+		let r_inst = self.instance.as_ref().read();
+		let instance = r_inst.clone().unwrap();
+		let config = self.get_config();
+		let api = Owner::new(instance, None, config.get_wallet_path());
+		match api.estimate_max_sendable(
+			self.keychain_mask().as_ref(),
+			false,
+			config.min_confirmations,
+		) {
+			Ok((_, amount, fee, _)) => Ok((amount, fee)),
+			Err(e) => Err(e),
+		}
+	}
+
+	/// Check if max amount to send is calculating.
+	pub fn max_amount_calculating(&self) -> bool {
+		self.max_amount_calculating.load(Ordering::SeqCst)
+	}
+
+	/// Last calculated max amount to send, zero when no maximum applies.
+	pub fn last_calculated_max_amount(&self) -> u64 {
+		self.calculated_max_amount.load(Ordering::SeqCst)
 	}
 
 	/// Check if transaction fee is calculating.
@@ -2205,19 +2248,23 @@ impl Wallet {
 		};
 		let r_inst = self.instance.as_ref().read();
 		let instance = r_inst.clone().unwrap();
-		let mut api = Owner::new(instance, None);
 		let mut slate = None;
 		let keychain_mask = self.keychain_mask();
-		controller::owner_single_use(None, keychain_mask.as_ref(), Some(&mut api), |api, m| {
-			let s = api.init_send_tx(m, args)?;
-			// Create Slatepack message response. The sender's own copy stays
-			// unencrypted so this wallet can re-read it to resend or finalize.
-			let _ = self.create_slatepack_message(&s, None)?;
-			// Lock outputs to for this transaction.
-			api.tx_lock_outputs(m, &s)?;
-			slate = Some(s);
-			Ok(())
-		})?;
+		controller::owner_single_use(
+			instance,
+			keychain_mask.as_ref(),
+			self.get_config().get_wallet_path(),
+			|api, m| {
+				let s = api.init_send_tx(m, args)?;
+				// Create Slatepack message response. The sender's own copy stays
+				// unencrypted so this wallet can re-read it to resend or finalize.
+				let _ = self.create_slatepack_message(&s, None)?;
+				// Lock outputs to for this transaction.
+				api.tx_lock_outputs(m, &s)?;
+				slate = Some(s);
+				Ok(())
+			},
+		)?;
 		if let Some(slate) = slate {
 			Ok(slate)
 		} else {
@@ -2243,7 +2290,7 @@ impl Wallet {
 		};
 		let r_inst = self.instance.as_ref().read();
 		let instance = r_inst.clone().unwrap();
-		let api = Owner::new(instance, None);
+		let api = Owner::new(instance, None, self.get_config().get_wallet_path());
 		let slate = api.issue_invoice_tx(self.keychain_mask().as_ref(), args)?;
 
 		// Create Slatepack message response, encrypted to the payer when their
@@ -2265,7 +2312,7 @@ impl Wallet {
 		};
 		let r_inst = self.instance.as_ref().read();
 		let instance = r_inst.clone().unwrap();
-		let api = Owner::new(instance, None);
+		let api = Owner::new(instance, None, config.get_wallet_path());
 		let slate = api.process_invoice_tx(self.keychain_mask().as_ref(), &slate, args)?;
 		api.tx_lock_outputs(self.keychain_mask().as_ref(), &slate)?;
 
@@ -2285,12 +2332,16 @@ impl Wallet {
 	fn receive(&self, slate: &Slate, dest: Option<SlatepackAddress>) -> Result<Slate, Error> {
 		let r_inst = self.instance.as_ref().read();
 		let instance = r_inst.clone().unwrap();
-		let api = Owner::new(instance, None);
 		let mut slate = slate.clone();
-		controller::foreign_single_use(api.wallet_inst.clone(), self.keychain_mask(), |api| {
-			slate = api.receive_tx(&slate, Some(self.get_config().account.as_str()), None)?;
-			Ok(())
-		})?;
+		controller::foreign_single_use(
+			instance,
+			self.get_config().get_wallet_path(),
+			self.keychain_mask(),
+			|api| {
+				slate = api.receive_tx(&slate, Some(self.get_config().account.as_str()), None)?;
+				Ok(())
+			},
+		)?;
 
 		// Create Slatepack message response.
 		let _ = self.create_slatepack_message(&slate, dest)?;
@@ -2304,12 +2355,16 @@ impl Wallet {
 
 		let r_inst = self.instance.as_ref().read();
 		let instance = r_inst.clone().unwrap();
-		let api = Owner::new(instance, None);
 		let mut slate = slate.clone();
-		controller::foreign_single_use(api.wallet_inst.clone(), self.keychain_mask(), |api| {
-			slate = api.finalize_tx(&slate, false)?;
-			Ok(())
-		})?;
+		controller::foreign_single_use(
+			instance,
+			self.get_config().get_wallet_path(),
+			self.keychain_mask(),
+			|api| {
+				slate = api.finalize_tx(&slate, false)?;
+				Ok(())
+			},
+		)?;
 
 		// Save Slatepack message to file.
 		let _ = self.create_slatepack_message(&slate, None)?;
@@ -2328,11 +2383,10 @@ impl Wallet {
 
 		let r_inst = self.instance.as_ref().read();
 		let instance = r_inst.clone().unwrap();
-		let mut api = Owner::new(instance, None);
 		controller::owner_single_use(
-			None,
+			instance,
 			self.keychain_mask().as_ref(),
-			Some(&mut api),
+			self.get_config().get_wallet_path(),
 			|api, m| {
 				api.post_tx(m, &slate, self.can_use_dandelion())?;
 				Ok(())
@@ -2646,19 +2700,23 @@ impl Wallet {
 		let r_inst = self.instance.as_ref().read();
 		let instance = r_inst.clone().unwrap();
 		let key_mask = self.keychain_mask();
-		let mut api = Owner::new(instance, None);
 		let mut proof = None;
-		controller::owner_single_use(None, key_mask.as_ref(), Some(&mut api), |api, m| {
-			let result = api.retrieve_payment_proof(m, false, tx_id, slate_id);
-			proof = match result {
-				Ok(p) => Some(p),
-				Err(e) => {
-					error!("retrieve_payment_proof error: {}", e);
-					None
-				}
-			};
-			Ok(())
-		})?;
+		controller::owner_single_use(
+			instance,
+			key_mask.as_ref(),
+			self.get_config().get_wallet_path(),
+			|api, m| {
+				let result = api.retrieve_payment_proof(m, false, tx_id, slate_id);
+				proof = match result {
+					Ok(p) => Some(p),
+					Err(e) => {
+						error!("retrieve_payment_proof error: {}", e);
+						None
+					}
+				};
+				Ok(())
+			},
+		)?;
 		Ok(proof)
 	}
 
@@ -3150,6 +3208,20 @@ async fn handle_task(w: &Wallet, t: WalletTask) {
 			}
 			w.message_opening.store(false, Ordering::Relaxed);
 		}
+		WalletTask::CalculateMax(_, _) => {
+			if w.max_amount_calculating.load(Ordering::SeqCst) {
+				return;
+			}
+			w.max_amount_calculating.store(true, Ordering::SeqCst);
+			match w.calculate_max_amount() {
+				Ok((a, fee)) => {
+					w.calculated_max_amount.store(a, Ordering::SeqCst);
+					w.on_task_result(None, &WalletTask::CalculateMax(a, fee));
+				}
+				Err(e) => error!("calculate max error: {:?}", e),
+			}
+			w.max_amount_calculating.store(false, Ordering::SeqCst);
+		}
 		WalletTask::CalculateFee(a, _) => {
 			// Only one calculation runs at a time. It drains to whatever amount was
 			// requested last, so rapid typing coalesces to the newest value instead
@@ -3161,12 +3233,24 @@ async fn handle_task(w: &Wallet, t: WalletTask) {
 			w.amount_fee_calculating.store(*a, Ordering::Relaxed);
 			amount = *a;
 			loop {
-				if let Ok(fee) = w.calculate_fee(amount) {
-					*w.last_fee.write() = Some((amount, fee));
-					w.on_task_result(None, &WalletTask::CalculateFee(amount, fee));
+				if let Ok((fee, max_amount)) = w.calculate_fee(amount) {
+					if let Some(max) = max_amount {
+						// The amount cannot be built. Report the largest amount this
+						// wallet can send instead of a fee for a transaction that
+						// would fail at the node.
+						w.calculated_max_amount.store(max, Ordering::SeqCst);
+						w.amount_fee_calculating.store(0, Ordering::Relaxed);
+						w.amount_to_calculate_fee.store(0, Ordering::Relaxed);
+						w.on_task_result(None, &WalletTask::CalculateMax(max, fee));
+						break;
+					} else {
+						*w.last_fee.write() = Some((amount, fee));
+						w.on_task_result(None, &WalletTask::CalculateFee(amount, fee));
+					}
 				}
 				let amount_to_calculate = w.amount_to_calculate_fee.load(Ordering::Relaxed);
 				if amount_to_calculate == amount {
+					w.calculated_max_amount.store(0, Ordering::SeqCst);
 					w.amount_fee_calculating.store(0, Ordering::Relaxed);
 					w.amount_to_calculate_fee.store(0, Ordering::Relaxed);
 					break;
@@ -4556,20 +4640,18 @@ fn start_api_server(wallet: &Wallet) -> Result<(ApiServer, u16), Error> {
 	let keychain_mask = wallet.keychain_mask();
 	let api_handler_v2 = ForeignAPIHandlerV2::new(
 		instance,
+		ConfigPath::from(wallet.get_config().get_wallet_path()),
 		Arc::new(Mutex::new(keychain_mask)),
 		false,
-		Mutex::new(None),
 	);
 	let mut router = Router::new();
 	router
 		.add_route("/v2/foreign", Arc::new(api_handler_v2))
 		.map_err(|_| Error::GenericError("Router failed to add route".to_string()))?;
 
-	let api_chan: &'static mut (oneshot::Sender<()>, oneshot::Receiver<()>) =
-		Box::leak(Box::new(oneshot::channel::<()>()));
-
 	let mut apis = ApiServer::new();
 	let socket_addr: SocketAddr = api_addr.parse().unwrap();
+	let api_chan = tokio::sync::mpsc::channel::<()>(1);
 	let _ = apis
 		.start(socket_addr, router, None, api_chan)
 		.map_err(|_| Error::GenericError("API thread failed to start".to_string()))?;
@@ -4592,32 +4674,36 @@ fn update_accounts(wallet: &Wallet, height: u64, spendable: Option<u64>) {
 	} else {
 		let r_inst = wallet.instance.as_ref().read();
 		let instance = r_inst.clone().unwrap();
-		let mut api = Owner::new(instance, None);
 		let key_mask = wallet.keychain_mask();
-		let _ = controller::owner_single_use(None, key_mask.as_ref(), Some(&mut api), |api, m| {
-			let mut accounts = vec![];
-			for a in api.accounts(m)? {
-				api.set_active_account(m, a.label.as_str())?;
-				// Calculate account balance.
-				if let Some(spendable_amount) = wallet.account_balance(height, api, m) {
-					accounts.push(WalletAccount {
-						spendable_amount,
-						label: a.label,
-						path: a.path.to_bip_32_string(),
-					});
+		let _ = controller::owner_single_use(
+			instance,
+			key_mask.as_ref(),
+			wallet.get_config().get_wallet_path(),
+			|api, m| {
+				let mut accounts = vec![];
+				for a in api.accounts(m)? {
+					api.set_active_account(m, a.label.as_str())?;
+					// Calculate account balance.
+					if let Some(spendable_amount) = wallet.account_balance(height, api, m) {
+						accounts.push(WalletAccount {
+							spendable_amount,
+							label: a.label,
+							path: a.path.to_bip_32_string(),
+						});
+					}
 				}
-			}
-			accounts.sort_by_key(|w| w.label != current_account);
+				accounts.sort_by_key(|w| w.label != current_account);
 
-			// Save accounts data.
-			let mut w_data = wallet.accounts.write();
-			*w_data = accounts;
+				// Save accounts data.
+				let mut w_data = wallet.accounts.write();
+				*w_data = accounts;
 
-			// Set current active account from config.
-			api.set_active_account(m, current_account.as_str())?;
+				// Set current active account from config.
+				api.set_active_account(m, current_account.as_str())?;
 
-			Ok(())
-		});
+				Ok(())
+			},
+		);
 	}
 }
 
@@ -4647,7 +4733,11 @@ fn repair_wallet(wallet: &Wallet) {
 
 	let r_inst = wallet.instance.as_ref().read();
 	let instance = r_inst.clone().unwrap();
-	let api = Owner::new(instance, Some(info_tx));
+	let api = Owner::new(
+		instance,
+		Some(info_tx),
+		wallet.get_config().get_wallet_path(),
+	);
 	// Start wallet scanning.
 	match api.scan(wallet.keychain_mask().as_ref(), Some(1), false) {
 		Ok(()) => {

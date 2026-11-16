@@ -190,7 +190,7 @@ sync_status:
   no_sync: Le noeud fonctionne
   awaiting_peers: En attente de pairs
   header_sync: Téléchargement des en-têtes
-  header_sync_percent: 'Téléchargement des en-têtes : %{percent}%'
+  header_sync_percent: 'Téléchargement des en-têtes%{type}: %{percent}%'
   tx_hashset_pibd: "Téléchargement de l'état (PIBD)"
   tx_hashset_pibd_percent: "Téléchargement de l'état (PIBD) : %{percent}%"
   tx_hashset_download: "Téléchargement de l'état"

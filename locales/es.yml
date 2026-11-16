@@ -190,7 +190,7 @@ sync_status:
   no_sync: El nodo está en ejecución
   awaiting_peers: Esperando pares
   header_sync: Descargando encabezados
-  header_sync_percent: 'Descargando encabezados: %{percent}%'
+  header_sync_percent: 'Descargando encabezados%{type}: %{percent}%'
   tx_hashset_pibd: Descargando estado (PIBD)
   tx_hashset_pibd_percent: 'Descargando estado (PIBD): %{percent}%'
   tx_hashset_download: Descargando estado

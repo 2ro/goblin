@@ -1093,6 +1093,13 @@ impl SendFlow {
 				amount_nano > spendable
 			}
 		};
+		// A pricing pass that could not build the transaction reports the largest
+		// amount this wallet can send instead of a fee. Refuse anything above it.
+		// Without this a wallet holding many small outputs offers an amount the
+		// node would reject on transaction weight, because no fee ever arrives
+		// and the balance-only fallback says it fits.
+		let max_sendable = wallet.last_calculated_max_amount();
+		let over = over || (max_sendable != 0 && amount_nano > max_sendable);
 
 		// Recipient chip, centered per the design.
 		let name_label = t!("goblin.send.to_name", "name" => recipient.name).to_string();

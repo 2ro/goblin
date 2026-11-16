@@ -12,7 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use futures::channel::oneshot;
 use lazy_static::lazy_static;
 use parking_lot::RwLock;
 use std::path::{Path, PathBuf};
@@ -23,7 +22,7 @@ use std::{fs, thread};
 
 use crate::node::stratum::{StratumServer, StratumStopState};
 use crate::node::{NodeConfig, NodeError, PeersConfig};
-use grin_chain::SyncStatus;
+use grin_chain::{HeaderSyncMode, SyncStatus};
 use grin_core::global;
 use grin_core::global::ChainTypes;
 use grin_p2p::Seeding;
@@ -479,13 +478,18 @@ impl Node {
 			SyncStatus::HeaderSync {
 				sync_head,
 				highest_height,
+				sync_mode,
 				..
 			} => {
 				if highest_height == 0 {
 					t!("sync_status.header_sync")
 				} else {
 					let percent = sync_head.height * 100 / highest_height;
-					t!("sync_status.header_sync_percent", "percent" => percent)
+					let mode = match sync_mode {
+						HeaderSyncMode::Legacy => "",
+						HeaderSyncMode::Pihd => " (PIHD)",
+					};
+					t!("sync_status.header_sync_percent", "percent" => percent, "type" => mode)
 				}
 			}
 			SyncStatus::TxHashsetPibd {
@@ -680,8 +684,7 @@ fn start_node_server() -> Result<Server, Error> {
 	}
 
 	// Start integrated node server.
-	let api_chan: &'static mut (oneshot::Sender<()>, oneshot::Receiver<()>) =
-		Box::leak(Box::new(oneshot::channel::<()>()));
+	let api_chan = tokio::sync::mpsc::channel::<()>(1);
 	let server_result = Server::new(server_config, None, None, api_chan);
 	server_result
 }
