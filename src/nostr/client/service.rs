@@ -446,6 +446,13 @@ pub(super) async fn run_service(svc: Arc<NostrService>, wallet: Wallet) {
 			notification = notifications.recv() => {
 				match notification {
 					Ok(RelayPoolNotification::Event { event, .. }) => {
+						// The exit check above runs only between events, and an event
+						// can already be queued when the wallet closes. Stop here
+						// instead of handling it for a closed wallet: the relay keeps
+						// the event for the next open's catch-up.
+						if svc.shutdown.load(Ordering::SeqCst) || !wallet.is_open() {
+							break;
+						}
 						// Isolate each per-event handler in catch_unwind (F2): a panic in
 						// ONE event (a malformed wrap, a parser edge) must not unwind out
 						// of the runtime and kill the service thread — which would leave
@@ -480,8 +487,14 @@ pub(super) async fn run_service(svc: Arc<NostrService>, wallet: Wallet) {
 							// Poison-pill guard: record the offending event as processed so
 							// a reliably-panicking event is not retried forever by catch-up.
 							// Only reached AFTER an actual panic, so a legitimate event is
-							// never pre-skipped.
-							svc.store.mark_processed(&ev_id_hex);
+							// never pre-skipped. A panic after the wallet closed can come
+							// from the closed wallet, not from the event: leave that event
+							// for the next open, which marks it if it panics again.
+							if wallet_gone(&svc, &wallet) {
+								warn!("nostr: wallet closed, leaving event {ev_id_hex} for the next open");
+							} else {
+								svc.store.mark_processed(&ev_id_hex);
+							}
 						}
 					}
 					Ok(_) => {}
@@ -1799,6 +1812,24 @@ pub(super) async fn open_with_held(
 	None
 }
 
+/// True when a service run can no longer act for its wallet. close() sets
+/// `closing`, then stops the service, then closes the wallet; restart() stops
+/// the service while the wallet stays open. From then on what the run sees (a
+/// parse error, no tx for a slate, no cached wallet data) says nothing about a
+/// wrap, so the run must not record the wrap as handled.
+fn run_lost(stopping: bool, open: bool, closing: bool) -> bool {
+	stopping || !open || closing
+}
+
+/// [`run_lost`] for this service run and its wallet.
+fn wallet_gone(svc: &NostrService, wallet: &Wallet) -> bool {
+	run_lost(
+		svc.shutdown.load(Ordering::SeqCst),
+		wallet.is_open(),
+		wallet.is_closing(),
+	)
+}
+
 /// Processed-store key of the parse-attempt marker of a wrap or rumor.
 fn parse_marker(id: &str) -> String {
 	format!("parse:{id}")
@@ -1828,12 +1859,59 @@ fn next_parse_attempt(store: &NostrStore, markers: &[&str]) -> u32 {
 		.unwrap_or(0)
 }
 
+/// Run the pinned slatepack parser for a wrap. One commit sets the parse-attempt
+/// markers of the wrap and the rumor right before `parse` runs, and one clears
+/// both as soon as it returns. If the process dies in between, the next run
+/// tries once more, and the one after skips the event (2b and 7).
+///
+/// A failed parse marks the wrap and the rumor processed, unless `lost` (asked
+/// after the parse) says the run lost its wallet: the error then comes from the
+/// closed wallet, not from the slatepack, so the wrap stays for the next open's
+/// catch-up.
+fn parse_between_markers<T, E>(
+	store: &NostrStore,
+	wrap_id: &str,
+	rumor_id: &str,
+	parse: impl FnOnce() -> Result<T, E>,
+	lost: impl FnOnce() -> bool,
+) -> Option<T> {
+	let keys = [parse_marker(wrap_id), parse_marker(rumor_id)];
+	let markers = [keys[0].as_str(), keys[1].as_str()];
+	let attempt = next_parse_attempt(store, &markers);
+	if attempt > 1 {
+		info!("nostr: retrying wrap {wrap_id} after an interrupted parse");
+	}
+	store.set_parse_attempts(&markers, attempt);
+	let parsed = parse();
+	store.unmark_processed_all(&markers);
+	match parsed {
+		Ok(value) => Some(value),
+		Err(_) => {
+			if lost() {
+				info!(
+					"nostr: wallet closed during the parse, leaving wrap {wrap_id} for the next open"
+				);
+			} else {
+				store.mark_processed(wrap_id);
+				store.mark_processed(rumor_id);
+			}
+			None
+		}
+	}
+}
+
 async fn handle_wrap(svc: &Arc<NostrService>, wallet: &Wallet, event: Event) {
 	// 0. Only gift wraps.
 	if event.kind != Kind::GiftWrap {
 		return;
 	}
 	let wrap_id = event.id.to_hex();
+	// 0b. A run that lost its wallet records nothing, not even the parse
+	// markers: the wrap stays for the next open's catch-up.
+	if wallet_gone(svc, wallet) {
+		info!("nostr: wallet closed, leaving wrap {wrap_id} for the next open");
+		return;
+	}
 	// 1. Cheap size cap before any crypto.
 	if event.content.len() > protocol::MAX_WRAP_CONTENT {
 		svc.store.mark_processed(&wrap_id);
@@ -1942,6 +2020,12 @@ async fn handle_wrap(svc: &Arc<NostrService>, wallet: &Wallet, event: Event) {
 	// Handle it before slatepack extraction; the sender is bound to the stored
 	// counterparty inside, so a stranger can't void someone else's request.
 	if let Some(void_slate_id) = protocol::extract_control(&rumor.tags) {
+		// The void flips stored state at once and reads the cached wallet data,
+		// which a closing wallet has already dropped: check again right before.
+		if wallet_gone(svc, wallet) {
+			info!("nostr: wallet closed, leaving wrap {wrap_id} for the next open");
+			return;
+		}
 		handle_request_void(svc, wallet, &void_slate_id, &sender_hex);
 		// A decline/cancel is still an interaction with a known counterparty —
 		// (re)resolve their @name so it never drops to a bare npub just because the
@@ -1985,23 +2069,15 @@ async fn handle_wrap(svc: &Arc<NostrService>, wallet: &Wallet, event: Event) {
 		svc.store.mark_processed(&rumor_id);
 		return;
 	}
-	// 9b. Parse the slate. One commit sets the parse-attempt markers of the wrap
-	// and the rumor right before the pinned parser runs, and one clears both as
-	// soon as it returns. If the process dies in between, the next run tries
-	// once more, and the one after skips the event (2b and 7).
-	let keys = [parse_marker(&wrap_id), parse_marker(&rumor_id)];
-	let markers = [keys[0].as_str(), keys[1].as_str()];
-	let attempt = next_parse_attempt(&svc.store, &markers);
-	if attempt > 1 {
-		info!("nostr: retrying wrap {wrap_id} after an interrupted parse");
-	}
-	svc.store.set_parse_attempts(&markers, attempt);
-	// The precheck already ran above: parse without running it again.
-	let parsed = wallet.parse_slatepack_unchecked(&armor);
-	svc.store.unmark_processed_all(&markers);
-	let Ok((slate, _)) = parsed else {
-		svc.store.mark_processed(&wrap_id);
-		svc.store.mark_processed(&rumor_id);
+	// 9b. Parse the slate between the parse-attempt markers. The precheck
+	// already ran above: parse without running it again.
+	let Some((slate, _)) = parse_between_markers(
+		&svc.store,
+		&wrap_id,
+		&rumor_id,
+		|| wallet.parse_slatepack_unchecked(&armor),
+		|| wallet_gone(svc, wallet),
+	) else {
 		return;
 	};
 	// 10. Slate-level dedupe.
@@ -2030,6 +2106,12 @@ async fn handle_wrap(svc: &Arc<NostrService>, wallet: &Wallet, event: Event) {
 	// 11. Policy decision.
 	let meta = svc.store.tx_meta(&slate.id.to_string());
 	let tx_exists = wallet.has_tx_for_slate(&slate.id);
+	// A wallet closed under this lookup reports no tx, and decide() would then
+	// drop a valid S2 or I2 for good: check again before deciding.
+	if wallet_gone(svc, wallet) {
+		info!("nostr: wallet closed, leaving wrap {wrap_id} for the next open");
+		return;
+	}
 	let accept = svc.config.read().accept_from();
 	let allow_requests = svc.config.read().allow_incoming_requests();
 	let decision = decide(&IngestContext {
@@ -2363,6 +2445,103 @@ mod tests {
 		assert!(!store.is_processed(&wrap) && !store.is_processed(&rumor));
 		// Nothing to retry or skip: the next parse is a first attempt again.
 		assert_eq!(next_parse_attempt(&store, &markers), 1);
+		let _ = std::fs::remove_dir_all(dir);
+	}
+
+	/// Close race (found 10-23): a run whose wallet is closing, closed, or whose
+	/// service is stopping can no longer act for the wallet.
+	#[test]
+	fn a_run_is_lost_once_its_wallet_closes_or_its_service_stops() {
+		// (stopping, open, closing): only a live, open, not-closing run acts.
+		assert!(!run_lost(false, true, false));
+		// close() sets `closing` before it stops the service.
+		assert!(run_lost(false, true, true));
+		// The service stopped but the wallet reads open: a restart, or a reopen
+		// that built a new service while this old run still drains. The new
+		// run handles the wrap, never the old one.
+		assert!(run_lost(true, true, false));
+		// The wallet closed.
+		assert!(run_lost(true, false, false));
+		assert!(run_lost(false, false, false));
+	}
+
+	/// Close race (found 10-23): a wrap parsed after its wallet closed got a
+	/// parse error from the closed wallet and was marked processed, so the
+	/// payment message was lost. It must stay unprocessed, with no parse
+	/// marker left, so the next open's catch-up handles it as a first attempt.
+	#[test]
+	fn a_parse_that_loses_its_wallet_leaves_the_wrap_for_the_next_open() {
+		let (store, dir) = marker_store();
+		let (wrap, rumor) = (parse_marker("wrap-c"), parse_marker("rumor-c"));
+		let markers = [wrap.as_str(), rumor.as_str()];
+		let parsed = parse_between_markers(
+			&store,
+			"wrap-c",
+			"rumor-c",
+			|| Err::<(), _>("wallet is not open"),
+			|| true,
+		);
+		assert!(parsed.is_none());
+		assert!(!store.is_processed("wrap-c"));
+		assert!(!store.is_processed("rumor-c"));
+		// The parser returned, so no attempt is counted against the wrap.
+		assert_eq!(store.parse_attempts(&wrap), 0);
+		assert_eq!(store.parse_attempts(&rumor), 0);
+		// The next open: not skipped, a first attempt, and the parse runs.
+		assert!(!parse_aborted(&store, "wrap-c"));
+		assert!(!parse_aborted(&store, "rumor-c"));
+		assert_eq!(next_parse_attempt(&store, &markers), 1);
+		let again = parse_between_markers(&store, "wrap-c", "rumor-c", || Ok::<_, ()>(7), || false);
+		assert_eq!(again, Some(7));
+		assert_eq!(store.parse_attempts(&wrap), 0);
+		let _ = std::fs::remove_dir_all(dir);
+	}
+
+	/// The retry of an interrupted parse (one leftover attempt) that then loses
+	/// its wallet: the wrap is not marked, and the returned parse clears the
+	/// markers as in Build 171, so the next open does not skip it.
+	#[test]
+	fn a_retried_parse_that_loses_its_wallet_is_not_skipped_later() {
+		let (store, dir) = marker_store();
+		let (wrap, rumor) = (parse_marker("wrap-d"), parse_marker("rumor-d"));
+		let markers = [wrap.as_str(), rumor.as_str()];
+		store.set_parse_attempts(&markers, 1);
+		let parsed = parse_between_markers(
+			&store,
+			"wrap-d",
+			"rumor-d",
+			|| {
+				// The retry is recorded as attempt 2 while the parser runs.
+				assert_eq!(store.parse_attempts(&wrap), 2);
+				Err::<(), _>("wallet is not open")
+			},
+			|| true,
+		);
+		assert!(parsed.is_none());
+		assert!(!store.is_processed("wrap-d"));
+		assert!(!store.is_processed("rumor-d"));
+		assert_eq!(store.parse_attempts(&wrap), 0);
+		assert!(!parse_aborted(&store, "wrap-d"));
+		let _ = std::fs::remove_dir_all(dir);
+	}
+
+	/// A parse that fails while the wallet is still open is a bad slatepack:
+	/// the wrap and the rumor are marked processed, as before the fix.
+	#[test]
+	fn a_parse_that_fails_on_an_open_wallet_is_final() {
+		let (store, dir) = marker_store();
+		let parsed = parse_between_markers(
+			&store,
+			"wrap-e",
+			"rumor-e",
+			|| Err::<(), _>("bad slatepack"),
+			|| false,
+		);
+		assert!(parsed.is_none());
+		assert!(store.is_processed("wrap-e"));
+		assert!(store.is_processed("rumor-e"));
+		assert_eq!(store.parse_attempts(&parse_marker("wrap-e")), 0);
+		assert_eq!(store.parse_attempts(&parse_marker("rumor-e")), 0);
 		let _ = std::fs::remove_dir_all(dir);
 	}
 
