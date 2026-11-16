@@ -92,7 +92,7 @@ ur = "0.4.1"
 gif = "0.14.1"
 rkv = "0.20.0"
 usvg = "0.45.1"
-ring = "0.16.20"
+ring = "0.17"
 hyper = { version = "1.6.0", features = ["full"], package = "hyper" }
 hyper-util = {  version = "0.1.19", features = ["http1", "client", "client-legacy", "tokio"] }
 http-body-util = "0.1.3"
