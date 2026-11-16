@@ -5398,21 +5398,28 @@ mod open_tests {
 		wallet.close();
 	}
 
-	/// H1, H2 on the production path: each hostile message panics the pinned
-	/// parser as this wallet calls it, and `parse_slatepack` refuses it with an
+	/// H1, H2 on the production path: each hostile message does to the pinned
+	/// parser, as this wallet calls it, what its fixture records (the scrypt
+	/// ones still panic it), and `parse_slatepack` refuses every one with an
 	/// error instead. The wallet still reads a real slatepack of its own after.
 	#[test]
 	fn hostile_slatepacks_are_refused_without_a_panic() {
+		use crate::wallet::slatepack_precheck::fixtures::{Pinned, hostile};
 		let _serialised = serialised();
 		let password = ZeroingString::from("hostile-slatepack-password");
 		let wallet = sandbox_wallet("hostile-slatepack-test", &password);
 		wallet.open(password.clone()).expect("wallet must open");
 
-		for (name, text, reject, _) in crate::wallet::slatepack_precheck::fixtures::hostile() {
+		for (name, text, reject, _, pinned) in hostile() {
 			let unchecked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-				let _ = wallet.parse_slatepack_unchecked(&text);
+				wallet.parse_slatepack_unchecked(&text).is_ok()
 			}));
-			assert!(unchecked.is_err(), "pinned parser did not panic: {name}");
+			let got = match unchecked {
+				Err(_) => Pinned::Panics,
+				Ok(false) => Pinned::Errs,
+				Ok(true) => Pinned::Reads,
+			};
+			assert_eq!(got, pinned, "{name}");
 			assert!(wallet.parse_slatepack(&text).is_err(), "{name}");
 			// The manual paste shows one translated refusal, without a prefix.
 			let err = wallet

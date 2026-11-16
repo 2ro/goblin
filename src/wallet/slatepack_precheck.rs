@@ -14,24 +14,31 @@
 
 //! Goblin-side guard in front of the pinned grin-wallet Slatepack parser.
 //!
-//! The pinned parser (wallet submodule c2db7545) panics on some hostile input
-//! instead of returning an error. On Android the release profile aborts on
-//! panic, so one such message from a stranger crashes the app, and the catch-up
-//! fetch replays it at every launch. [`precheck`] walks the same steps as the
-//! parser and refuses input at the points where the parser would panic:
+//! The pinned parser (wallet submodule 9cc6a5eb, GRIM v0.3.6) panics on some
+//! hostile input instead of returning an error. On Android the release profile
+//! aborts on panic, so one such message from a stranger crashes the app, and
+//! the catch-up fetch replays it at every launch. [`precheck`] walks the same
+//! steps as the parser and refuses input at the points where the parser would
+//! panic:
 //!
-//! - H1: armor framing without a footer period (armor.rs:85), a payload that
-//!   decodes to fewer than 4 bytes (armor.rs:103), and payment proof keys or a
-//!   signature the slate reader unwraps (v4_bin.rs:348-352).
 //! - H2: an age payload with a passphrase (scrypt) stanza, which reaches
 //!   `unreachable!()` in types.rs:202-205. An encrypted payload must also name
 //!   at least one X25519 recipient.
+//! - H1: the parser before this pin (c2db7545) also panicked on armor framing
+//!   without a footer period, a payload that decodes to fewer than 4 bytes,
+//!   and payment proof keys or a signature the slate reader unwrapped. This
+//!   pin returns an error at those points (armor.rs:88-95 and 111-114,
+//!   v4_bin.rs:348-358); the precheck still refuses them, early.
 //!
 //! It never refuses a Slatepack the parser accepts: where the parser would
 //! return an error anyway it may refuse early, and where it cannot tell it lets
-//! the parser decide. The panics that follow a successful decryption
-//! (types.rs:211-214) cannot be seen before decrypting; the nostr ingest
-//! refuses encrypted Slatepacks outright for that reason.
+//! the parser decide. One rule breaks this at this pin: the reader now takes
+//! any 64 bytes as a payment proof signature (ed25519 2.2.3 checks only the
+//! length), so the signature rule in `proof_walk` refuses Slatepacks the
+//! parser reads. The reads that follow a successful decryption panicked at
+//! c2db7545 (types.rs:211-214) and are checked at this pin (types.rs:211-227);
+//! the precheck cannot see them before decrypting, and the nostr ingest still
+//! refuses encrypted Slatepacks outright.
 
 use grin_util::secp::constants::MAX_PROOF_SIZE;
 use grin_wallet_libwallet::slatepack::{max_size, min_size};
@@ -49,8 +56,10 @@ const WHITESPACE: [u8; 5] = [b'>', b'\n', b'\r', b'\t', b' '];
 const BASE58: &[u8; 58] = b"123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
 /// Longest base58 payload worth decoding (decoding cost grows with the square
 /// of the length). The pinned reader refuses a binary payload over 100 000
-/// bytes (node/core ser.rs:503-506); with the Slatepack header and the check
-/// code that is about 137 000 base58 characters.
+/// bytes (wallet/grin/core ser.rs:217, 239-241 and 509-515: the BinReader that
+/// types.rs:303 reads a Slatepack with keeps that default limit); with the
+/// Slatepack header and the check code that is about 137 000 base58
+/// characters.
 const MAX_BASE58_CHARS: usize = 140_000;
 /// First line of an age v1 file.
 const AGE_V1: &[u8] = b"age-encryption.org/v1\n";
@@ -123,8 +132,8 @@ pub fn precheck(text: &str) -> Result<SlatepackShape, Reject> {
 	Ok(SlatepackShape { mode })
 }
 
-/// Mirror of `SlatepackArmor::decode` (armor.rs:64-107) with its slices and
-/// its 4-byte split bounds-checked, as upstream d4867d5 does.
+/// Mirror of `SlatepackArmor::decode` (armor.rs:65-119), which bounds-checks
+/// its slices and its 4-byte split at this pin, as upstream d4867d5 does.
 fn dearmor(data: &[u8]) -> Result<Vec<u8>, Reject> {
 	let header_len = data.iter().take_while(|b| **b != b'.').count();
 	if !framing_is(&data[..header_len], b"BEGINSLATEPACK") {
@@ -133,8 +142,9 @@ fn dearmor(data: &[u8]) -> Result<Vec<u8>, Reject> {
 	let payload_start = header_len + 1;
 	let payload_source = data.get(payload_start..).ok_or(Reject::Framing)?;
 	let payload_len = payload_source.iter().take_while(|b| **b != b'.').count();
-	// armor.rs:85 slices here without a check: no period after the payload
-	// means the footer starts past the end of the text.
+	// No period after the payload means the footer starts past the end of the
+	// text: c2db7545 sliced here without a check (armor.rs:85), this pin
+	// returns "Bad armor footer" (armor.rs:88-95).
 	let footer_source = data
 		.get(payload_start + payload_len + 1..)
 		.ok_or(Reject::Framing)?;
@@ -151,7 +161,8 @@ fn dearmor(data: &[u8]) -> Result<Vec<u8>, Reject> {
 		return Err(Reject::Size);
 	}
 	let decoded = base58_decode(&clean).ok_or(Reject::Payload)?;
-	// armor.rs:103 takes [0..4] without a check.
+	// c2db7545 took [0..4] without a check (armor.rs:103); this pin returns
+	// "Payload too short" (armor.rs:111-113).
 	if decoded.len() < 4 {
 		return Err(Reject::Payload);
 	}
@@ -163,7 +174,7 @@ fn dearmor(data: &[u8]) -> Result<Vec<u8>, Reject> {
 	Ok(slatepack.to_vec())
 }
 
-/// The armor regexes (armor.rs:52-56) accept the word with only the armor
+/// The armor regexes (armor.rs:53-56) accept the word with only the armor
 /// whitespace bytes around it.
 fn framing_is(bytes: &[u8], word: &[u8]) -> bool {
 	let start = bytes.iter().take_while(|b| WHITESPACE.contains(b)).count();
@@ -216,7 +227,7 @@ fn base58_decode(input: &[u8]) -> Option<Vec<u8>> {
 /// delivery mode and payload it would go on with.
 fn unpack(body: Vec<u8>) -> Result<(u8, Vec<u8>), Reject> {
 	// The binary reader subtracts the sender address length from a header
-	// field without a check (types.rs:361). Release builds wrap and then fail
+	// field without a check (types.rs:375). Release builds wrap and then fail
 	// at the end of the data; debug builds panic. Take the release outcome.
 	if !sender_len_underflows(&body)
 		&& let Ok(bin) = byte_ser::from_bytes::<SlatepackBin>(&body)
@@ -270,10 +281,12 @@ impl<'a> Bytes<'a> {
 	}
 }
 
-/// True when the pinned `ProofWrap` reader (v4_bin.rs:347-355) would unwrap an
-/// invalid key or signature in this binary slate. The walk only counts bytes
-/// the way `SlateV4Bin::read` (v4_bin.rs:451-489) consumes them; anything it
-/// cannot follow is left to the parser, which then fails on its own.
+/// True when this binary slate carries a payment proof key or signature that
+/// the c2db7545 `ProofWrap` reader unwrapped (v4_bin.rs:347-355). The pinned
+/// reader (v4_bin.rs:346-368) returns an error for a bad key instead. The walk
+/// only counts bytes the way `SlateV4Bin::read` (v4_bin.rs:464-501) consumes
+/// them; anything it cannot follow is left to the parser, which then fails on
+/// its own.
 fn proof_would_panic(payload: &[u8]) -> bool {
 	let mut r = Bytes(payload);
 	proof_walk(&mut r).unwrap_or(false)
@@ -317,14 +330,17 @@ fn proof_walk(r: &mut Bytes) -> Option<bool> {
 	for _ in 0..2 {
 		let mut key = [0u8; 32];
 		key.copy_from_slice(r.take(32)?);
-		// The same ed25519-dalek 1.0.1 PublicKey::from_bytes the reader uses.
+		// The same ed25519-dalek 2.2.0 VerifyingKey::from_bytes the reader uses
+		// (wallet util ov3.rs:58-69, v4_bin.rs:352 and 358).
 		if OnionV3Address::from_bytes(key).to_ed25519().is_err() {
 			return Some(true);
 		}
 	}
 	if r.u8()? != 0 {
 		let sig = r.take(64)?;
-		// ed25519 1.5.3 Signature::from_bytes refuses a set top 3 bits.
+		// ed25519 1.5.3 Signature::from_bytes refused a set top 3 bits. The
+		// pinned ed25519 2.2.3 takes any 64 bytes (v4_bin.rs:363), so this
+		// refuses a slate the parser reads.
 		if sig[63] & 0b1110_0000 != 0 {
 			return Some(true);
 		}
@@ -333,10 +349,11 @@ fn proof_walk(r: &mut Bytes) -> Option<bool> {
 }
 
 /// Accept only an age v1 header with at least one X25519 stanza and no scrypt
-/// stanza. age 0.7.2 turns a lone scrypt stanza into a passphrase decryptor
-/// (protocol.rs:161-175), which types.rs:202-205 meets with `unreachable!()`.
-/// Other tags stay allowed: age 0.7.2 adds a random "<x>-grease" stanza to
-/// every file it encrypts (protocol.rs:91), so real Slatepacks carry one.
+/// stanza. age 0.8.2, like 0.7.2 before it, turns a lone scrypt stanza into a
+/// passphrase decryptor (protocol.rs:161-175), which types.rs:202-205 meets
+/// with `unreachable!()`. Other tags stay allowed: both add a random
+/// "<x>-grease" stanza to every file they encrypt (protocol.rs:91), so real
+/// Slatepacks carry one.
 fn check_age_recipients(payload: &[u8]) -> Result<(), Reject> {
 	let header = payload.strip_prefix(AGE_V1).ok_or(Reject::Encryption)?;
 	let mut x25519 = 0;
@@ -485,7 +502,7 @@ pub(crate) mod fixtures {
 		armor(&sp)
 	}
 
-	/// 32 bytes ed25519-dalek 1.0.1 cannot decompress into a point.
+	/// 32 bytes the pinned ed25519-dalek 2.2.0 cannot decompress into a point.
 	pub fn invalid_point() -> [u8; 32] {
 		(2u8..=255)
 			.map(|k| {
@@ -549,10 +566,22 @@ pub(crate) mod fixtures {
 		)
 	}
 
-	/// Messages that panic the pinned parser, with the reject the precheck
-	/// gives each and whether the nostr ingest can deliver it (the ingest only
-	/// passes text matching `BEGINSLATEPACK\. ... ENDSLATEPACK\.`).
-	pub fn hostile() -> Vec<(&'static str, String, Reject, bool)> {
+	/// What the pinned parser (9cc6a5eb) does with a hostile message.
+	#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+	pub enum Pinned {
+		/// It panics: the precheck is what keeps the app alive.
+		Panics,
+		/// It returns an error: the precheck only refuses it earlier.
+		Errs,
+		/// It reads the slate: the precheck refusing it is a false reject.
+		Reads,
+	}
+
+	/// Messages the precheck refuses, with the reject it gives each, whether
+	/// the nostr ingest can deliver it (the ingest only passes text matching
+	/// `BEGINSLATEPACK\. ... ENDSLATEPACK\.`), and what the pinned parser does
+	/// with it. All of them panicked the parser before this pin (c2db7545).
+	pub fn hostile() -> Vec<(&'static str, String, Reject, bool, Pinned)> {
 		chain();
 		let with_proof = pack(
 			&full_slate(SlateState::Standard1, 5, Some(true)),
@@ -570,58 +599,67 @@ pub(crate) mod fixtures {
 		scrypt.payload = age_scrypt();
 		vec![
 			(
-				"payload decodes to 1 byte (armor.rs:103)",
+				"payload decodes to 1 byte (armor.rs:111)",
 				"BEGINSLATEPACK. 1 . ENDSLATEPACK.".to_string(),
 				Reject::Payload,
 				true,
+				Pinned::Errs,
 			),
 			(
-				"payload decodes to 0 bytes (armor.rs:103)",
+				"payload decodes to 0 bytes (armor.rs:111)",
 				"BEGINSLATEPACK. . ENDSLATEPACK.".to_string(),
 				Reject::Payload,
 				true,
+				Pinned::Errs,
 			),
 			(
-				"no period after the payload (armor.rs:85)",
+				"no period after the payload (armor.rs:88)",
 				"BEGINSLATEPACK. 4H1qx1wHe668tFW".to_string(),
 				Reject::Framing,
 				false,
+				Pinned::Errs,
 			),
 			(
-				"proof sender key is not a point (v4_bin.rs:348)",
+				"proof sender key is not a point (v4_bin.rs:352)",
 				patched(&with_proof, &saddr_bytes, &invalid_point()),
 				Reject::PaymentProof,
 				true,
+				Pinned::Errs,
 			),
 			(
-				"proof receiver key is not a point (v4_bin.rs:349)",
+				"proof receiver key is not a point (v4_bin.rs:358)",
 				patched(&with_proof, &raddr_bytes, &invalid_point()),
 				Reject::PaymentProof,
 				true,
+				Pinned::Errs,
 			),
 			(
-				"proof signature with the top bits set (v4_bin.rs:352)",
+				"proof signature with the top bits set (v4_bin.rs:363)",
 				patched(&with_proof, &RSIG, &bad_sig),
 				Reject::PaymentProof,
 				true,
+				Pinned::Reads,
 			),
 			(
 				"binary mode 1 with an age scrypt stanza (types.rs:204)",
 				armor(&scrypt),
 				Reject::Encryption,
 				true,
+				Pinned::Panics,
 			),
 			(
 				"armored JSON mode 1 with an age scrypt stanza (types.rs:204)",
 				armor_bytes(json_slatepack(1, &age_scrypt()).as_bytes()),
 				Reject::Encryption,
 				true,
+				Pinned::Panics,
 			),
 			(
 				"bare JSON mode 1 with an age scrypt stanza (types.rs:204)",
 				json_slatepack(1, &age_scrypt()),
 				Reject::Encryption,
 				false,
+				Pinned::Panics,
 			),
 		]
 	}
@@ -718,21 +756,25 @@ mod tests {
 		}))
 	}
 
-	/// Test A: each hostile message panics the pinned parser (H1, H2).
+	/// Test A: each hostile message does to the pinned parser what its fixture
+	/// records. The scrypt ones still panic it (H2); the H1 ones now get an
+	/// error. A pin move that changes any of them fails here.
 	#[test]
-	fn hostile_slatepacks_panic_the_pinned_parser() {
-		for (name, text, _, _) in hostile() {
-			assert!(
-				pinned_parse(&text).is_err(),
-				"pinned parser did not panic: {name}"
-			);
+	fn hostile_slatepacks_meet_the_pinned_parser_as_recorded() {
+		for (name, text, _, _, pinned) in hostile() {
+			let got = match pinned_parse(&text) {
+				Err(_) => Pinned::Panics,
+				Ok(false) => Pinned::Errs,
+				Ok(true) => Pinned::Reads,
+			};
+			assert_eq!(got, pinned, "{name}");
 		}
 	}
 
 	/// Test B: the precheck refuses each of them, for the reason expected.
 	#[test]
 	fn precheck_refuses_hostile_slatepacks() {
-		for (name, text, reject, _) in hostile() {
+		for (name, text, reject, _, _) in hostile() {
 			assert_eq!(precheck(&text), Err(reject), "{name}");
 		}
 	}
