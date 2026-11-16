@@ -506,7 +506,7 @@ impl GoblinWalletView {
 					if settings_row_nav(ui, "nostr-sdk", "0.44") {
 						open_url(ui, "https://github.com/rust-nostr/nostr");
 					}
-					if settings_row_nav(ui, "Tor (arti)", "0.43") {
+					if settings_row_nav(ui, "Tor (arti)", "0.44") {
 						open_url(ui, "https://gitlab.torproject.org/tpo/core/arti");
 					}
 					if settings_row_nav(ui, "egui", "0.33") {

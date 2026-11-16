@@ -20,7 +20,7 @@
 //! is dropped.
 //!
 //! Two technical choices are inherited VERBATIM from GRIM because it already paid
-//! for them: **arti 0.43** across the arti family, and the **native-tls Tor
+//! for them: **arti 0.44** across the arti family, and the **native-tls Tor
 //! runtime** ([`TokioNativeTlsRuntime`]) — deliberately NOT rustls, so arti's TLS
 //! stays on native-tls and never touches the rustls/ring provider our relay and
 //! HTTP TLS install.
