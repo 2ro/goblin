@@ -32,10 +32,11 @@
 //!
 //! It never refuses a Slatepack the parser accepts: where the parser would
 //! return an error anyway it may refuse early, and where it cannot tell it lets
-//! the parser decide. One rule breaks this at this pin: the reader now takes
-//! any 64 bytes as a payment proof signature (ed25519 2.2.3 checks only the
-//! length), so the signature rule in `proof_walk` refuses Slatepacks the
-//! parser reads. The reads that follow a successful decryption panicked at
+//! the parser decide. So a payment proof signature with its top 3 bits set,
+//! which c2db7545 unwrapped, now passes: this pin reads any 64 bytes there
+//! (ed25519 2.2.3 checks only the length), and proof verification refuses
+//! such a signature with an error (libwallet internal/tx.rs:565-576).
+//! The reads that follow a successful decryption panicked at
 //! c2db7545 (types.rs:211-214) and are checked at this pin (types.rs:211-227);
 //! the precheck cannot see them before decrypting, and the nostr ingest still
 //! refuses encrypted Slatepacks outright.
@@ -84,7 +85,7 @@ pub enum Reject {
 	Checksum,
 	/// Neither a binary nor a JSON Slatepack.
 	Unreadable,
-	/// A payment proof key or signature the slate reader would unwrap.
+	/// A payment proof key that is not a curve point.
 	PaymentProof,
 	/// Encrypted, but not an age file for X25519 recipients without a passphrase.
 	Encryption,
@@ -123,7 +124,7 @@ pub fn precheck(text: &str) -> Result<SlatepackShape, Reject> {
 	};
 	let (mode, payload) = unpack(body)?;
 	if mode == 0 {
-		if proof_would_panic(&payload) {
+		if proof_key_is_invalid(&payload) {
 			return Err(Reject::PaymentProof);
 		}
 	} else {
@@ -281,13 +282,13 @@ impl<'a> Bytes<'a> {
 	}
 }
 
-/// True when this binary slate carries a payment proof key or signature that
-/// the c2db7545 `ProofWrap` reader unwrapped (v4_bin.rs:347-355). The pinned
-/// reader (v4_bin.rs:346-368) returns an error for a bad key instead. The walk
-/// only counts bytes the way `SlateV4Bin::read` (v4_bin.rs:464-501) consumes
-/// them; anything it cannot follow is left to the parser, which then fails on
-/// its own.
-fn proof_would_panic(payload: &[u8]) -> bool {
+/// True when this binary slate carries a payment proof key that is not a
+/// curve point. The c2db7545 `ProofWrap` reader unwrapped it and panicked
+/// (v4_bin.rs:347-355); the pinned reader returns an error (v4_bin.rs:346-368).
+/// The walk only counts bytes the way `SlateV4Bin::read` (v4_bin.rs:464-501)
+/// consumes them; anything it cannot follow is left to the parser, which then
+/// fails on its own.
+fn proof_key_is_invalid(payload: &[u8]) -> bool {
 	let mut r = Bytes(payload);
 	proof_walk(&mut r).unwrap_or(false)
 }
@@ -325,23 +326,14 @@ fn proof_walk(r: &mut Bytes) -> Option<bool> {
 	if structs & 0x02 == 0 {
 		return Some(false);
 	}
-	// ProofWrap: sender and receiver keys, then any non-zero flag reads a
-	// signature. Each is unwrapped as soon as it is read.
+	// ProofWrap: sender and receiver keys. The signature after them is any 64
+	// bytes to the pinned reader, so the walk ends here.
 	for _ in 0..2 {
 		let mut key = [0u8; 32];
 		key.copy_from_slice(r.take(32)?);
 		// The same ed25519-dalek 2.2.0 VerifyingKey::from_bytes the reader uses
 		// (wallet util ov3.rs:58-69, v4_bin.rs:352 and 358).
 		if OnionV3Address::from_bytes(key).to_ed25519().is_err() {
-			return Some(true);
-		}
-	}
-	if r.u8()? != 0 {
-		let sig = r.take(64)?;
-		// ed25519 1.5.3 Signature::from_bytes refused a set top 3 bits. The
-		// pinned ed25519 2.2.3 takes any 64 bytes (v4_bin.rs:363), so this
-		// refuses a slate the parser reads.
-		if sig[63] & 0b1110_0000 != 0 {
 			return Some(true);
 		}
 	}
@@ -573,7 +565,8 @@ pub(crate) mod fixtures {
 		Panics,
 		/// It returns an error: the precheck only refuses it earlier.
 		Errs,
-		/// It reads the slate: the precheck refusing it is a false reject.
+		/// It reads the slate: a fixture here that the parser reads would be a
+		/// false reject.
 		Reads,
 	}
 
@@ -592,8 +585,6 @@ pub(crate) mod fixtures {
 		let proof_start = saddr.len() - (32 + 32 + 1 + 64);
 		let saddr_bytes = saddr[proof_start..proof_start + 32].to_vec();
 		let raddr_bytes = own_address().pub_key.to_bytes().to_vec();
-		let mut bad_sig = RSIG;
-		bad_sig[63] = 0xFF;
 		let mut scrypt = Slatepack::default();
 		scrypt.mode = 1;
 		scrypt.payload = age_scrypt();
@@ -632,13 +623,6 @@ pub(crate) mod fixtures {
 				Reject::PaymentProof,
 				true,
 				Pinned::Errs,
-			),
-			(
-				"proof signature with the top bits set (v4_bin.rs:363)",
-				patched(&with_proof, &RSIG, &bad_sig),
-				Reject::PaymentProof,
-				true,
-				Pinned::Reads,
 			),
 			(
 				"binary mode 1 with an age scrypt stanza (types.rs:204)",
@@ -732,7 +716,7 @@ pub(crate) mod fixtures {
 mod tests {
 	use super::fixtures::*;
 	use super::*;
-	use grin_wallet_libwallet::{Slatepacker, SlatepackerArgs, dalek_ser};
+	use grin_wallet_libwallet::{SlateState, Slatepacker, SlatepackerArgs, dalek_ser};
 	use std::panic::{AssertUnwindSafe, catch_unwind};
 
 	/// The pinned parser as the wallet runs it (controller parse_slatepack ->
@@ -819,6 +803,24 @@ mod tests {
 				);
 			}
 		}
+	}
+
+	/// A payment proof signature with its top 3 bits set panicked c2db7545
+	/// (v4_bin.rs:352). The pinned reader takes it (v4_bin.rs:363), so the
+	/// precheck lets it through as well.
+	#[test]
+	fn proof_signature_with_top_bits_set_is_read() {
+		chain();
+		let with_proof = pack(
+			&full_slate(SlateState::Standard2, 5, Some(true)),
+			None,
+			vec![],
+		);
+		let mut top_bits = RSIG;
+		top_bits[63] = 0xFF;
+		let text = patched(&with_proof, &RSIG, &top_bits);
+		assert_eq!(precheck(&text).map(|s| s.mode), Ok(0));
+		assert_eq!(pinned_parse(&text).ok(), Some(true));
 	}
 
 	/// The nostr tests' slatepack is not a valid one: the parser refuses it
